@@ -54,6 +54,57 @@ fn log(msg: &str) {
     eprintln!("{msg}");
 }
 
+/// Say why the game cannot start, in a window the player sees, not only in the log. Best effort:
+/// a native message box on Windows and macOS, zenity, kdialog or xmessage on Linux.
+fn tell_user(reason: &str) {
+    let text = format!(
+        "Urban Sprawl could not start.\n\n{reason}\n\nMore detail is in {}",
+        log_path().display()
+    );
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+        let wide = |s: &str| {
+            s.encode_utf16()
+                .chain(std::iter::once(0))
+                .collect::<Vec<u16>>()
+        };
+        let (body, title) = (wide(&text), wide("Urban Sprawl"));
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                body.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display alert \"Urban Sprawl could not start\" message {:?}",
+            text
+        );
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .status();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use std::process::Command;
+        let ok = |c: &mut Command| c.status().map(|s| s.success()).unwrap_or(false);
+        let shown = ok(Command::new("zenity")
+            .args(["--error", "--no-wrap", "--title=Urban Sprawl"])
+            .arg(format!("--text={text}")))
+            || ok(Command::new("kdialog")
+                .args(["--title", "Urban Sprawl", "--error"])
+                .arg(&text));
+        if !shown {
+            let _ = Command::new("xmessage").arg(&text).status();
+        }
+    }
+}
+
 impl App {
     fn init_gfx(&mut self, el: &ActiveEventLoop) {
         let attrs = Window::default_attributes()
@@ -274,11 +325,17 @@ impl ApplicationHandler for App {
 fn main() {
     std::panic::set_hook(Box::new(|info| {
         log(&format!("panic: {info}"));
+        // Only the main thread ends the game; a failed background task (for example the
+        // launcher sign-in) must never pop up a dialog while the game keeps running.
+        if std::thread::current().name() == Some("main") {
+            tell_user(&format!("Something went wrong: {info}"));
+        }
     }));
     let el = match EventLoop::new() {
         Ok(e) => e,
         Err(e) => {
             log(&format!("could not start the window system: {e}"));
+            tell_user(&format!("The window system did not start: {e}"));
             std::process::exit(1);
         }
     };
@@ -296,6 +353,11 @@ fn main() {
     }
     if let Some(f) = app.fatal {
         log(&format!("Urban Sprawl could not start: {f}"));
+        tell_user(&format!(
+            "The graphics could not start. Update your graphics driver.\n\
+             On Linux, install the Mesa Vulkan driver (package mesa-vulkan-drivers).\n\n\
+             Technical detail: {f}"
+        ));
         std::process::exit(1);
     }
 }

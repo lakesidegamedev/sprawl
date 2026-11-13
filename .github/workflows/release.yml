@@ -1,20 +1,15 @@
 name: release
 
+# Portable zips of the game, built as workflow artifacts for testing on pull requests that touch
+# the app or packaging. This repository is public and Urban Sprawl is a paid game: builds are
+# never attached to a GitHub release. Players get the game through the Lakeside launcher.
 on:
-  # dry run: building the packages (not publishing) when packaging itself changes
   pull_request:
     paths: [".github/workflows/release.yml", "packaging/**", "crates/us-app/**"]
-  push:
-    tags: ["v1.0.0-preview.*"]
   workflow_dispatch:
-    inputs:
-      publish:
-        description: "Create or update the pre-release (tag v1.0.0-preview.2) from this commit"
-        type: boolean
-        default: false
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,7 +24,7 @@ jobs:
         include:
           - { name: windows-x64, os: windows-latest }
           - { name: macos-arm64, os: macos-latest }
-          - { name: linux-x64, os: ubuntu-latest }
+          - { name: linux-x64, os: ubuntu-22.04 } # oldest glibc we support (2.35)
     defaults:
       run:
         shell: bash
@@ -48,7 +43,7 @@ jobs:
         id: pkg
         run: |
           set -euo pipefail
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then V="${GITHUB_REF_NAME#v}"; else V="1.0.0-preview.2"; fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then V="${GITHUB_REF_NAME#v}"; else V="1.0.0-preview.1"; fi
           NAME="urban-sprawl-$V-${{ matrix.name }}"
           mkdir -p dist "stage/$NAME"
           cp packaging/README.txt "stage/$NAME/README.txt"
@@ -87,29 +82,5 @@ jobs:
           name: urban-sprawl-${{ matrix.name }}
           path: ${{ steps.pkg.outputs.file }}
           if-no-files-found: error
+          retention-days: 1  # public repo: anyone signed in can download artifacts
 
-  publish:
-    name: publish pre-release
-    needs: build
-    if: github.ref_type == 'tag' || inputs.publish
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          path: assets
-          merge-multiple: true
-      - name: Create or update the pre-release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then TAG="$GITHUB_REF_NAME"; else TAG="v1.0.0-preview.2"; fi
-          TITLE="Urban Sprawl $(echo "${TAG#v}" | sed 's/-preview\./ preview /')"
-          ls -la assets
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" assets/* --clobber
-          else
-            gh release create "$TAG" assets/* --target "$GITHUB_SHA" --prerelease \
-              --title "$TITLE" --notes-file .github/release-notes.md
-          fi

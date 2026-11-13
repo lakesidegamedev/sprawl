@@ -1,33 +1,38 @@
-# Urban Sprawl agent instructions
+# Contributing to Urban Sprawl
 
-Read `/root/AGENTS.md` and `/root/.claude/CLAUDE.md` on this host first.
+Instructions for anyone, human or AI agent, changing this repository. This repository is public:
+everything committed is public and stays in the history for good.
 
-## Authority
+## Never commit
 
-- Design: ops-knowledge doc `sprawl-plan` (collection docs). Design docs live there, never in this repo.
-- Owner decisions override the doc. Record substantive changes on the doc, not here.
-- Kanban: card 255320 (ops-knowledge `work_report`, actor `claude:sprawl` or your worker name).
-- MetroForge is deprecated: do not copy from it or reference it.
-- Never commit credentials, signing keys, personal data or real people's names or likenesses.
+- secrets, tokens, keys or signing material;
+- names, handles or contact details of players or staff;
+- internal hostnames, addresses, server paths or operations notes;
+- anything you would not show the public. Design and planning notes are kept outside this repo.
 
-## Road and town generation
+## Build and test
 
-The rules are proven in a Python mockup that is the reference implementation:
-`/root/misc/archive/2026-11-13-sprawl-plan/` (`sprawl5.py` is current; it imports `sprawl3.py`
-and `sprawl4.py`; `osm/` holds the real-town study). The owner approved pass 5 on 2026-11-13.
-Port behaviour, not code style. Known gaps the owner was told would be fixed in the port:
-long addition-edge streets become collectors; pods get more internal cul-de-sacs; small towns
-get few towers downtown.
+- Toolchain: pinned in `rust-toolchain.toml` (Rust edition 2024).
+- `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace` must pass; CI runs the same (`.github/workflows/verify.yml`).
+- GPU tests skip when no graphics adapter is available.
+- Linux release builds are made on Ubuntu 22.04 so they run on current distributions; CI starts the
+  Linux build the way the Lakeside launcher does and fails if it does not stay up.
 
-Generation must be deterministic from (preset, seed) on every platform: no HashMap iteration
-order in output, use the `libm` crate for transcendental functions, seed-based RNG only.
+## Rules for code
 
-## Development
+- Town generation and the simulation are deterministic from their inputs on every platform: seeded
+  RNG only, the `libm` crate for transcendental functions, no hash-map iteration order in output.
+- The game must always work offline. The Lakeside sign-in is optional; nothing in `us-lakeside`
+  may block the game or be needed to play.
+- Never close silently: a start failure shows the player a message saying why.
 
-- Edition 2024, toolchain pinned in `rust-toolchain.toml`.
-- Every PR adds a line under `## Unreleased` in `CHANGELOG.md`.
-- Feature branches from `main`, squash-merge PRs. Never push to `main` directly.
-- Worktrees at `worktrees/<branch>`. Stage explicit files. Finish clean.
-- This host runs production services. Local checks: `cargo test -p us-gen -j 4` and
-  `cargo clippy -p <crate> -j 4` are fine. GPU crates (wgpu) build on hosted CI, not here,
-  unless the owner says otherwise. Run commands in the foreground; never background a waiter.
+## Changes
+
+- Branch from `main`, open a pull request, squash-merge. Never push to `main` directly.
+- Conventional commit messages (`feat:`, `fix:`, `ci:`, `docs:` and so on).
+- Every pull request adds a line under `## Unreleased` in `CHANGELOG.md`.
+- Before adding a workflow that uses repository secrets (signing, uploads), make sure no secret is
+  exposed to pull requests from forks.
+- Builds of the game are never attached to GitHub releases; the game is sold through the Lakeside
+  launcher.

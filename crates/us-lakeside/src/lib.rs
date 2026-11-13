@@ -1,8 +1,8 @@
 //! Lakeside integration for Urban Sprawl: launcher handoff, optional in-game sign-in and the
 //! Lakeside updater. No UI. The game always works offline; nothing here is needed to play.
 //!
-//! Contract: ops-knowledge `lakeside-game-integration-contract-v1`. Behaviour mirrors
-//! Corporate Warfare's v1 (`docs/rules/LAUNCHER.md` in that repo), with Urban Sprawl's ids.
+//! Follows version 1 of the Lakeside game integration contract, the same behaviour as
+//! Corporate Warfare's launcher handoff, with Urban Sprawl's ids.
 
 #![allow(clippy::result_large_err)]
 
