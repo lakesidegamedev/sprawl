@@ -252,10 +252,22 @@ impl Renderer {
 
     /// A renderer that presents into a window from a safe handle (for example an
     /// `Arc<winit::window::Window>`). Works on every platform winit does, including Wayland.
-    pub fn for_window_handle(
-        window: impl Into<wgpu::SurfaceTarget<'static>>,
-    ) -> Result<Renderer, NoAdapter> {
-        let instance = wgpu::Instance::default();
+    ///
+    /// The window's display is handed to wgpu as well, so the OpenGL backend can present when
+    /// Vulkan is missing (bare Linux machines, software-only test runners).
+    pub fn for_window_handle<W>(window: W) -> Result<Renderer, NoAdapter>
+    where
+        W: Into<wgpu::SurfaceTarget<'static>>
+            + wgpu::rwh::HasDisplayHandle
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + Clone
+            + 'static,
+    {
+        let instance = wgpu::Instance::new(
+            wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())),
+        );
         let surface = instance
             .create_surface(window)
             .map_err(|e| NoAdapter(e.to_string()))?;

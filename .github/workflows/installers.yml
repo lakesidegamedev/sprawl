@@ -59,7 +59,7 @@ jobs:
           if-no-files-found: error
 
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04  # oldest glibc we support (2.35): a binary built on a newer Ubuntu will not start on 22.04 or 24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96.0
@@ -67,7 +67,7 @@ jobs:
       - name: Build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev libxkbcommon-dev libxkbcommon-x11-0 libxcb-xkb1 libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev
       - name: Build
         run: |
           if [ -d crates/us-app ]; then pkg=us-app; bin=urban-sprawl; else pkg=us-gen-cli; bin=us-gen-cli; fi
@@ -84,6 +84,33 @@ jobs:
           name: installers-ubuntu-latest
           path: out/*
           if-no-files-found: error
+
+  # Start the AppImage exactly as the Lakeside launcher does, on a clean runner set up like a stock
+  # desktop (a virtual display and Mesa's Vulkan driver, which Ubuntu desktop installs by default,
+  # nothing else): launcher environment and a made-up handoff code. It must stay up, signed out.
+  launch-check:
+    needs: linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: installers-ubuntu-latest
+          path: in
+      - name: Only what a stock desktop has
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb mesa-vulkan-drivers
+      - name: Start like the launcher and stay up 20 seconds
+        run: |
+          app="$(ls in/*-linux.AppImage)"
+          chmod +x "$app"
+          export APPIMAGE_EXTRACT_AND_RUN=1 LAKESIDE_LAUNCHER=1 LAKESIDE_LAUNCHER_VERSION=0.7.2 LAKESIDE_HANDOFF_CODE=ci-made-up-code
+          xvfb-run -a -s "-screen 0 1360x820x24" bash -c "\"$app\" > out.txt 2>&1 & pid=\$!; sleep 20; if kill -0 \$pid; then echo ALIVE > alive.txt; kill \$pid; fi" || true
+          echo "--- game output"; cat out.txt || true
+          echo "--- log"; cat /tmp/urban-sprawl.log || true
+          test -f alive.txt || { echo "the game exited before 20 seconds"; exit 1; }
+          if grep -q "could not start" out.txt /tmp/urban-sprawl.log 2>/dev/null; then echo "the game is showing a start error"; exit 1; fi
+          echo "game stayed up for 20 seconds"
 
   mac:
     runs-on: macos-latest
@@ -113,7 +140,7 @@ jobs:
           if-no-files-found: error
 
   manifest:
-    needs: [windows, linux, mac]
+    needs: [windows, linux, mac, launch-check]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

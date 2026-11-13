@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix: the Linux build is compiled on Ubuntu 22.04 so it runs on 22.04, 24.04, Debian 12 and other current distributions (preview 1 needed glibc 2.43 and closed at once on them).
+- Fix: when the graphics cannot start (for example Linux with no Vulkan driver), the game shows a message saying why and what to install, instead of closing silently; a panic on the main thread is shown too.
+- Linux AppImage carries the keyboard libraries the window needs, and CI now starts every Linux build the way the Lakeside launcher does (launcher environment, made-up sign-in code, stock desktop) and fails if it does not stay up.
 - Interface uses the studio's dark navy panels with gold for the main action, no cream panels.
 - Fix: text and texture updates the UI produces in a frame the window skips are kept and uploaded on the next frame instead of being lost (the debug build stopped on this).
 - Lakeside account in the app: "Signed in as" on the main menu when the launcher hands over a sign-in, and Sign in, Sign out and Check for updates in Settings (updates say the launcher keeps the copy current when it started the game).
