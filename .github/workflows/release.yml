@@ -1,6 +1,9 @@
 name: release
 
 on:
+  # dry run: building the packages (not publishing) when packaging itself changes
+  pull_request:
+    paths: [".github/workflows/release.yml", "packaging/**", "crates/us-app/**"]
   push:
     tags: ["v1.0.0-preview.*"]
   workflow_dispatch:
