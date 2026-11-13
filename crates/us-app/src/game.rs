@@ -1034,7 +1034,7 @@ impl Game {
         self.sim = sim;
         self.live = live;
         self.placed = true;
-        self.speed = 1;
+        self.speed = 2;
         self.sel = Some(Sel::Hall);
         self.cam
             .look_at(Vec3::new(site.x as f32, site.y as f32, 0.0), 650.0);

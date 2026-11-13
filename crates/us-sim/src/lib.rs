@@ -977,6 +977,24 @@ mod tests {
     }
 
     #[test]
+    fn many_seeds_and_every_site_run_clean() {
+        for seed in 1..=8u64 {
+            for preset in [Preset::Grid, Preset::Winding] {
+                let town = generate(preset, seed * 37);
+                let sites = hall_sites(&town);
+                assert!(!sites.is_empty());
+                for &site in sites.iter().take(3) {
+                    let mut s = Sim::new(&town, site, seed);
+                    for _ in 0..120 {
+                        s.step_day();
+                    }
+                    assert!(s.building_count() + s.built_count() > 0);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn date_starts_on_new_year() {
         let d = Date::from_days(0);
         assert_eq!((d.year, d.month, d.day), (2026, 1, 1));
