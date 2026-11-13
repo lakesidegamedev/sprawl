@@ -6,6 +6,11 @@ name: installers
 on:
   push:
     tags: ["v*"]
+  # Proves the packaging on any change to it. Builds only, publishes nothing.
+  pull_request:
+    paths:
+      - ".github/workflows/installers.yml"
+      - "packaging/**"
   workflow_dispatch:
     inputs:
       version:
@@ -19,7 +24,7 @@ permissions:
 env:
   # Until crates/us-app exists on this branch, the command line generator stands in so the
   # packaging is proven end to end. The packaged file is always named urban-sprawl.
-  VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || (github.ref_type == 'tag' && github.ref_name) || '0.0.0-ci' }}
 
 jobs:
   windows:
