@@ -52,6 +52,12 @@ pub struct LotState {
     pub kind: LotKind,
     pub pos: Pt,
     pub addition: usize,
+    /// Collision radius in metres.
+    pub radius: f64,
+    /// Direction the front faces, radians.
+    pub facing: f64,
+    /// Index into `Town::lots`, a stable seed for the look of the building.
+    pub src: usize,
     /// Pre-existing and exempt: farms stand from day 0 and never empty out.
     pub exempt: bool,
 }
@@ -260,6 +266,12 @@ pub struct Sim {
 impl Sim {
     /// `hall` is where the player put the town hall; the town grows outward from it.
     pub fn new(town: &Town, hall: Pt, seed: u64) -> Sim {
+        Sim::new_with(town, hall, seed, 2)
+    }
+
+    /// `initial_reveals` additions nearest the hall are revealed at once (0 for a placement
+    /// preview that shows only the old roads and farms).
+    pub fn new_with(town: &Town, hall: Pt, seed: u64, initial_reveals: usize) -> Sim {
         let n_add = town.additions.len();
         let addition_poly: Vec<Vec<Pt>> = town.additions.iter().map(|a| a.polygon.clone()).collect();
         let centroid = |ring: &[Pt]| -> Pt {
@@ -305,7 +317,7 @@ impl Sim {
         }
         // lots
         let clear_r = town.hall_radius + 14.0;
-        for l in &town.lots {
+        for (src, l) in town.lots.iter().enumerate() {
             if l.centre.dist(hall) < clear_r + l.radius {
                 continue;
             }
@@ -320,15 +332,17 @@ impl Sim {
                 kind: l.kind,
                 pos: l.centre,
                 addition: add,
+                radius: l.radius,
+                facing: l.facing,
+                src,
                 exempt: pre,
             });
         }
         sim.build_runs(town, &farm);
         // reveal the first two additions at once so the hall has a street to stand on
-        for _ in 0..2 {
+        for _ in 0..initial_reveals {
             sim.reveal_next();
         }
-        sim.newly_revealed.clear();
         sim
     }
 

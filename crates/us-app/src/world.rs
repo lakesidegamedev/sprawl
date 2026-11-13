@@ -1,0 +1,304 @@
+//! The town on screen: a render scene that follows the simulation. Ground meshes appear with
+//! their addition, building meshes are rebuilt per 256 m cell only when a lot in it changes.
+
+use glam::Vec3;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
+use us_gen::{LotKind, Pt, RoadClass, Town, Zone};
+use us_render::live::{abandoned, base_ground, construction, roads_ground, zone_ground};
+use us_render::obj::Obj;
+use us_render::{Chunk, Mesh, Rng, Scene, kit};
+use us_sim::{LotState, Phase, Sim};
+
+const CELL: f32 = 256.0;
+const IDS_PER_CELL: u32 = 60_000;
+
+type Cell = (i32, i32);
+
+pub struct LiveScene {
+    pub scene: Scene,
+    town: Arc<Town>,
+    show_hall: bool,
+    hall_theta: f32,
+    hall_obj: Obj,
+    cell_chunk: HashMap<Cell, usize>,
+    cell_lots: HashMap<Cell, Vec<usize>>,
+    hall_cell: Cell,
+    dirty: BTreeSet<Cell>,
+    stage: Vec<u8>,
+    objs: Vec<Option<Obj>>,
+    rev: u64,
+    ground_chunks: usize,
+    pub triangles: usize,
+}
+
+fn cell_of(x: f64, y: f64) -> Cell {
+    ((x as f32 / CELL).floor() as i32, (y as f32 / CELL).floor() as i32)
+}
+
+fn stage_of(l: &LotState, day: i32) -> u8 {
+    match l.phase {
+        Phase::Hidden | Phase::Vacant | Phase::Cleared { .. } => 0,
+        Phase::Building { start, end } => {
+            let p = (day - start) as f32 / (end - start).max(1) as f32;
+            1 + (p * 4.0).clamp(0.0, 3.0) as u8
+        }
+        Phase::Built { .. } => 10,
+        Phase::Empty { .. } => 20,
+    }
+}
+
+fn trees_for(kind: LotKind, rng: &mut Rng) -> usize {
+    match kind {
+        LotKind::House => rng.below(4),
+        LotKind::Row | LotKind::Apartments | LotKind::Shop | LotKind::FastFood => rng.below(2),
+        LotKind::Church => 1 + rng.below(3),
+        LotKind::School => 2 + rng.below(3),
+        LotKind::Sports => 3,
+        LotKind::Farm => 5 + rng.below(5),
+        LotKind::Workshop | LotKind::Warehouse => rng.below(2),
+        _ => 0,
+    }
+}
+
+/// The full model of one lot (building and its trees), local to the lot, facing south.
+fn lot_model(seed: u64, src: usize, kind: LotKind, radius: f64) -> Obj {
+    let mut rng = Rng::new(seed ^ 0x5eed_0000, src as u64 * 7919 + 13);
+    let mut obj = kit::build_lot(kind, &mut rng);
+    let n = trees_for(kind, &mut rng);
+    if n > 0 {
+        let fp = obj.footprint();
+        let green = [kit::TREE, kit::TREE_D];
+        let mut placed: Vec<[f32; 2]> = Vec::new();
+        for _ in 0..n {
+            for _try in 0..14 {
+                let ang = rng.range(0.0, std::f32::consts::TAU);
+                let r = rng.range(0.35, 1.0) * radius as f32 + 0.3;
+                let (lx, ly) = (r * libm_cos(ang), r * libm_sin(ang));
+                let m = 0.4;
+                let inside = lx > fp[0] - m && lx < fp[2] + m && ly > fp[1] - m && ly < fp[3] + m;
+                if inside || placed.iter().any(|p| (p[0] - lx).hypot(p[1] - ly) < 3.2) {
+                    continue;
+                }
+                placed.push([lx, ly]);
+                let (rad, h) = (rng.range(1.8, 2.8), rng.range(5.0, 8.0));
+                let tree = kit::tree(rad, h, rng.pick(&green));
+                obj.add_placed(&tree, lx, ly, 0.0);
+                break;
+            }
+        }
+    }
+    obj
+}
+
+fn libm_cos(a: f32) -> f32 {
+    a.cos()
+}
+fn libm_sin(a: f32) -> f32 {
+    a.sin()
+}
+
+impl LiveScene {
+    pub fn new(town: Arc<Town>, sim: &Sim, show_hall: bool) -> LiveScene {
+        let farm: Vec<usize> = (0..town.additions.len())
+            .filter(|&i| town.additions[i].zone == Zone::Farm)
+            .collect();
+        let ground = base_ground(&town, &farm);
+        let hall = sim.hall;
+        let mut scene = Scene::dynamic(
+            town.size as f32,
+            ground,
+            Vec3::new(hall.x as f32, hall.y as f32, 0.0),
+        );
+        // skeleton roads: always there
+        let skel: Vec<(RoadClass, &[Pt])> = sim
+            .road_runs()
+            .iter()
+            .filter(|r| r.addition.is_none())
+            .map(|r| (r.class, r.points.as_slice()))
+            .collect();
+        let mesh = roads_ground(&skel, &[]);
+        scene.chunks.push(Chunk {
+            rev: 1,
+            mesh,
+            lo: Vec3::new(-100.0, -100.0, 0.0),
+            hi: Vec3::new(town.size as f32 + 100.0, town.size as f32 + 100.0, 2.0),
+        });
+        let mut cell_lots: HashMap<Cell, Vec<usize>> = HashMap::new();
+        for (i, l) in sim.lots().iter().enumerate() {
+            cell_lots.entry(cell_of(l.pos.x, l.pos.y)).or_default().push(i);
+        }
+        // the town hall faces the nearest road
+        let mut best: Option<(f64, Pt)> = None;
+        for r in &town.roads {
+            for w in r.points.windows(2) {
+                let (abx, aby) = (w[1].x - w[0].x, w[1].y - w[0].y);
+                let l2 = abx * abx + aby * aby;
+                if l2 < 1e-12 {
+                    continue;
+                }
+                let t = (((hall.x - w[0].x) * abx + (hall.y - w[0].y) * aby) / l2).clamp(0.0, 1.0);
+                let q = us_gen::pt(w[0].x + abx * t, w[0].y + aby * t);
+                let d = hall.dist(q);
+                if best.is_none_or(|b| d < b.0) {
+                    best = Some((d, q));
+                }
+            }
+        }
+        let hall_theta = best.map_or(0.0, |(_, q)| ((q.x - hall.x) as f32).atan2(-(q.y - hall.y) as f32));
+        let mut hrng = Rng::new(town.seed, 0x4a11);
+        let hall_obj = kit::town_hall(&mut hrng);
+        let hall_cell = cell_of(hall.x, hall.y);
+        let n = sim.lots().len();
+        let mut ls = LiveScene {
+            scene,
+            town,
+            show_hall,
+            hall_theta,
+            hall_obj,
+            cell_chunk: HashMap::new(),
+            cell_lots,
+            hall_cell,
+            dirty: BTreeSet::new(),
+            stage: vec![0; n],
+            objs: vec![None; n],
+            rev: 1,
+            ground_chunks: 0,
+            triangles: 0,
+        };
+        if show_hall {
+            ls.dirty.insert(hall_cell);
+        }
+        ls
+    }
+
+    fn add_ground_chunk(&mut self, sim: &Sim, addition: usize) {
+        let town = self.town.clone();
+        let a = &town.additions[addition];
+        let mut mesh = zone_ground(&town, addition);
+        let runs: Vec<(RoadClass, &[Pt])> = sim
+            .road_runs()
+            .iter()
+            .filter(|r| r.addition == Some(addition))
+            .map(|r| (r.class, r.points.as_slice()))
+            .collect();
+        let culs: Vec<Pt> = town
+            .cul_de_sacs
+            .iter()
+            .filter(|c| c.addition == addition)
+            .map(|c| c.pos)
+            .collect();
+        let roads = roads_ground(&runs, &culs);
+        append(&mut mesh, roads);
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        let mut grow = |p: Pt| {
+            lo = lo.min(Vec3::new(p.x as f32 - 30.0, p.y as f32 - 30.0, 0.0));
+            hi = hi.max(Vec3::new(p.x as f32 + 30.0, p.y as f32 + 30.0, 2.0));
+        };
+        for p in &a.polygon {
+            grow(*p);
+        }
+        for (_, pts) in &runs {
+            for p in *pts {
+                grow(*p);
+            }
+        }
+        self.rev += 1;
+        self.scene.chunks.push(Chunk {
+            rev: self.rev,
+            mesh,
+            lo,
+            hi,
+        });
+        self.ground_chunks += 1;
+    }
+
+    /// Follow the simulation: new additions, lot stage changes, and up to `budget` cell rebuilds.
+    pub fn sync(&mut self, sim: &mut Sim, budget: usize) {
+        let (_, revealed) = sim.take_changes();
+        for a in revealed {
+            self.add_ground_chunk(sim, a);
+        }
+        let day = sim.day;
+        for (i, l) in sim.lots().iter().enumerate() {
+            let s = stage_of(l, day);
+            if s != self.stage[i] {
+                self.stage[i] = s;
+                self.dirty.insert(cell_of(l.pos.x, l.pos.y));
+            }
+        }
+        for _ in 0..budget {
+            let Some(&c) = self.dirty.iter().next() else {
+                break;
+            };
+            self.dirty.remove(&c);
+            self.rebuild_cell(sim, c);
+        }
+        self.triangles = self.scene.triangles();
+    }
+
+    pub fn pending(&self) -> usize {
+        self.dirty.len()
+    }
+
+    fn rebuild_cell(&mut self, sim: &Sim, cell: Cell) {
+        let base = (((cell.1.rem_euclid(16)) * 16 + cell.0.rem_euclid(16)) as u32) * IDS_PER_CELL + 1;
+        let mut next_id = base;
+        let mut mesh = Mesh::default();
+        let seed = self.town.seed;
+        if self.show_hall && cell == self.hall_cell {
+            let h = sim.hall;
+            self.hall_obj
+                .emit(&mut mesh, &mut next_id, h.x as f32, h.y as f32, self.hall_theta, 1.0);
+        }
+        if let Some(ids) = self.cell_lots.get(&cell) {
+            for &i in ids {
+                let st = self.stage[i];
+                if st == 0 {
+                    continue;
+                }
+                let l = &sim.lots()[i];
+                if self.objs[i].is_none() {
+                    self.objs[i] = Some(lot_model(seed, l.src, l.kind, l.radius));
+                }
+                let full = self.objs[i].as_ref().unwrap();
+                let (x, y, th) = (l.pos.x as f32, l.pos.y as f32, l.facing as f32);
+                match st {
+                    1..=4 => {
+                        let o = construction(full, st as f32 / 5.0);
+                        o.emit(&mut mesh, &mut next_id, x, y, th, 1.0);
+                    }
+                    20 => abandoned(full).emit(&mut mesh, &mut next_id, x, y, th, 1.0),
+                    _ => full.emit(&mut mesh, &mut next_id, x, y, th, 1.0),
+                }
+                if next_id > base + IDS_PER_CELL - 200 {
+                    next_id = base;
+                }
+            }
+        }
+        let lo = Vec3::new(cell.0 as f32 * CELL - 60.0, cell.1 as f32 * CELL - 60.0, 0.0);
+        let hi = Vec3::new((cell.0 + 1) as f32 * CELL + 60.0, (cell.1 + 1) as f32 * CELL + 60.0, 70.0);
+        self.rev += 1;
+        let chunk = Chunk {
+            rev: self.rev,
+            mesh,
+            lo,
+            hi,
+        };
+        match self.cell_chunk.get(&cell) {
+            Some(&ci) => self.scene.chunks[ci] = chunk,
+            None => {
+                self.scene.chunks.push(chunk);
+                self.cell_chunk.insert(cell, self.scene.chunks.len() - 1);
+            }
+        }
+    }
+}
+
+fn append(dst: &mut Mesh, src: Mesh) {
+    let off = dst.vertices.len() as u32;
+    dst.vertices.extend(src.vertices);
+    dst.cast.extend(src.cast.into_iter().map(|i| i + off));
+    dst.plain.extend(src.plain.into_iter().map(|i| i + off));
+}
+

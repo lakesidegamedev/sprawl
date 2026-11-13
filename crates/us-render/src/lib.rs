@@ -15,6 +15,7 @@ mod mesh;
 pub mod obj;
 mod renderer;
 mod rng;
+pub mod live;
 mod scene;
 
 pub use camera::{Camera, View, pick_ground, project};
