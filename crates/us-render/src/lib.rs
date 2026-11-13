@@ -10,6 +10,7 @@
 
 mod calendar;
 mod camera;
+pub mod civic;
 pub mod ground;
 pub mod instances;
 pub mod kit;
@@ -24,6 +25,7 @@ mod scene;
 
 pub use calendar::{Calendar, DayPhase, Season};
 pub use camera::{Camera, View, pick_ground, project};
+pub use civic::{ALL_CIVIC, CivicModel, build_civic};
 pub use levels::{MAX_LEVEL, build_lot_level};
 pub use mesh::{ID_GROUND, ID_NONE, Mesh, VERTEX_BYTES, Vertex};
 pub use obj::{Obj, Poly, Rgb, V3};
