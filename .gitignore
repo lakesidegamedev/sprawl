@@ -1,0 +1,6 @@
+/target
+**/target
+/worktrees
+/out
+*.png
+!docs/**/*.png

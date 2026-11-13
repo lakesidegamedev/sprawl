@@ -1,0 +1,11 @@
+[package]
+name = "us-gen-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Command line tool: generate a town from a preset and seed, write a plan-view PNG and stats."
+
+[dependencies]
+us-gen = { path = "../us-gen" }
