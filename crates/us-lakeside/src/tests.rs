@@ -464,10 +464,12 @@ fn download_case(
     let UpdateCheck::Available(offer) = l.check_update() else {
         panic!("no offer")
     };
+    // One folder per call: tests run in parallel and must never share a download folder.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
         "us-lakeside-test-{}-{}",
         std::process::id(),
-        sha.len() + size
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     ));
     let _ = std::fs::remove_dir_all(&dir);
     let r = l.download_update(&offer, &dir);
