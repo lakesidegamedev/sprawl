@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use us_gen::{LotKind, Preset, Pt, Town, generate, pt};
-use us_render::{Camera, Scene, Style, pick_ground, project};
+use us_render::{Calendar, Camera, Scene, Style, pick_ground, project};
 use us_sim::{Phase, Sim, hall_sites};
 use winit::keyboard::KeyCode;
 
@@ -22,12 +22,16 @@ pub mod touch;
 
 const DAY_SECONDS: f64 = 1.3;
 const SPEEDS: [f64; 4] = [0.0, 1.0, 3.0, 8.0];
+/// Real seconds for one full visual day and night at 1x.
+const LIGHT_DAY_SECONDS: f32 = 240.0;
 const SPEED_LABELS: [&str; 4] = ["II", "1X", "3X", "8X"];
 
 pub struct Settings {
     pub fullscreen: bool,
     pub ui_scale: f32,
     pub high_shadows: bool,
+    /// Day and night cycle (true) or always day (false).
+    pub day_night: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -92,6 +96,10 @@ struct Game {
     cam: CamCtl,
     speed: usize,
     day_acc: f64,
+    /// Hour of the visual day, 0 to 24. Runs on its own calm clock, not the game date.
+    hour: f32,
+    /// Screenshot hook: hold the hour.
+    hour_frozen: bool,
     sel: Option<Sel>,
     banner: Option<(String, f32)>,
     menu_open: bool,
@@ -215,6 +223,7 @@ impl State {
                 fullscreen: false,
                 ui_scale: 1.0,
                 high_shadows: true,
+                day_night: true,
             },
             preset: Preset::Grid,
             seed_text: random_seed().to_string(),
@@ -385,6 +394,7 @@ impl State {
         let fast =
             self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
         let click = self.click.take();
+        let cycle = self.settings.day_night;
         let Some(g) = self.game.as_mut() else { return };
         g.cam.keys(dt, pan, rot, fast);
         g.cam.update(dt);
@@ -443,6 +453,7 @@ impl State {
             s.sync_total_ms += ms;
         }
         g.refresh_stats();
+        g.light_tick(dt, cycle);
         g.ui_tick(dt);
         if g.placed && !g.menu_open {
             g.coach_tick(dt);
@@ -493,6 +504,8 @@ impl State {
             cam,
             speed: 1,
             day_acc: 0.0,
+            hour: 9.0,
+            hour_frozen: false,
             sel: None,
             banner: None,
             menu_open: false,
@@ -749,6 +762,19 @@ impl State {
                                 &mut self.settings.high_shadows,
                                 false,
                                 RichText::new("FAST").font(pixel(16.0)),
+                            );
+                        });
+                        label(ui, "DAY AND NIGHT", 14.0);
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(
+                                &mut self.settings.day_night,
+                                true,
+                                RichText::new("CYCLE").font(pixel(16.0)),
+                            );
+                            ui.selectable_value(
+                                &mut self.settings.day_night,
+                                false,
+                                RichText::new("ALWAYS DAY").font(pixel(16.0)),
                             );
                         });
                         #[cfg(not(target_os = "ios"))]
@@ -1292,6 +1318,24 @@ impl State {
 }
 
 impl Game {
+    /// Calm visual day: one full day and night every few real minutes at 1x, scaled by game
+    /// speed and frozen when paused. Seasons follow the game date.
+    fn light_tick(&mut self, dt: f32, cycle: bool) {
+        if cycle && self.placed && !self.menu_open && !self.hour_frozen {
+            self.hour = (self.hour + dt * SPEEDS[self.speed] as f32 * 24.0 / LIGHT_DAY_SECONDS)
+                .rem_euclid(24.0);
+        }
+        let hour = if cycle || self.hour_frozen {
+            self.hour
+        } else {
+            12.0
+        };
+        let d = self.sim.date();
+        self.live
+            .scene
+            .set_calendar(Some(Calendar::from_date(d.month, d.day, hour)));
+    }
+
     fn toast(&mut self, text: impl Into<String>, bad: bool) {
         self.coach.toasts.push((text.into(), 9.0, bad));
         if self.coach.toasts.len() > 4 {
