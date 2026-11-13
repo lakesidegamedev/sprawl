@@ -155,7 +155,10 @@ impl Sim {
         let mut out = ByClass::all(0.0f32);
         for c in Class::ALL {
             let taxf = (growth_mult(self.tax.get(c) as f64 / 10.0) / 1.6).clamp(0.0, 1.0);
-            let d = base(c).clamp(0.0, 1.0) * taxf * (1.0 - 0.7 * empty_share.min(1.0));
+            let season = self.season_pct(c) as f64 / 100.0;
+            let pull = 1.0 - self.rival_pull(c);
+            let d =
+                base(c).clamp(0.0, 1.0) * taxf * (1.0 - 0.7 * empty_share.min(1.0)) * season * pull;
             out.set(
                 c,
                 if land_left {
@@ -240,15 +243,6 @@ impl Sim {
         self.lot_value = out;
     }
 
-    /// Congestion 0 to 1 of the road a lot opens on. Zero until traffic has been assigned.
-    pub(crate) fn lot_traffic(&self, _lot: usize) -> f64 {
-        0.0
-    }
-
-    pub(crate) fn avg_congestion(&self) -> f32 {
-        0.0
-    }
-
     /// Mean land value over lots that exist (not hidden, not farms).
     pub fn avg_land_value(&self) -> f32 {
         let (mut sum, mut n) = (0.0f64, 0u32);
@@ -322,15 +316,17 @@ impl Sim {
                     }
                 })
                 .collect(),
-            MapKind::Traffic => vec![0.0; n],
+            MapKind::Traffic => (0..n).map(|i| self.lot_traffic(i) as f32).collect(),
         }
     }
 
     /// One value per entry of `road_runs()`. `Traffic`: congestion 0 to 1 (volume over capacity,
-    /// capped); all zero until traffic has been assigned. Other kinds return an empty list.
+    /// capped, see `RoadTraffic::congestion`); all zero until the first traffic run. Other kinds return an empty list.
     pub fn road_values(&self, kind: MapKind) -> Vec<f32> {
         match kind {
-            MapKind::Traffic => vec![0.0; self.runs.len()],
+            MapKind::Traffic => (0..self.runs.len())
+                .map(|i| self.run_traffic.get(i).map_or(0.0, |t| t.congestion()))
+                .collect(),
             _ => Vec::new(),
         }
     }
