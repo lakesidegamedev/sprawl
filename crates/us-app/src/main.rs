@@ -41,7 +41,11 @@ fn log_path() -> std::path::PathBuf {
 
 fn log(msg: &str) {
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_path()) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path())
+    {
         let _ = writeln!(f, "{msg}");
     }
     eprintln!("{msg}");
@@ -70,7 +74,10 @@ impl App {
             }
         };
         let a = renderer.adapter();
-        log(&format!("graphics: {} ({}, {})", a.name, a.backend, a.device_type));
+        log(&format!(
+            "graphics: {} ({}, {})",
+            a.name, a.backend, a.device_type
+        ));
         let egui_ctx = egui::Context::default();
         theme::install(&egui_ctx);
         let egui_state = egui_winit::State::new(
@@ -104,7 +111,10 @@ impl App {
             return;
         }
         let now = Instant::now();
-        let dt = now.duration_since(self.last).as_secs_f32().clamp(0.0001, 0.1);
+        let dt = now
+            .duration_since(self.last)
+            .as_secs_f32()
+            .clamp(0.0001, 0.1);
         self.last = now;
 
         if (self.st.settings.ui_scale - self.applied_scale).abs() > 1e-3 {
@@ -204,7 +214,11 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::CursorMoved { position, .. } => {
-                st.cursor_moved(position.x as f32, position.y as f32, gfx.window.inner_size().height);
+                st.cursor_moved(
+                    position.x as f32,
+                    position.y as f32,
+                    gfx.window.inner_size().height,
+                );
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let down = state == ElementState::Pressed;

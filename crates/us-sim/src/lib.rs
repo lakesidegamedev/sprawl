@@ -273,7 +273,8 @@ impl Sim {
     /// preview that shows only the old roads and farms).
     pub fn new_with(town: &Town, hall: Pt, seed: u64, initial_reveals: usize) -> Sim {
         let n_add = town.additions.len();
-        let addition_poly: Vec<Vec<Pt>> = town.additions.iter().map(|a| a.polygon.clone()).collect();
+        let addition_poly: Vec<Vec<Pt>> =
+            town.additions.iter().map(|a| a.polygon.clone()).collect();
         let centroid = |ring: &[Pt]| -> Pt {
             let n = ring.len().max(1) as f64;
             pt(
@@ -281,7 +282,11 @@ impl Sim {
                 ring.iter().map(|p| p.y).sum::<f64>() / n,
             )
         };
-        let farm: Vec<bool> = town.additions.iter().map(|a| a.zone == Zone::Farm).collect();
+        let farm: Vec<bool> = town
+            .additions
+            .iter()
+            .map(|a| a.zone == Zone::Farm)
+            .collect();
         let mut sim = Sim {
             seed,
             day: 0,
@@ -306,12 +311,17 @@ impl Sim {
         // reveal order: nearest to the hall first
         let mut ord: Vec<(i64, usize)> = (0..n_add)
             .filter(|&i| !farm[i])
-            .map(|i| ((centroid(&sim.addition_poly[i]).dist(hall) * 100.0) as i64, i))
+            .map(|i| {
+                (
+                    (centroid(&sim.addition_poly[i]).dist(hall) * 100.0) as i64,
+                    i,
+                )
+            })
             .collect();
         ord.sort();
         sim.order = ord.into_iter().map(|(_, i)| i).collect();
-        for i in 0..n_add {
-            if farm[i] {
+        for (i, &is_farm) in farm.iter().enumerate() {
+            if is_farm {
                 sim.revealed[i] = true;
             }
         }
@@ -325,7 +335,10 @@ impl Sim {
             let pre = l.kind == LotKind::Farm;
             sim.lots.push(LotState {
                 phase: if pre {
-                    Phase::Built { since: -3000, tax_x10: 0 }
+                    Phase::Built {
+                        since: -3000,
+                        tax_x10: 0,
+                    }
                 } else {
                     Phase::Hidden
                 },
@@ -533,7 +546,7 @@ impl Sim {
                 }
             }
         }
-        let mut roads = self.road_cost_per_month[self.revealed.len()];
+        let mut roads = 0;
         for (i, &r) in self.revealed.iter().enumerate() {
             if r {
                 roads += self.road_cost_per_month[i];
@@ -629,8 +642,8 @@ impl Sim {
         }
         let (_, vi) = best.unwrap();
         let li = self.vacant.swap_remove(vi);
-        let days = kind_build_days(self.lots[li].kind)
-            + (roll(self.seed, li as u64, 5) * 10.0) as i32;
+        let days =
+            kind_build_days(self.lots[li].kind) + (roll(self.seed, li as u64, 5) * 10.0) as i32;
         self.lots[li].phase = Phase::Building {
             start: self.day,
             end: self.day + days,
@@ -752,7 +765,8 @@ impl Sim {
                 title,
                 status: format!("under construction, done {}", date(end)),
                 built: Some(format!("started {}", date(start))),
-                reason: "Builders chose this lot: it is close to the hall and the street is ready.".into(),
+                reason: "Builders chose this lot: it is close to the hall and the street is ready."
+                    .into(),
             },
             Phase::Built { since, tax_x10 } => {
                 let t = tax_x10 as f64 / 10.0;
@@ -789,7 +803,8 @@ impl Sim {
                         ABANDON_ABOVE_X10 as f64 / 10.0
                     )
                 } else {
-                    "Empty: taxes were too high. Now they are fair, someone may move back in.".into()
+                    "Empty: taxes were too high. Now they are fair, someone may move back in."
+                        .into()
                 },
             },
             Phase::Cleared { since } => Why {
@@ -812,7 +827,8 @@ pub fn hall_sites(town: &Town) -> Vec<Pt> {
         .filter(|r| r.class == RoadClass::Arterial)
         .map(|r| r.points.as_slice())
         .collect();
-    let inside = |p: Pt| p.x > 250.0 && p.x < town.size - 250.0 && p.y > 400.0 && p.y < town.size - 250.0;
+    let inside =
+        |p: Pt| p.x > 250.0 && p.x < town.size - 250.0 && p.y > 400.0 && p.y < town.size - 250.0;
     let push = |p: Pt, out: &mut Vec<Pt>| {
         if inside(p) && out.iter().all(|q| q.dist(p) > 120.0) {
             out.push(p);

@@ -18,11 +18,15 @@ pub fn install(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert(
         "silk-bold".into(),
-        std::sync::Arc::new(FontData::from_static(include_bytes!("../assets/Silkscreen-Bold.ttf"))),
+        std::sync::Arc::new(FontData::from_static(include_bytes!(
+            "../assets/Silkscreen-Bold.ttf"
+        ))),
     );
     fonts.font_data.insert(
         "silk".into(),
-        std::sync::Arc::new(FontData::from_static(include_bytes!("../assets/Silkscreen-Regular.ttf"))),
+        std::sync::Arc::new(FontData::from_static(include_bytes!(
+            "../assets/Silkscreen-Regular.ttf"
+        ))),
     );
     fonts
         .families
@@ -49,7 +53,13 @@ pub fn install(ctx: &egui::Context) {
     v.selection.bg_fill = ACCENT;
     v.selection.stroke = Stroke::new(1.0, INK);
     let w = &mut v.widgets;
-    for s in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+    for s in [
+        &mut w.noninteractive,
+        &mut w.inactive,
+        &mut w.hovered,
+        &mut w.active,
+        &mut w.open,
+    ] {
         s.corner_radius = 0.into();
         s.bg_stroke = Stroke::new(2.0, INK);
         s.fg_stroke = Stroke::new(1.5, INK);

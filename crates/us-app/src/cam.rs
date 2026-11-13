@@ -19,7 +19,13 @@ const FOV: f32 = 24.0;
 
 impl CamCtl {
     pub fn overview(map: f32, aspect: f32) -> CamCtl {
-        let c = Camera::framing(Vec3::new(map * 0.5, map * 0.42, 0.0), map * 1.05, aspect, 0.0, 52.0);
+        let c = Camera::framing(
+            Vec3::new(map * 0.5, map * 0.42, 0.0),
+            map * 1.05,
+            aspect,
+            0.0,
+            52.0,
+        );
         CamCtl::at(c.target, c.distance, 0.0, 52.0, map)
     }
 

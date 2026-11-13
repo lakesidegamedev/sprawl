@@ -33,7 +33,10 @@ pub struct LiveScene {
 }
 
 fn cell_of(x: f64, y: f64) -> Cell {
-    ((x as f32 / CELL).floor() as i32, (y as f32 / CELL).floor() as i32)
+    (
+        (x as f32 / CELL).floor() as i32,
+        (y as f32 / CELL).floor() as i32,
+    )
 }
 
 fn stage_of(l: &LotState, day: i32) -> u8 {
@@ -126,7 +129,10 @@ impl LiveScene {
         });
         let mut cell_lots: HashMap<Cell, Vec<usize>> = HashMap::new();
         for (i, l) in sim.lots().iter().enumerate() {
-            cell_lots.entry(cell_of(l.pos.x, l.pos.y)).or_default().push(i);
+            cell_lots
+                .entry(cell_of(l.pos.x, l.pos.y))
+                .or_default()
+                .push(i);
         }
         // the town hall faces the nearest road
         let mut best: Option<(f64, Pt)> = None;
@@ -145,7 +151,9 @@ impl LiveScene {
                 }
             }
         }
-        let hall_theta = best.map_or(0.0, |(_, q)| ((q.x - hall.x) as f32).atan2(-(q.y - hall.y) as f32));
+        let hall_theta = best.map_or(0.0, |(_, q)| {
+            ((q.x - hall.x) as f32).atan2(-(q.y - hall.y) as f32)
+        });
         let mut hrng = Rng::new(town.seed, 0x4a11);
         let hall_obj = kit::town_hall(&mut hrng);
         let hall_cell = cell_of(hall.x, hall.y);
@@ -237,19 +245,22 @@ impl LiveScene {
         self.triangles = self.scene.triangles();
     }
 
-    pub fn pending(&self) -> usize {
-        self.dirty.len()
-    }
-
     fn rebuild_cell(&mut self, sim: &Sim, cell: Cell) {
-        let base = (((cell.1.rem_euclid(16)) * 16 + cell.0.rem_euclid(16)) as u32) * IDS_PER_CELL + 1;
+        let base =
+            (((cell.1.rem_euclid(16)) * 16 + cell.0.rem_euclid(16)) as u32) * IDS_PER_CELL + 1;
         let mut next_id = base;
         let mut mesh = Mesh::default();
         let seed = self.town.seed;
         if self.show_hall && cell == self.hall_cell {
             let h = sim.hall;
-            self.hall_obj
-                .emit(&mut mesh, &mut next_id, h.x as f32, h.y as f32, self.hall_theta, 1.0);
+            self.hall_obj.emit(
+                &mut mesh,
+                &mut next_id,
+                h.x as f32,
+                h.y as f32,
+                self.hall_theta,
+                1.0,
+            );
         }
         if let Some(ids) = self.cell_lots.get(&cell) {
             for &i in ids {
@@ -276,8 +287,16 @@ impl LiveScene {
                 }
             }
         }
-        let lo = Vec3::new(cell.0 as f32 * CELL - 60.0, cell.1 as f32 * CELL - 60.0, 0.0);
-        let hi = Vec3::new((cell.0 + 1) as f32 * CELL + 60.0, (cell.1 + 1) as f32 * CELL + 60.0, 70.0);
+        let lo = Vec3::new(
+            cell.0 as f32 * CELL - 60.0,
+            cell.1 as f32 * CELL - 60.0,
+            0.0,
+        );
+        let hi = Vec3::new(
+            (cell.0 + 1) as f32 * CELL + 60.0,
+            (cell.1 + 1) as f32 * CELL + 60.0,
+            70.0,
+        );
         self.rev += 1;
         let chunk = Chunk {
             rev: self.rev,
@@ -301,4 +320,3 @@ fn append(dst: &mut Mesh, src: Mesh) {
     dst.cast.extend(src.cast.into_iter().map(|i| i + off));
     dst.plain.extend(src.plain.into_iter().map(|i| i + off));
 }
-

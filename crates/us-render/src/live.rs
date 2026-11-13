@@ -113,7 +113,11 @@ pub fn roads_ground(roads: &[(RoadClass, &[Pt])], culs: &[Pt]) -> Mesh {
 }
 
 fn mix(c: Rgb, to: Rgb, k: f32) -> Rgb {
-    let m = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k).round().clamp(0.0, 255.0) as u8;
+    let m = |a: u8, b: u8| {
+        (a as f32 + (b as f32 - a as f32) * k)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
     [m(c[0], to[0]), m(c[1], to[1]), m(c[2], to[2])]
 }
 
@@ -139,7 +143,11 @@ pub fn abandoned(obj: &Obj) -> Obj {
     let mut o = obj.clone();
     for p in &mut o.polys {
         let g = ((p.color[0] as u32 * 3 + p.color[1] as u32 * 6 + p.color[2] as u32) / 10) as u8;
-        let grey = [g.saturating_sub(10), g.saturating_sub(8), g.saturating_sub(4)];
+        let grey = [
+            g.saturating_sub(10),
+            g.saturating_sub(8),
+            g.saturating_sub(4),
+        ];
         p.color = mix(p.color, grey, 0.88);
         p.flat = false;
     }
