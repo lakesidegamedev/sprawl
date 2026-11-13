@@ -32,7 +32,13 @@ pub struct Style {
     pub ink: [u8; 3],
     /// Brightness multiplier of a shadowed face.
     pub shadow_tone: f32,
+    /// Draw chunks that are small on screen in their simpler far form (no ink, no small parts).
+    pub lod: bool,
 }
+
+/// A chunk uses its far form when one metre of it spans less than this share of the frame height
+/// (a 14 m building is then under about 1.5 percent of the frame, 16 pixels at 1080p).
+const LOD_FAR_SHARE: f32 = 0.0011;
 
 impl Default for Style {
     fn default() -> Style {
@@ -45,7 +51,15 @@ impl Default for Style {
             ink_width: 2,
             ink: [28, 30, 38],
             shadow_tone: 0.72,
+            lod: true,
         }
+    }
+}
+
+fn pick(c: &GpuChunk, far: bool) -> &GpuMesh {
+    match (&c.far, far) {
+        (Some(f), true) => f,
+        _ => &c.mesh,
     }
 }
 
@@ -132,6 +146,8 @@ pub struct FrameStats {
     pub draw_calls: usize,
     pub chunks_drawn: usize,
     pub chunks_total: usize,
+    /// Chunks drawn in their far form.
+    pub chunks_far: usize,
     pub triangles: usize,
     /// Scene upload (first frame of a scene only).
     pub upload: Duration,
@@ -172,6 +188,7 @@ struct GpuMesh {
 struct GpuChunk {
     rev: u64,
     mesh: GpuMesh,
+    far: Option<GpuMesh>,
     lo: Vec3,
     hi: Vec3,
 }
@@ -714,6 +731,7 @@ impl Renderer {
                 .map(|c| GpuChunk {
                     rev: c.rev,
                     mesh: self.upload_mesh(&c.mesh, "chunk"),
+                    far: c.far.as_ref().map(|f| self.upload_mesh(f, "chunk far")),
                     lo: c.lo,
                     hi: c.hi,
                 })
@@ -740,6 +758,7 @@ impl Renderer {
             let g = GpuChunk {
                 rev: c.rev,
                 mesh: self.upload_mesh(&c.mesh, "chunk"),
+                far: c.far.as_ref().map(|f| self.upload_mesh(f, "chunk far")),
                 lo: c.lo,
                 hi: c.hi,
             };
@@ -1151,18 +1170,48 @@ impl Renderer {
         });
         let gpu = self.scene.as_ref().unwrap();
         let tg = self.targets.as_ref().unwrap();
-        let visible_main: Vec<&GpuChunk> = gpu
+        // per chunk: the far form when it is small on screen
+        let is_far = |c: &GpuChunk| -> bool {
+            if !style.lod || c.far.is_none() {
+                return false;
+            }
+            let vp = &view.view_proj;
+            let mid = (c.lo + c.hi) * 0.5;
+            let p0 = *vp * mid.extend(1.0);
+            if p0.w <= 1e-4 {
+                return true;
+            }
+            let mut best = 0.0f32;
+            for d in [Vec3::new(16.0, 0.0, 0.0), Vec3::new(0.0, 16.0, 0.0)] {
+                let p1 = *vp * (mid + d).extend(1.0);
+                if p1.w <= 1e-4 {
+                    continue;
+                }
+                let dx = (p1.x / p1.w - p0.x / p0.w) * aspect;
+                let dy = p1.y / p1.w - p0.y / p0.w;
+                best = best.max((dx * dx + dy * dy).sqrt());
+            }
+            // best is the NDC length of 16 m (frame height is 2)
+            best / 32.0 < LOD_FAR_SHARE
+        };
+        let visible_main: Vec<(&GpuMesh, bool)> = gpu
             .chunks
             .iter()
             .filter(|c| in_view(&view.view_proj, c.lo, c.hi))
+            .map(|c| {
+                let far = is_far(c);
+                (pick(c, far), far)
+            })
             .collect();
-        let visible_light: Vec<&GpuChunk> = gpu
+        let visible_light: Vec<&GpuMesh> = gpu
             .chunks
             .iter()
             .filter(|c| in_view(&light_vp, c.lo, c.hi))
+            .map(|c| pick(c, is_far(c)))
             .collect();
         stats.chunks_total = gpu.chunks.len();
         stats.chunks_drawn = visible_main.len();
+        stats.chunks_far = visible_main.iter().filter(|m| m.1).count();
 
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1182,11 +1231,11 @@ impl Renderer {
             });
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, Some(&group0_shadow), &[]);
-            for c in &visible_light {
-                if let Some(ib) = &c.mesh.cast {
-                    pass.set_vertex_buffer(0, c.mesh.vb.slice(..));
+            for m in &visible_light {
+                if let Some(ib) = &m.cast {
+                    pass.set_vertex_buffer(0, m.vb.slice(..));
                     pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..c.mesh.n_cast, 0, 0..1);
+                    pass.draw_indexed(0..m.n_cast, 0, 0..1);
                 }
             }
             pass.set_pipeline(&self.shadow_inst_pipeline);
@@ -1278,8 +1327,8 @@ impl Renderer {
                 }
             };
             draw(&gpu.ground, stats);
-            for c in &visible_main {
-                draw(&c.mesh, stats);
+            for (m, _) in &visible_main {
+                draw(m, stats);
             }
             if let Some((_, _, om)) = &self.overlay_gpu {
                 draw(om, stats);

@@ -122,6 +122,7 @@ impl LiveScene {
         scene.chunks.push(Chunk {
             rev: 1,
             mesh,
+            far: None,
             lo: Vec3::new(-100.0, -100.0, 0.0),
             hi: Vec3::new(town.size as f32 + 100.0, town.size as f32 + 100.0, 2.0),
         });
@@ -261,6 +262,7 @@ impl LiveScene {
         self.scene.chunks.push(Chunk {
             rev: self.rev,
             mesh,
+            far: None,
             lo,
             hi,
         });
@@ -378,6 +380,7 @@ impl LiveScene {
         let chunk = Chunk {
             rev: self.rev,
             mesh,
+            far: None,
             lo,
             hi,
         };

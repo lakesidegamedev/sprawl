@@ -492,6 +492,7 @@ fn sheets(r: &mut Renderer, out: &Out) {
         scene.chunks.push(us_render::Chunk {
             rev: 0,
             mesh,
+            far: None,
             lo: Vec3::new(-50.0, -50.0, 0.0),
             hi: Vec3::new(cell * 7.0, cell * (rows + 2.0), 90.0),
         });
