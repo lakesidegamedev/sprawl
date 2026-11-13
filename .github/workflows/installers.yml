@@ -53,6 +53,8 @@ jobs:
         working-directory: out
         run: sha256sum *-setup.exe | tee SHA256SUMS-windows.txt
       - uses: actions/upload-artifact@v4
+        # Public repo: pull request runs only prove the build; they never publish game files.
+        if: github.event_name != 'pull_request'
         with:
           name: installers-windows-latest
           path: out/*
@@ -81,6 +83,7 @@ jobs:
         working-directory: out
         run: sha256sum *.AppImage | tee SHA256SUMS-linux.txt
       - uses: actions/upload-artifact@v4
+        # On pull requests this copy lives only until the launch check below has used it.
         with:
           name: installers-ubuntu-latest
           path: out/*
@@ -92,6 +95,9 @@ jobs:
   # nothing else): launcher environment and a made-up handoff code. It must stay up, signed out.
   launch-check:
     needs: linux
+    permissions:
+      contents: read
+      actions: write
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -113,6 +119,14 @@ jobs:
           test -f alive.txt || { echo "the game exited before 20 seconds"; exit 1; }
           if grep -q "could not start" out.txt /tmp/urban-sprawl.log 2>/dev/null; then echo "the game is showing a start error"; exit 1; fi
           echo "game stayed up for 20 seconds"
+      - name: Delete the pull request copy of the game
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for id in $(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" -q '.artifacts[].id'); do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" || true
+          done
 
   mac:
     runs-on: macos-latest
@@ -136,6 +150,8 @@ jobs:
         working-directory: out
         run: shasum -a 256 *.dmg | tee SHA256SUMS-mac.txt
       - uses: actions/upload-artifact@v4
+        # Public repo: pull request runs only prove the build; they never publish game files.
+        if: github.event_name != 'pull_request'
         with:
           name: installers-mac
           path: out/*
@@ -144,6 +160,8 @@ jobs:
 
   manifest:
     needs: [windows, linux, mac, launch-check]
+    # pull request runs publish nothing, so there is nothing to describe
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -178,6 +196,8 @@ jobs:
           print(json.dumps({"version": version, "files": files}, indent=2))
           PY
       - uses: actions/upload-artifact@v4
+        # Public repo: pull request runs only prove the build; they never publish game files.
+        if: github.event_name != 'pull_request'
         with:
           name: launcher-manifest
           path: out/launcher-manifest.json
