@@ -79,7 +79,7 @@ fn lot_model(seed: u64, src: usize, kind: LotKind, radius: f64) -> Obj {
             for _try in 0..14 {
                 let ang = rng.range(0.0, std::f32::consts::TAU);
                 let r = rng.range(0.35, 1.0) * radius as f32 + 0.3;
-                let (lx, ly) = (r * libm_cos(ang), r * libm_sin(ang));
+                let (lx, ly) = (r * ang.cos(), r * ang.sin());
                 let m = 0.4;
                 let inside = lx > fp[0] - m && lx < fp[2] + m && ly > fp[1] - m && ly < fp[3] + m;
                 if inside || placed.iter().any(|p| (p[0] - lx).hypot(p[1] - ly) < 3.2) {
@@ -94,13 +94,6 @@ fn lot_model(seed: u64, src: usize, kind: LotKind, radius: f64) -> Obj {
         }
     }
     obj
-}
-
-fn libm_cos(a: f32) -> f32 {
-    a.cos()
-}
-fn libm_sin(a: f32) -> f32 {
-    a.sin()
 }
 
 impl LiveScene {
