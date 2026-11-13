@@ -60,8 +60,10 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
       - name: iPhone screenshots
+        timeout-minutes: 12
         run: bash packaging/ios/simulator-shots.sh iphone "build/ios/Build/Products/Release-iphonesimulator/Urban Sprawl.app" shots
       - name: iPad screenshots
+        timeout-minutes: 12
         run: bash packaging/ios/simulator-shots.sh ipad "build/ios/Build/Products/Release-iphonesimulator/Urban Sprawl.app" shots
       - uses: actions/upload-artifact@v4
         if: always()
