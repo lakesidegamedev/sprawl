@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Lakeside account in the app: "Signed in as" on the main menu when the launcher hands over a sign-in, and Sign in, Sign out and Check for updates in Settings (updates say the launcher keeps the copy current when it started the game).
 - Playable 1.0.0 preview 1: `urban-sprawl` desktop app (winit, wgpu, egui in the studio pixel style) with a main menu, new town (grid or winding, seed), town hall placement at an old crossroads, a town that grows outward by itself, speed controls, a property tax lever, a demand bar, a click-to-explain panel, and a smooth orbit camera. New `us-sim` crate holds the deterministic growth, construction, tax and abandonment rules. `us-render` can now update a scene chunk by chunk and draw into a window. Release workflow builds Windows, macOS (ad-hoc signed) and Linux packages.
 - 3D renderer: new `us-render` crate draws a generated town offscreen with wgpu in the cel look (three stepped tones, ink outlines, hard shadows from one sun), with the full building kit ported from the mockups, an orbit camera in metres, ground picking, and a `shots` example. Depends on the connection fixes PR.
 - Lakeside launcher and accounts: new `us-lakeside` crate (no UI) reads the launcher environment, redeems the handoff code once off the main thread (5 second limit, no redirects, never retried), offers optional in-game sign-in with the token in OS secure storage, and checks and downloads updates through Lakeside with size and SHA-256 verification. Updates are off when the launcher starts the game.

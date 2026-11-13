@@ -8,7 +8,8 @@ use crate::world::LiveScene;
 use egui::{Align2, Color32, Pos2, RichText, Stroke, vec2};
 use glam::Vec3;
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use us_gen::{Preset, Pt, Town, generate, pt};
 use us_render::{Camera, Scene, Style, pick_ground, project};
@@ -112,6 +113,11 @@ pub struct State {
     style: Style,
     smoke: Option<Smoke>,
     error: Option<String>,
+    /// Lakeside launcher handoff, optional sign-in and update check. The game never needs it to play.
+    lakeside: us_lakeside::Lakeside,
+    /// Last account or update message, written by worker threads.
+    account_note: Arc<Mutex<String>>,
+    account_busy: Arc<AtomicBool>,
 }
 
 fn random_seed() -> u64 {
@@ -201,6 +207,9 @@ impl State {
             style: Style::default(),
             smoke,
             error: None,
+            lakeside: us_lakeside::Lakeside::start(),
+            account_note: Arc::new(Mutex::new(String::new())),
+            account_busy: Arc::new(AtomicBool::new(false)),
         };
         st.make_demo();
         st
@@ -555,6 +564,16 @@ impl State {
                     .inner_margin(egui::Margin::same(28))
                     .show(ui, |ui| {
                         self.title_block(ui);
+                        let status = self.lakeside.status();
+                        if let Some(a) = &status.account {
+                            ui.vertical_centered(|ui| {
+                                label(ui, &format!("SIGNED IN AS {}", a.name.to_uppercase()), 14.0);
+                                if status.launcher {
+                                    label(ui, "Through the Lakeside launcher, which keeps this copy up to date.", 12.0);
+                                }
+                                ui.add_space(6.0);
+                            });
+                        }
                         ui.vertical_centered(|ui| {
                             if theme::button(ui, "NEW TOWN").clicked() {
                                 self.screen = Screen::NewTown;
@@ -673,12 +692,104 @@ impl State {
                             );
                         });
                         label(ui, "F11 TOGGLES FULLSCREEN IN GAME", 12.0);
+                        ui.add_space(8.0);
+                        self.account_ui(ui);
                         ui.add_space(10.0);
                         if theme::button(ui, "BACK").clicked() {
                             self.screen = Screen::Menu;
                         }
                     });
             });
+    }
+
+    fn note(&self, text: impl Into<String>) {
+        if let Ok(mut n) = self.account_note.lock() {
+            *n = text.into();
+        }
+    }
+
+    /// Lakeside account and updates, in Settings. Optional: nothing here is needed to play.
+    fn account_ui(&mut self, ui: &mut egui::Ui) {
+        let status = self.lakeside.status();
+        let busy = self.account_busy.load(Ordering::SeqCst);
+        label(ui, "LAKESIDE ACCOUNT", 14.0);
+        if let Some(a) = &status.account {
+            label(ui, &format!("Signed in to Lakeside as {}", a.name), 12.0);
+            if theme::button(ui, "SIGN OUT").clicked() {
+                self.lakeside.sign_out();
+                self.note("Signed out.");
+            }
+        } else if status.handoff_pending {
+            label(ui, "Checking your Lakeside launcher sign-in...", 12.0);
+        } else if busy {
+            label(ui, "Finish signing in in your browser.", 12.0);
+            if theme::button(ui, "CANCEL").clicked() {
+                self.lakeside.cancel_sign_in();
+            }
+        } else if theme::button(ui, "SIGN IN").clicked() {
+            let lk = self.lakeside.clone();
+            let note = self.account_note.clone();
+            let flag = self.account_busy.clone();
+            flag.store(true, Ordering::SeqCst);
+            std::thread::spawn(move || {
+                let text = match lk.sign_in() {
+                    us_lakeside::SignInResult::Done { name } => format!("Signed in as {name}."),
+                    us_lakeside::SignInResult::Failed(m) => format!("Sign-in did not finish: {m}"),
+                    us_lakeside::SignInResult::Cancelled => "Sign-in cancelled.".to_string(),
+                };
+                if let Ok(mut n) = note.lock() {
+                    *n = text;
+                }
+                flag.store(false, Ordering::SeqCst);
+            });
+        }
+        label(ui, "UPDATES", 14.0);
+        if status.launcher {
+            label(
+                ui,
+                "The Lakeside launcher keeps this copy up to date.",
+                12.0,
+            );
+        } else if status.updater_enabled
+            && !busy
+            && theme::button(ui, "CHECK FOR UPDATES").clicked()
+        {
+            let lk = self.lakeside.clone();
+            let note = self.account_note.clone();
+            let flag = self.account_busy.clone();
+            flag.store(true, Ordering::SeqCst);
+            std::thread::spawn(move || {
+                let text = match lk.check_update() {
+                    us_lakeside::UpdateCheck::Disabled => {
+                        "The Lakeside launcher keeps this copy up to date.".to_string()
+                    }
+                    us_lakeside::UpdateCheck::Current => "This is the newest build.".to_string(),
+                    us_lakeside::UpdateCheck::Available(o) => format!(
+                        "Version {} is out. Install it from the Lakeside launcher.",
+                        o.version
+                    ),
+                    us_lakeside::UpdateCheck::SignInNeeded => {
+                        "Sign in to Lakeside to check for updates.".to_string()
+                    }
+                    us_lakeside::UpdateCheck::NotEntitled => {
+                        "This Lakeside account does not include Urban Sprawl.".to_string()
+                    }
+                    us_lakeside::UpdateCheck::Unavailable(m) => format!("Could not check: {m}"),
+                };
+                if let Ok(mut n) = note.lock() {
+                    *n = text;
+                }
+                flag.store(false, Ordering::SeqCst);
+            });
+        }
+        let note = self
+            .account_note
+            .lock()
+            .map(|n| n.clone())
+            .unwrap_or_default();
+        if !note.is_empty() {
+            label(ui, &note, 12.0);
+        }
     }
 
     fn game_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, w: u32, h: u32) {
