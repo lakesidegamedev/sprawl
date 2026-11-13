@@ -19,6 +19,7 @@ mod econ;
 mod growth;
 mod ledger_view;
 mod model;
+mod pressure;
 mod roadnet;
 mod traffic;
 mod value;
@@ -26,6 +27,7 @@ mod value;
 pub use dynamic::Rival;
 pub use ledger_view::LedgerNow;
 pub use model::*;
+pub use pressure::*;
 pub use traffic::RoadTraffic;
 
 use us_gen::{LotKind, Pt, RoadClass, Town, Zone, pt};
@@ -333,6 +335,16 @@ pub struct Sim {
     pub fires_total: u32,
     pub(crate) month_index: u32,
     pub(crate) values_stale: bool,
+    pub(crate) rules: Rules,
+    pub(crate) game_over: Option<GameOver>,
+    pub(crate) broke_months: u32,
+    pub(crate) next_election: i32,
+    pub(crate) elections_won: u32,
+    pub(crate) last_election: Option<ElectionResult>,
+    pub(crate) approval: Approval,
+    pub(crate) peak_population: i64,
+    /// Days fires burned buildings down for lack of fire cover, for the approval rating.
+    pub(crate) fire_days: Vec<i32>,
 }
 
 impl Sim {
@@ -403,6 +415,24 @@ impl Sim {
             fires_total: 0,
             month_index: 0,
             values_stale: false,
+            rules: Rules::standard(),
+            game_over: None,
+            broke_months: 0,
+            next_election: ELECTION_PERIOD_DAYS,
+            elections_won: 0,
+            last_election: None,
+            approval: Approval {
+                total: APPROVAL_BASE,
+                taxes: 0,
+                services: 0,
+                jobs: 0,
+                traffic: 0,
+                debt: 0,
+                fires: 0,
+                worst: Issue::Taxes,
+            },
+            peak_population: 0,
+            fire_days: Vec::new(),
         };
         // reveal order: nearest to the hall first
         let mut ord: Vec<(i64, usize)> = (0..n_add)
@@ -547,7 +577,7 @@ impl Sim {
             let len: f64 = run.points.windows(2).map(|w| w[0].dist(w[1])).sum();
             let per_m = road_cost_per_m(run.class);
             let slot = run.addition.unwrap_or(n_add);
-            self.road_cost_per_month[slot] += (len * per_m * 3.0) as i64;
+            self.road_cost_per_month[slot] += (len * per_m * 6.0) as i64;
         }
         // cul-de-sacs add a little
         for c in &town.cul_de_sacs {
@@ -726,6 +756,9 @@ impl Sim {
 
     /// Advance one game day.
     pub fn step_day(&mut self) {
+        if self.game_over.is_some() {
+            return;
+        }
         self.day += 1;
         let day = self.day;
         let tax = self.tax_pct();
@@ -1029,7 +1062,7 @@ mod tests {
     use us_gen::{Preset, generate};
 
     fn run(town: &Town, tax: u32, days: i32) -> Sim {
-        let mut s = Sim::new(town, hall_sites(town)[0], 7);
+        let mut s = Sim::new_with_rules(town, hall_sites(town)[0], 7, 2, Rules::sandbox());
         s.set_tax_x10(tax);
         for _ in 0..days {
             s.step_day();
@@ -1128,3 +1161,9 @@ mod tests_world;
 
 #[cfg(test)]
 mod tests_density;
+
+#[cfg(test)]
+mod tests_balance;
+
+#[cfg(test)]
+mod tests_pressure;

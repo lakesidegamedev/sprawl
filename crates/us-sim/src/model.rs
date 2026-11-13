@@ -113,6 +113,18 @@ impl Dept {
         }
     }
 
+    /// The coverage this line pays for, if it has one.
+    pub fn service(self) -> Option<Service> {
+        match self {
+            Dept::Police => Some(Service::Police),
+            Dept::Fire => Some(Service::Fire),
+            Dept::Schools => Some(Service::Schools),
+            Dept::Health => Some(Service::Health),
+            Dept::Parks => Some(Service::Parks),
+            Dept::Roads => None,
+        }
+    }
+
     /// Baseline cost per taxed building per month at 100 percent (general staffing; the part of
     /// the budget that is not tied to a building). Roads have none: their cost is the road
     /// network.
@@ -342,8 +354,10 @@ pub struct Loan {
 
 pub const BOND_SIZE: i64 = 100_000;
 pub const BOND_MONTHS: i64 = 48;
-/// Yearly interest in tenths of a percent (6.0 percent).
-pub const BOND_RATE_X10: i64 = 60;
+/// Yearly interest in tenths of a percent when the town owes nothing (8.0 percent).
+pub const BOND_RATE_X10: i64 = 80;
+/// Extra interest at a fully used credit limit (4.0 percent more).
+pub const BOND_RATE_RISK_X10: i64 = 40;
 pub const MIN_CREDIT_LIMIT: i64 = 150_000;
 
 /// A layer for the map views. `Sim::lot_values` and `Sim::road_values` document each.
@@ -375,6 +389,8 @@ pub enum EventKind {
     Fire,
     Rival,
     Decline,
+    Election,
+    GameOver,
 }
 
 /// A dated line for the news feed.
@@ -414,6 +430,10 @@ pub struct Sample {
     pub avg_land_value: f32,
     /// Average road congestion 0 to 1; 0 until traffic runs.
     pub congestion: f32,
+    /// Voter approval 0 to 100.
+    pub approval: i32,
+    /// Days until the next election (0 when elections are off or it is today).
+    pub days_to_election: i32,
 }
 
 impl Sample {
