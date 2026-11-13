@@ -39,6 +39,8 @@ pub struct Style {
 /// A chunk uses its far form when one metre of it spans less than this share of the frame height
 /// (a 14 m building is then under about 1.5 percent of the frame, 16 pixels at 1080p).
 const LOD_FAR_SHARE: f32 = 0.0011;
+/// Street lamps beyond this many metres from the eye are not drawn.
+const LAMP_FAR: f32 = 1600.0;
 
 impl Default for Style {
     fn default() -> Style {
@@ -1124,7 +1126,13 @@ impl Renderer {
             None => self.overlay_gpu = None,
         }
         // moving things for this frame
-        let fi = scene.instances();
+        let mut fi = scene.instances();
+        if style.lod {
+            // lamps farther than this are a few pixels tall: not worth drawing
+            let eye = view.eye;
+            fi.lamps
+                .retain(|l| Vec3::from(l.pos).distance_squared(eye) < LAMP_FAR * LAMP_FAR);
+        }
         let sets: [&[crate::instances::Instance]; 4] = [&fi.cars, &fi.puffs, &fi.people, &fi.lamps];
         for (k, set) in sets.iter().enumerate() {
             if set.is_empty() {

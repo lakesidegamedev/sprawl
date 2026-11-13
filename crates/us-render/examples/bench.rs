@@ -40,7 +40,7 @@ fn main() {
             };
             let mut times = Vec::new();
             let mut last = None;
-            for _ in 0..4 {
+            for _ in 0..9 {
                 let f = r.render_to_rgba(&scene, &cam, &style, w, h);
                 times.push(f.stats.total.as_secs_f32());
                 last = Some(f);
@@ -49,8 +49,9 @@ fn main() {
             times.remove(0); // first frame uploads the scene
             times.sort_by(|a, b| a.partial_cmp(b).unwrap());
             eprintln!(
-                "{name} lod={lod}: median {:.3}s, {} tris, {}/{} chunks drawn, {} far",
-                times[1],
+                "{name} lod={lod}: min {:.3}s median {:.3}s, {} tris, {}/{} chunks drawn, {} far",
+                times[0],
+                times[times.len() / 2],
                 f.stats.triangles,
                 f.stats.chunks_drawn,
                 f.stats.chunks_total,
