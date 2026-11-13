@@ -1,15 +1,16 @@
 //! `us-metrics corpus --dir D --out corpus-stats.json`
-//! `us-metrics score --preset grid|winding --seed N [--seeds K] [--corpus corpus-stats.json]`
+//! `us-metrics tune --preset P [--corpus FILE] [--rounds N]` searches generator settings.
+//! `us-metrics score --preset grid|winding|sunbelt|crossroads|lake --seed N [--seeds K] [--corpus corpus-stats.json]`
 
 use std::path::PathBuf;
-use us_gen::{Preset, generate};
+use us_gen::{Preset, Settings, generate, generate_with};
 use us_metrics::corpus;
 use us_metrics::metrics::{Metrics, NAMES};
 use us_metrics::score::{CorpusStats, score};
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  us-metrics corpus --dir DIR --out FILE [--towns-out FILE]\n  us-metrics score --preset grid|winding --seed N [--seeds K] [--corpus FILE]"
+        "usage:\n  us-metrics corpus --dir DIR --out FILE [--towns-out FILE]\n  us-metrics score --preset grid|winding|sunbelt|crossroads|lake --seed N [--seeds K] [--corpus FILE]"
     );
     std::process::exit(2);
 }
@@ -88,11 +89,11 @@ fn run_score(args: &[String]) {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--preset" => {
-                preset = Some(match it.next().map(|s| s.as_str()) {
-                    Some("grid") => Preset::Grid,
-                    Some("winding") => Preset::Winding,
-                    _ => usage(),
-                })
+                preset = Some(
+                    it.next()
+                        .and_then(|n| Preset::from_name(n))
+                        .unwrap_or_else(|| usage()),
+                )
             }
             "--seed" => {
                 seed = it
@@ -153,11 +154,118 @@ fn run_score(args: &[String]) {
     }
 }
 
+struct Lcg(u64);
+impl Lcg {
+    fn f(&mut self) -> f64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (self.0 >> 11) as f64 / (1u64 << 53) as f64
+    }
+    fn range(&mut self, a: f64, b: f64) -> f64 {
+        a + (b - a) * self.f()
+    }
+}
+
+fn mean_distance(preset: Preset, st: &Settings, seeds: &[u64], stats: &CorpusStats) -> f64 {
+    let handles: Vec<_> = seeds
+        .iter()
+        .map(|&s| {
+            let st = st.clone();
+            let stats = stats.clone();
+            std::thread::spawn(move || {
+                let town = generate_with(preset, s, &st);
+                score(&us_metrics::town_metrics(&town), &stats).distance
+            })
+        })
+        .collect();
+    let v: Vec<f64> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    v.iter().sum::<f64>() / v.len() as f64
+}
+
+/// Offline random search followed by local refinement over the generator settings.
+fn run_tune(args: &[String]) {
+    let (mut preset, mut corpus_path, mut rounds) = (None, None, 40usize);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--preset" => preset = it.next().and_then(|n| Preset::from_name(n)),
+            "--corpus" => corpus_path = it.next().map(PathBuf::from),
+            "--rounds" => rounds = it.next().and_then(|s| s.parse().ok()).unwrap_or(rounds),
+            _ => usage(),
+        }
+    }
+    let Some(preset) = preset else { usage() };
+    let path = corpus_path.unwrap_or_else(|| PathBuf::from("corpus-stats.json"));
+    let stats = CorpusStats::from_json(
+        &serde_json::from_str(&std::fs::read_to_string(&path).expect("corpus file")).expect("json"),
+    )
+    .expect("corpus shape");
+    let train: Vec<u64> = (1..=4).collect();
+    let test: Vec<u64> = (101..=108).collect();
+    let base = preset.settings();
+    println!(
+        "start: train {:.3} holdout {:.3}",
+        mean_distance(preset, &base, &train, &stats),
+        mean_distance(preset, &base, &test, &stats)
+    );
+    let mut rng = Lcg(0x5eed_0001 ^ preset as u64);
+    let grid_like = matches!(preset, Preset::Grid | Preset::Crossroads | Preset::LakeTown);
+    let sample = |rng: &mut Lcg, near: Option<&Settings>| -> Settings {
+        let pick = |rng: &mut Lcg, lo: f64, hi: f64, cur: Option<f64>| match cur {
+            Some(c) => (c + rng.range(-0.2, 0.2) * (hi - lo)).clamp(lo, hi),
+            None => rng.range(lo, hi),
+        };
+        let n = near;
+        let mut s = base.clone();
+        if preset == Preset::Grid {
+            s.arterial_spacing = pick(rng, 805.0, 1400.0, n.map(|x| x.arterial_spacing));
+        }
+        s.block_scale = pick(rng, 0.9, 2.2, n.map(|x| x.block_scale));
+        if grid_like {
+            s.core_depth = pick(rng, 80.0, 140.0, n.map(|x| x.core_depth));
+            s.core_len = pick(rng, 100.0, 200.0, n.map(|x| x.core_len));
+            s.core_alley = pick(rng, 0.0, 1.0, n.map(|x| x.core_alley));
+            s.cat_alley = pick(rng, 0.0, 1.0, n.map(|x| x.cat_alley));
+            s.jog_prob = pick(rng, 0.0, 1.0, n.map(|x| x.jog_prob));
+            s.jog = pick(rng, 18.0, 40.0, n.map(|x| x.jog));
+        }
+        s.pod_share = pick(rng, 0.2, 1.0, n.map(|x| x.pod_share));
+        s.collector_len = pick(rng, 300.0, 1000.0, n.map(|x| x.collector_len));
+        s.street_spacing = pick(rng, 0.9, 2.0, n.map(|x| x.street_spacing));
+        s.cul_share = pick(rng, 0.3, 1.0, n.map(|x| x.cul_share));
+        s
+    };
+    let mut best = base.clone();
+    let mut best_d = mean_distance(preset, &best, &train, &stats);
+    for r in 0..rounds * 2 {
+        let cand = if r < rounds {
+            sample(&mut rng, None)
+        } else {
+            sample(&mut rng, Some(&best))
+        };
+        let d = mean_distance(preset, &cand, &train, &stats);
+        if d < best_d {
+            best_d = d;
+            best = cand;
+            println!("round {r}: train {d:.3}");
+        }
+    }
+    println!(
+        "best: train {:.3} holdout {:.3}\n{:#?}",
+        best_d,
+        mean_distance(preset, &best, &test, &stats),
+        best
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(|s| s.as_str()) {
         Some("corpus") => run_corpus(&args[1..]),
         Some("score") => run_score(&args[1..]),
+        Some("tune") => run_tune(&args[1..]),
         _ => usage(),
     }
 }

@@ -5,6 +5,7 @@ use crate::geom::{
 };
 use crate::plan::Draft;
 use crate::rng::Rng;
+use crate::terrain::Terrain;
 use crate::world::{HWY_Y, S, dist_hall};
 use crate::{Addition, CulDeSac, Lot, LotKind, RoadClass, Zone};
 
@@ -183,13 +184,15 @@ fn road_disks(h: &mut DiskHash, line: &[Pt], hw: f64) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn make_lots(
     drafts: &[Draft],
     culs: &[CulDeSac],
     additions: &[Addition],
     hall: Pt,
     hall_r: f64,
-    water: &[Pt],
+    water: &[Vec<Pt>],
+    terrain: &Terrain,
     rng: &mut Rng,
 ) -> Vec<Lot> {
     let mut h = DiskHash::new();
@@ -207,24 +210,27 @@ pub fn make_lots(
         offices_left: 5,
     };
     let mut lots: Vec<Lot> = Vec::new();
-    let (wlo, whi) = bbox(water);
+    let wboxes: Vec<(Pt, Pt)> = water.iter().map(|w| bbox(w)).collect();
 
     let site_ok = |c: Pt, r: f64| -> bool {
         let m = 20.0_f64.max(r + 2.0);
         if c.x < m || c.x > S - m || c.y < HWY_Y + m || c.y > S - m {
             return false;
         }
-        let near_box = c.x > wlo.x - 200.0
-            && c.x < whi.x + 200.0
-            && c.y > wlo.y - 200.0
-            && c.y < whi.y + 200.0;
-        if near_box {
-            let clear = 25.0_f64.max(r + 6.0);
-            if point_in_ring(c, water) || dist_pt_ring(c, water) < clear {
-                return false;
+        for (w, (wlo, whi)) in water.iter().zip(&wboxes) {
+            let near_box = c.x > wlo.x - 200.0
+                && c.x < whi.x + 200.0
+                && c.y > wlo.y - 200.0
+                && c.y < whi.y + 200.0;
+            if near_box {
+                let clear = 25.0_f64.max(r + 6.0);
+                if point_in_ring(c, w) || dist_pt_ring(c, w) < clear {
+                    return false;
+                }
             }
         }
-        true
+        // steep hillsides stay unbuilt
+        terrain.slope(c) < 0.15
     };
 
     // cul-de-sac bulbs: a ring of houses round the turning circle

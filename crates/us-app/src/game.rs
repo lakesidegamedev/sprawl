@@ -659,30 +659,17 @@ impl State {
                         ui.label(heading("NEW TOWN", 32.0));
                         ui.add_space(6.0);
                         label(ui, "TOWN STYLE", 14.0);
-                        ui.horizontal(|ui| {
-                            ui.selectable_value(
-                                &mut self.preset,
-                                Preset::Grid,
-                                RichText::new("GRID TOWN").font(pixel(16.0)),
-                            );
-                            ui.selectable_value(
-                                &mut self.preset,
-                                Preset::Winding,
-                                RichText::new("WINDING TOWN").font(pixel(16.0)),
-                            );
+                        ui.horizontal_wrapped(|ui| {
+                            for p in Preset::ALL {
+                                ui.selectable_value(
+                                    &mut self.preset,
+                                    p,
+                                    RichText::new(format!("{} TOWN", p.label().to_uppercase()))
+                                        .font(pixel(16.0)),
+                                );
+                            }
                         });
-                        label(
-                            ui,
-                            match self.preset {
-                                Preset::Grid => {
-                                    "Prairie railroad town: straight streets, a grid of old roads."
-                                }
-                                Preset::Winding => {
-                                    "River and hills town: crooked streets that follow the land."
-                                }
-                            },
-                            12.0,
-                        );
+                        label(ui, self.preset.blurb(), 12.0);
                         ui.add_space(6.0);
                         label(ui, "SEED", 14.0);
                         ui.horizontal(|ui| {
@@ -1212,10 +1199,7 @@ impl State {
                                 ui,
                                 &format!(
                                     "{} TOWN, SEED {}",
-                                    match g.preset {
-                                        Preset::Grid => "GRID",
-                                        Preset::Winding => "WINDING",
-                                    },
+                                    g.preset.label().to_uppercase(),
                                     g.seed
                                 ),
                                 12.0,

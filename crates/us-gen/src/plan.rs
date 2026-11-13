@@ -1,8 +1,8 @@
 //! Stage two: split the land into additions, lay each out, tie everything together.
 
 use crate::geom::{
-    Pt, area, area_signed, axis_angle, bbox, centroid, closed, cos, dedup, dist_ring_line, length,
-    min_rect, open_ring, point_in_ring, pt, rotate_all, sin,
+    Pt, area, area_signed, axis_angle, bbox, centroid, closed, cos, dedup, dist_pt_line,
+    dist_pt_ring, dist_ring_line, length, min_rect, open_ring, point_in_ring, pt, rotate_all, sin,
 };
 use crate::index::{SegIndex, uncovered_pieces};
 use crate::lots;
@@ -10,10 +10,9 @@ use crate::patterns::{Layout, Line, curvy_local, grid_lines, pods};
 use crate::polygonize::{polygonize, split_polygon};
 use crate::rng::Rng;
 use crate::skeleton::{self, highway};
-use crate::world::{HALL, HWY_Y, River, S, dist_hall, map_ring, noise};
-use crate::{Addition, CulDeSac, Pattern, Preset, Road, RoadClass, Town, Zone};
-
-const REACH: f64 = 1900.0;
+use crate::terrain::Terrain;
+use crate::world::{HALL, HWY_Y, Lake, River, S, dist_hall, map_ring, noise};
+use crate::{Addition, CulDeSac, Pattern, Preset, Road, RoadClass, Settings, Town, Zone};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tag {
@@ -34,6 +33,116 @@ pub struct Draft {
 pub struct Built {
     pub drafts: Vec<Draft>,
     pub additions: Vec<Addition>,
+}
+
+/// Steepness above which a hillside stays wooded and unbuilt.
+const WOODED_SLOPE: f64 = 0.09;
+
+fn poly_intersection(a: &[Pt], b: &[Pt]) -> Vec<Vec<Pt>> {
+    use geo::BooleanOps;
+    let res = to_geo(a).intersection(&to_geo(b));
+    res.0.iter().map(ring_from_geo).collect()
+}
+
+/// Mean steepness over a patch, from a coarse sample.
+fn mean_slope(terrain: &Terrain, p: &[Pt]) -> f64 {
+    let (lo, hi) = bbox(p);
+    let (mut sum, mut n) = (0.0, 0.0);
+    let mut x = lo.x + 30.0;
+    while x < hi.x {
+        let mut y = lo.y + 30.0;
+        while y < hi.y {
+            let q = pt(x, y);
+            if point_in_ring(q, p) {
+                sum += terrain.slope(q);
+                n += 1.0;
+            }
+            y += 60.0;
+        }
+        x += 60.0;
+    }
+    if n == 0.0 {
+        terrain.slope(centroid(p))
+    } else {
+        sum / n
+    }
+}
+
+/// Which way the streets of a patch should run: along the shore near a lake, along the
+/// contours on sloping ground, otherwise `None` (the pattern picks its own).
+fn flow_angle(terrain: &Terrain, lake: Option<&Lake>, c: Pt) -> Option<f64> {
+    if let Some(l) = lake {
+        let ring = l.ring(0.0);
+        if dist_pt_ring(c, &ring) < 650.0 {
+            let a = crate::geom::atan2(c.y - l.c.y, c.x - l.c.x) + std::f64::consts::FRAC_PI_2;
+            return Some(a.rem_euclid(std::f64::consts::PI));
+        }
+    }
+    terrain.contour_angle(c, 0.05)
+}
+
+/// Cut commercial corner squares off big patches where two big roads meet.
+fn carve_corners(
+    patches: Vec<Vec<Pt>>,
+    roads: &[(Line, RoadClass)],
+    rng: &mut Rng,
+) -> (Vec<Vec<Pt>>, Vec<bool>) {
+    let mut out: Vec<Vec<Pt>> = Vec::new();
+    let mut corner: Vec<bool> = Vec::new();
+    for p in patches {
+        if area(&p) < 120_000.0 {
+            out.push(p);
+            corner.push(false);
+            continue;
+        }
+        let (ang, l, w) = min_rect(&p);
+        let c = centroid(&p);
+        let mut rest = vec![p.clone()];
+        let mut cuts: Vec<Vec<Pt>> = Vec::new();
+        for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            let cx = pt(c.x + sx * l / 2.0, c.y + sy * w / 2.0);
+            let cr = rotate_all(&[cx], c, ang)[0];
+            // only real corners: the patch has a vertex there
+            if !p.iter().any(|v| v.dist(cr) < 25.0) {
+                continue;
+            }
+            // commercial corners sit where two arterials cross
+            let arterials = roads
+                .iter()
+                .filter(|(l, c)| *c == RoadClass::Arterial && dist_pt_line(cr, l) < 25.0)
+                .count();
+            if arterials < 2 || !rng.chance(0.7) {
+                continue;
+            }
+            let side = (210.0 + rng.uniform(-30.0, 40.0)).min(0.6 * w.min(l));
+            let sq = [
+                pt(0.0, 0.0),
+                pt(-sx * side, 0.0),
+                pt(-sx * side, -sy * side),
+                pt(0.0, -sy * side),
+            ]
+            .iter()
+            .map(|q| rotate_all(&[pt(cx.x + q.x, cx.y + q.y)], c, ang)[0])
+            .collect::<Vec<Pt>>();
+            cuts.push(sq);
+        }
+        for sq in &cuts {
+            for piece in poly_intersection(&p, sq) {
+                if area(&piece) > 3000.0 && min_rect(&piece).2 >= 30.0 {
+                    out.push(piece);
+                    corner.push(true);
+                }
+            }
+            rest = rest.iter().flat_map(|r| poly_difference(r, sq)).collect();
+        }
+        for r in rest {
+            if area(&r) > 3000.0 && min_rect(&r).2 >= 30.0 {
+                out.push(r);
+                corner.push(false);
+            }
+        }
+    }
+    (out, corner)
 }
 
 fn to_geo(ring: &[Pt]) -> geo::Polygon<f64> {
@@ -67,6 +176,7 @@ fn make_patches(
     roads: &[(Line, RoadClass)],
     rails: &[Line],
     river: &River,
+    lake_zone: Option<&[Pt]>,
     rng: &mut Rng,
 ) -> Vec<Vec<Pt>> {
     let mut lines: Vec<Line> = roads.iter().map(|(l, _)| l.clone()).collect();
@@ -75,7 +185,29 @@ fn make_patches(
     let band = river.band(-60.0, 60.0);
     let mut out = Vec::new();
     for sb in polygonize(&lines) {
-        for p in poly_difference(&sb, &band) {
+        let dry = poly_difference(&sb, &band);
+        let dry: Vec<Vec<Pt>> = match lake_zone {
+            Some(z) => dry
+                .into_iter()
+                .flat_map(|q| {
+                    // a face that surrounds the lake has it as a hole the ring cannot carry:
+                    // cut it in two through the lake first
+                    let c = centroid(z);
+                    if point_in_ring(c, &q) {
+                        split_polygon(&q, &[vec![pt(c.x, c.y - 6000.0), pt(c.x, c.y + 6000.0)]])
+                    } else {
+                        vec![q]
+                    }
+                })
+                .collect::<Vec<_>>()
+                .iter()
+                .flat_map(|q| poly_difference(q, z))
+                // float trouble can leave the lake's own face whole: drop anything inside it
+                .filter(|q| !point_in_ring(centroid(q), z))
+                .collect(),
+            None => dry,
+        };
+        for p in dry {
             let a = area(&p);
             // slivers (a thin strip between two roads that nearly meet) make no use of land
             if a < 3000.0 || min_rect(&p).2 < 30.0 {
@@ -136,10 +268,12 @@ struct Specials {
     mall: bool,
 }
 
-pub fn generate(preset: Preset, seed: u64) -> Town {
+pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
     let mut river_rng = Rng::new(seed, 0x71e7);
     let river = River::new(&mut river_rng);
-    let built = build(preset, seed, &river);
+    let lake = (preset == Preset::LakeTown).then(|| Lake::new(&mut Rng::new(seed, 0x1a4e)));
+    let terrain = Terrain::new(seed, &river, lake.as_ref().map(|l| (l.c, l.r)));
+    let built = build(preset, seed, &river, st, &terrain, lake.as_ref());
     let mut drafts = built.drafts;
     let additions = built.additions;
 
@@ -165,7 +299,10 @@ pub fn generate(preset: Preset, seed: u64) -> Town {
     let hall_radius = 14.0;
     let hall = pick_hall_site(&idx, &drafts, hall_radius, &river);
     let mut lot_rng = Rng::new(seed, 0x107);
-    let water = river.band(-40.0, 40.0);
+    let mut water = vec![river.band(-40.0, 40.0)];
+    if let Some(l) = &lake {
+        water.push(l.ring(0.0));
+    }
     let lots = lots::make_lots(
         &drafts,
         &culs,
@@ -173,6 +310,7 @@ pub fn generate(preset: Preset, seed: u64) -> Town {
         hall,
         hall_radius,
         &water,
+        &terrain,
         &mut lot_rng,
     );
 
@@ -201,9 +339,10 @@ pub fn generate(preset: Preset, seed: u64) -> Town {
         cul_de_sacs: culs,
         additions,
         lots,
-        water: vec![water],
+        water,
         hall,
         hall_radius,
+        terrain,
     }
 }
 
@@ -252,12 +391,26 @@ fn pick_hall_site(idx: &SegIndex, drafts: &[Draft], radius: f64, river: &River) 
     nominal
 }
 
-pub fn build(preset: Preset, seed: u64, river: &River) -> Built {
+pub fn build(
+    preset: Preset,
+    seed: u64,
+    river: &River,
+    st: &Settings,
+    terrain: &Terrain,
+    lake: Option<&Lake>,
+) -> Built {
     let mut rng = Rng::new(seed, 0xa11);
-    let sk = skeleton::build(preset, seed, river);
+    let sk = skeleton::build(preset, seed, river, st, terrain, lake);
     let main_ang = std::f64::consts::FRAC_PI_2;
     let rail_ang = sk.rail_angle;
-    let patches = make_patches(&sk.roads, &sk.rails, river, &mut rng);
+    let lake_zone = lake.map(|l| l.ring(55.0));
+    let patches = make_patches(&sk.roads, &sk.rails, river, lake_zone.as_deref(), &mut rng);
+    let (patches, corner) = if preset == Preset::Sunbelt {
+        carve_corners(patches, &sk.roads, &mut rng)
+    } else {
+        let n = patches.len();
+        (patches, vec![false; n])
+    };
 
     let mut drafts: Vec<Draft> = Vec::new();
     for (l, c) in &sk.roads {
@@ -279,7 +432,10 @@ pub fn build(preset: Preset, seed: u64, river: &River) -> Built {
     let big: Vec<Line> = sk
         .roads
         .iter()
-        .filter(|(_, c)| matches!(c, RoadClass::Highway | RoadClass::Arterial))
+        .filter(|(_, c)| {
+            matches!(c, RoadClass::Highway | RoadClass::Arterial)
+                || (preset == Preset::Sunbelt && *c == RoadClass::Collector)
+        })
         .map(|(l, _)| l.clone())
         .collect();
     let hwy = highway();
@@ -313,7 +469,7 @@ pub fn build(preset: Preset, seed: u64, river: &River) -> Built {
         let p = &patches[pi];
         let c = centroid(p);
         let d = dist_hall(c);
-        let reff = REACH * (0.85 + 0.3 * noise(c.x, c.y));
+        let reff = st.reach * (0.85 + 0.3 * noise(c.x, c.y));
         let near_rail = sk.rails.iter().any(|r| dist_ring_line(p, r) < 5.0);
         let near_hwy = dist_ring_line(p, &hwy) < 5.0;
         let ai = additions.len();
@@ -328,34 +484,87 @@ pub fn build(preset: Preset, seed: u64, river: &River) -> Built {
             continue;
         }
         let r = rng.f64();
+        let flow = flow_angle(terrain, lake, c);
+        let lake_ang =
+            lake.and_then(|_| flow.filter(|_| dist_pt_ring(c, &lake.unwrap().ring(0.0)) < 650.0));
+        let woods = d > 600.0 && mean_slope(terrain, p) > WOODED_SLOPE;
         let mut lay = Layout::default();
         let mut zone: Zone;
         let mut pattern: Pattern;
         let mut is_pod = false;
         let mut street_class = RoadClass::Local;
         let origin_c = c;
-        if near_hwy && !sp.mall && (c.x - HALL.x).abs() < 900.0 && d > 600.0 {
+        if woods {
+            zone = Zone::Park;
+            pattern = Pattern::Park;
+        } else if corner[pi] {
+            zone = Zone::Mall;
+            pattern = Pattern::Mall;
+            lay.streets = grid_lines(
+                p,
+                0.0,
+                1e9,
+                160.0,
+                (0.0, 0.0),
+                false,
+                HALL,
+                0.0,
+                (0.0, 0.0),
+                &mut rng,
+            )
+            .0;
+        } else if near_hwy && !sp.mall && (c.x - HALL.x).abs() < 900.0 && d > 600.0 {
             zone = Zone::Mall;
             pattern = Pattern::Mall;
             sp.mall = true;
-            lay.streets = grid_lines(p, 0.0, 1e9, 160.0, (0.0, 0.0), false, HALL, 0.0, &mut rng).0;
-        } else if near_hwy && d > 500.0 {
+            lay.streets = grid_lines(
+                p,
+                0.0,
+                1e9,
+                160.0,
+                (0.0, 0.0),
+                false,
+                HALL,
+                0.0,
+                (0.0, 0.0),
+                &mut rng,
+            )
+            .0;
+        } else if near_hwy && d > 500.0 && (preset != Preset::Sunbelt || r < 0.2) {
             zone = Zone::Industry;
             pattern = Pattern::Industry;
-            lay.streets = grid_lines(p, 0.0, 220.0, 1e9, (0.0, 0.0), false, HALL, 0.0, &mut rng).0;
+            lay.streets = grid_lines(
+                p,
+                0.0,
+                220.0,
+                1e9,
+                (0.0, 0.0),
+                false,
+                HALL,
+                0.0,
+                (0.0, 0.0),
+                &mut rng,
+            )
+            .0;
         } else if d < 520.0 {
             zone = Zone::Core;
-            if preset == Preset::Grid {
+            if matches!(
+                preset,
+                Preset::Grid | Preset::Crossroads | Preset::Sunbelt | Preset::LakeTown
+            ) {
                 pattern = Pattern::OldTownGrid;
+                let alleys = rng.chance(st.core_alley);
+                let ang = lake_ang.unwrap_or(main_ang);
                 let (s, l) = grid_lines(
                     p,
-                    main_ang,
-                    80.0,
-                    100.0,
+                    ang,
+                    st.core_depth,
+                    st.core_len,
                     (0.0, 0.0),
-                    true,
+                    alleys,
                     HALL,
                     0.0,
+                    (st.jog_prob, st.jog),
                     &mut rng,
                 );
                 lay.streets = s;
@@ -364,7 +573,8 @@ pub fn build(preset: Preset, seed: u64, river: &River) -> Built {
                 pattern = Pattern::CrookedGrid;
                 let a = main_ang + rng.uniform(-14.0, 14.0).to_radians();
                 let ph = (rng.uniform(0.0, 85.0), rng.uniform(0.0, 70.0));
-                let (s, l) = grid_lines(p, a, 70.0, 85.0, ph, false, HALL, 8.0, &mut rng);
+                let (s, l) =
+                    grid_lines(p, a, 70.0, 85.0, ph, false, HALL, 8.0, (0.0, 0.0), &mut rng);
                 lay.streets = s;
                 lay.lanes = l;
             }
@@ -382,9 +592,10 @@ pub fn build(preset: Preset, seed: u64, river: &River) -> Built {
                 90.0,
                 140.0,
                 ph,
-                zone == Zone::Inner,
+                zone == Zone::Inner && rng.chance(st.cat_alley),
                 HALL,
                 0.0,
+                (st.jog_prob, st.jog),
                 &mut rng,
             );
             lay.streets = s;
@@ -398,14 +609,47 @@ pub fn build(preset: Preset, seed: u64, river: &River) -> Built {
             pattern = Pattern::Campus;
             sp.campus = true;
             street_class = RoadClass::Collector;
-            let (s, cs) = curvy_local(p, &mut rng, 150.0, 40.0, Some(260.0), false, 170.0);
+            let (s, cs) = curvy_local(p, &mut rng, 150.0, 40.0, Some(260.0), false, 170.0, flow);
             lay.streets = s;
             lay.culs = cs;
+        } else if st.pod_from < 1000.0
+            && d >= st.pod_from
+            && (r < st.pod_share || preset != Preset::Sunbelt)
+        {
+            zone = Zone::Outer;
+            let entries: Vec<&[Pt]> = big
+                .iter()
+                .filter(|e| dist_ring_line(p, e) < 3.0)
+                .map(|e| e.as_slice())
+                .collect();
+            if let Some(l) = pods(p, &entries, &mut rng).filter(|_| !entries.is_empty()) {
+                pattern = Pattern::Pods;
+                is_pod = true;
+                lay = l;
+            } else {
+                pattern = Pattern::Loops;
+                let (s, cs) = curvy_local(
+                    p,
+                    &mut rng,
+                    120.0 * st.street_spacing,
+                    42.0,
+                    None,
+                    true,
+                    150.0,
+                    flow,
+                );
+                lay.streets = s;
+                lay.culs = cs;
+            }
         } else if d < 1150.0 {
             zone = Zone::Inner;
-            if preset == Preset::Grid {
+            if matches!(
+                preset,
+                Preset::Grid | Preset::Crossroads | Preset::Sunbelt | Preset::LakeTown
+            ) {
                 pattern = Pattern::CatalogueGrid;
                 let (depth, len, al) = CATALOGUE[rng.below(CATALOGUE.len())];
+                let (depth, len) = (depth * st.block_scale, len * st.block_scale);
                 let ang = if rng.f64() < 0.65 {
                     main_ang
                 } else if rng.f64() < 0.5 {
@@ -413,23 +657,59 @@ pub fn build(preset: Preset, seed: u64, river: &River) -> Built {
                 } else {
                     axis_angle(p)
                 };
+                let ang = if preset == Preset::Grid {
+                    ang
+                } else {
+                    flow.unwrap_or(ang)
+                };
+                let al = al && rng.chance(st.cat_alley);
                 let ph = (rng.uniform(0.0, len), rng.uniform(0.0, depth));
-                let (s, l) = grid_lines(p, ang, depth, len, ph, al, origin_c, 0.0, &mut rng);
+                let (s, l) = grid_lines(
+                    p,
+                    ang,
+                    depth,
+                    len,
+                    ph,
+                    al,
+                    origin_c,
+                    0.0,
+                    (st.jog_prob, st.jog),
+                    &mut rng,
+                );
                 lay.streets = s;
                 lay.lanes = l;
             } else {
                 pattern = Pattern::CrookedGrid;
-                let (s, cs) = curvy_local(p, &mut rng, 85.0, 22.0, Some(180.0), false, 140.0);
+                let (s, cs) = curvy_local(
+                    p,
+                    &mut rng,
+                    85.0 * st.street_spacing,
+                    22.0,
+                    Some(180.0),
+                    false,
+                    140.0,
+                    flow,
+                );
                 lay.streets = s;
                 lay.culs = cs;
             }
         } else if d < 1500.0 {
             zone = Zone::Outer;
-            if preset == Preset::Grid && r < 0.4 {
+            if matches!(preset, Preset::Grid | Preset::Crossroads) && r < 0.4 {
                 pattern = Pattern::LongBlockGrid;
-                let ph = (rng.uniform(0.0, 260.0), rng.uniform(0.0, 75.0));
+                let (depth, len) = (75.0 * st.block_scale, 260.0 * st.block_scale);
+                let ph = (rng.uniform(0.0, len), rng.uniform(0.0, depth));
                 let (s, l) = grid_lines(
-                    p, main_ang, 75.0, 260.0, ph, false, origin_c, 14.0, &mut rng,
+                    p,
+                    flow.unwrap_or(main_ang),
+                    depth,
+                    len,
+                    ph,
+                    false,
+                    origin_c,
+                    14.0,
+                    (st.jog_prob, st.jog),
+                    &mut rng,
                 );
                 lay.streets = s;
                 lay.lanes = l;
@@ -437,12 +717,21 @@ pub fn build(preset: Preset, seed: u64, river: &River) -> Built {
                 zone = Zone::Park;
                 pattern = Pattern::Golf;
                 sp.golf = true;
-                let (s, cs) = curvy_local(p, &mut rng, 1e9, 60.0, None, false, 200.0);
+                let (s, cs) = curvy_local(p, &mut rng, 1e9, 60.0, None, false, 200.0, flow);
                 lay.streets = s;
                 lay.culs = cs;
             } else {
                 pattern = Pattern::Loops;
-                let (s, cs) = curvy_local(p, &mut rng, 110.0, 38.0, Some(320.0), r < 0.6, 150.0);
+                let (s, cs) = curvy_local(
+                    p,
+                    &mut rng,
+                    110.0 * st.street_spacing,
+                    38.0,
+                    Some(320.0),
+                    r < st.cul_share,
+                    150.0,
+                    flow,
+                );
                 lay.streets = s;
                 lay.culs = cs;
             }
@@ -453,7 +742,7 @@ pub fn build(preset: Preset, seed: u64, river: &River) -> Built {
                 .filter(|e| dist_ring_line(p, e) < 3.0)
                 .map(|e| e.as_slice())
                 .collect();
-            let pod = if r < 0.7 && !entries.is_empty() {
+            let pod = if r < st.pod_share && !entries.is_empty() {
                 pods(p, &entries, &mut rng)
             } else {
                 None
@@ -464,7 +753,16 @@ pub fn build(preset: Preset, seed: u64, river: &River) -> Built {
                 lay = l;
             } else {
                 pattern = Pattern::Loops;
-                let (s, cs) = curvy_local(p, &mut rng, 120.0, 42.0, None, true, 150.0);
+                let (s, cs) = curvy_local(
+                    p,
+                    &mut rng,
+                    120.0 * st.street_spacing,
+                    42.0,
+                    None,
+                    true,
+                    150.0,
+                    flow,
+                );
                 lay.streets = s;
                 lay.culs = cs;
             }
@@ -516,7 +814,7 @@ pub fn build(preset: Preset, seed: u64, river: &River) -> Built {
     add_border_streets(&mut drafts, &additions, &borders_wanted);
     connect_ends(&mut drafts);
     join_stranded(&mut drafts, &mut additions, river);
-    promote_collectors(&mut drafts);
+    promote_collectors(&mut drafts, st.collector_len);
     Built { drafts, additions }
 }
 
@@ -737,7 +1035,7 @@ fn ray_hit(drafts: &[Draft], own: usize, from: Pt, dir: Pt, max: f64) -> Option<
 }
 
 /// Long continuous addition-edge streets become collectors.
-fn promote_collectors(drafts: &mut [Draft]) {
+fn promote_collectors(drafts: &mut [Draft], min_len: f64) {
     let border: Vec<usize> = (0..drafts.len())
         .filter(|&i| drafts[i].tag == Tag::Border && drafts[i].class == RoadClass::Local)
         .collect();
@@ -789,7 +1087,7 @@ fn promote_collectors(drafts: &mut [Draft]) {
     }
     for k in 0..n {
         let r = find(&mut parent, k);
-        if total[r] >= 800.0 {
+        if total[r] >= min_len {
             drafts[border[k]].class = RoadClass::Collector;
         }
     }
@@ -873,6 +1171,12 @@ fn join_stranded(drafts: &mut Vec<Draft>, additions: &mut [Addition], river: &Ri
                 main_idx.add_line(&d.line, i as u32);
             }
         }
+        let mut all_idx = SegIndex::new(S, 64.0);
+        for (i, d) in drafts.iter().enumerate() {
+            if comp[i] != usize::MAX && comp[i] != main_c && comp[i] != group_c {
+                all_idx.add_line(&d.line, i as u32);
+            }
+        }
         // shortest dry link from any point of the group to the connected network
         let mut best: Option<(f64, Pt, Pt)> = None;
         for &m in &members {
@@ -884,9 +1188,11 @@ fn join_stranded(drafts: &mut Vec<Draft>, additions: &mut [Addition], river: &Ri
                     && best.is_none_or(|b| h.dist < b.0)
                     && h.dist > 0.5
                 {
-                    let dry = [0.25, 0.5, 0.75]
-                        .iter()
-                        .all(|f| !point_in_ring(p.lerp(h.pt, *f), &wet));
+                    // dry, and not running along some third road that is cut off too
+                    let dry = [0.25, 0.5, 0.75].iter().all(|f| {
+                        let q = p.lerp(h.pt, *f);
+                        !point_in_ring(q, &wet) && all_idx.nearest(q, 3.0, None).is_none()
+                    });
                     if dry {
                         best = Some((h.dist, p, h.pt));
                     }

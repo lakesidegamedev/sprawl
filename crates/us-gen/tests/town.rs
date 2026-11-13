@@ -3,17 +3,27 @@
 use std::collections::HashMap;
 use us_gen::{Preset, Pt, Road, RoadClass, Town, Zone, generate};
 
-const SEEDS: [u64; 4] = [1, 2, 3, 7];
-const PRESETS: [Preset; 2] = [Preset::Grid, Preset::Winding];
+const SEEDS: [u64; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+const PRESETS: [Preset; 5] = Preset::ALL;
 
-fn towns() -> Vec<Town> {
-    let mut v = Vec::new();
-    for p in PRESETS {
-        for s in SEEDS {
-            v.push(generate(p, s));
+fn towns() -> &'static [Town] {
+    static TOWNS: std::sync::OnceLock<Vec<Town>> = std::sync::OnceLock::new();
+    TOWNS.get_or_init(|| {
+        let mut v = Vec::new();
+        for p in PRESETS {
+            for s in SEEDS {
+                v.push(generate(p, s));
+            }
         }
-    }
-    v
+        v
+    })
+}
+
+fn town(p: Preset, s: u64) -> &'static Town {
+    towns()
+        .iter()
+        .find(|t| t.preset == p && t.seed == s)
+        .expect("town in cache")
 }
 
 fn seg_closest(p: Pt, a: Pt, b: Pt) -> f64 {
@@ -108,7 +118,7 @@ fn d(a: Pt, b: Pt) -> f64 {
 
 #[test]
 fn street_ends_land_on_another_road_or_are_cul_de_sacs() {
-    for t in towns() {
+    for t in towns().iter() {
         let g = RoadGrid::new(&t.roads);
         let mut bad = Vec::new();
         for (i, r) in t
@@ -142,7 +152,7 @@ fn street_ends_land_on_another_road_or_are_cul_de_sacs() {
 
 #[test]
 fn every_cul_de_sac_is_a_street_end_with_a_bulb() {
-    for t in towns() {
+    for t in towns().iter() {
         assert!(
             !t.cul_de_sacs.is_empty(),
             "{} seed {} has no cul-de-sacs",
@@ -163,7 +173,7 @@ fn every_cul_de_sac_is_a_street_end_with_a_bulb() {
 
 #[test]
 fn only_highway_arterial_and_rail_touch_the_map_edge() {
-    for t in towns() {
+    for t in towns().iter() {
         for r in &t.roads {
             let touches = r
                 .points
@@ -196,7 +206,7 @@ fn only_highway_arterial_and_rail_touch_the_map_edge() {
 
 #[test]
 fn lots_do_not_overlap_each_other_roads_or_water() {
-    for t in towns() {
+    for t in towns().iter() {
         let g = RoadGrid::new(&t.roads);
         // lot vs lot, using a grid
         let mut cells: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
@@ -292,7 +302,7 @@ fn ring_dist(p: Pt, ring: &[Pt]) -> f64 {
 
 #[test]
 fn town_hall_is_clear_of_roads_and_water() {
-    for t in towns() {
+    for t in towns().iter() {
         let g = RoadGrid::new(&t.roads);
         for (ri, dist) in g.near(t.hall, t.hall_radius + 14.0) {
             assert!(
@@ -328,7 +338,7 @@ fn pods_have_an_entrance_and_two_cul_de_sacs() {
     let mut pods_seen = 0;
     for p in PRESETS {
         for s in 1..=12u64 {
-            let t = generate(p, s);
+            let t = town(p, s);
             for (ai, a) in t
                 .additions
                 .iter()
@@ -342,11 +352,14 @@ fn pods_have_an_entrance_and_two_cul_de_sacs() {
                     p.name()
                 );
                 for e in &a.entrances {
-                    // entrance sits on a highway or arterial
+                    // entrance sits on a highway, arterial or (in sunbelt towns) collector
                     assert!(
                         t.roads
                             .iter()
-                            .filter(|r| matches!(r.class, RoadClass::Highway | RoadClass::Arterial))
+                            .filter(|r| {
+                                matches!(r.class, RoadClass::Highway | RoadClass::Arterial)
+                                    || (p == Preset::Sunbelt && r.class == RoadClass::Collector)
+                            })
                             .any(|r| r
                                 .points
                                 .windows(2)
@@ -363,12 +376,12 @@ fn pods_have_an_entrance_and_two_cul_de_sacs() {
             }
         }
     }
-    assert!(pods_seen >= 6, "only {pods_seen} pods across 24 towns");
+    assert!(pods_seen >= 6, "only {pods_seen} pods across 60 towns");
 }
 
 #[test]
 fn long_addition_edges_become_collectors() {
-    for t in towns() {
+    for t in towns().iter() {
         let n = t
             .roads
             .iter()
@@ -385,7 +398,7 @@ fn long_addition_edges_become_collectors() {
 
 #[test]
 fn downtown_has_a_handful_of_towers_near_the_hall() {
-    for t in towns() {
+    for t in towns().iter() {
         let offices: Vec<_> = t
             .lots
             .iter()
@@ -410,7 +423,7 @@ fn downtown_has_a_handful_of_towers_near_the_hall() {
 
 #[test]
 fn streets_do_not_run_along_each_other() {
-    for t in towns() {
+    for t in towns().iter() {
         let g = RoadGrid::new(&t.roads);
         for (i, r) in t
             .roads
@@ -452,7 +465,7 @@ fn streets_do_not_run_along_each_other() {
 
 #[test]
 fn zones_and_lots_are_consistent() {
-    for t in towns() {
+    for t in towns().iter() {
         assert!(
             t.lots.len() > 2000,
             "{} seed {}: only {} lots",
@@ -549,8 +562,8 @@ fn components(t: &Town) -> Vec<Vec<usize>> {
 fn whole_road_network_is_one_connected_piece() {
     for p in PRESETS {
         for s in 1..=12u64 {
-            let t = generate(p, s);
-            let comps = components(&t);
+            let t = town(p, s);
+            let comps = components(t);
             assert_eq!(
                 comps.len(),
                 1,
@@ -571,7 +584,7 @@ fn whole_road_network_is_one_connected_piece() {
 fn no_arterial_ends_in_open_land() {
     for p in PRESETS {
         for s in 1..=12u64 {
-            let t = generate(p, s);
+            let t = town(p, s);
             let g = RoadGrid::new(&t.roads);
             for (i, r) in t
                 .roads
@@ -598,5 +611,163 @@ fn no_arterial_ends_in_open_land() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn ground_is_flat_at_the_hall_and_steep_ground_is_unbuilt() {
+    for t in towns() {
+        assert!(
+            t.slope_at(t.hall) < 0.04,
+            "{} seed {}: hall on a slope",
+            t.preset.name(),
+            t.seed
+        );
+        let mut steep = 0usize;
+        let mut cells = 0usize;
+        let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+        for i in 0..64 {
+            for j in 0..64 {
+                let p = us_gen::pt(30.0 + i as f64 * 63.0, 130.0 + j as f64 * 61.0);
+                cells += 1;
+                let h = t.height_at(p);
+                lo = lo.min(h);
+                hi = hi.max(h);
+                if t.slope_at(p) > 0.12 {
+                    steep += 1;
+                }
+            }
+        }
+        assert!(
+            hi - lo > 40.0,
+            "{} seed {}: no relief",
+            t.preset.name(),
+            t.seed
+        );
+        assert!(
+            steep * 4 < cells,
+            "{} seed {}: too much steep ground",
+            t.preset.name(),
+            t.seed
+        );
+        for l in &t.lots {
+            assert!(t.slope_at(l.centre) < 0.15 + 1e-9, "lot on steep ground");
+        }
+    }
+}
+
+#[test]
+fn terrain_is_deterministic_and_exposes_a_heightfield() {
+    let a = generate(Preset::Winding, 5);
+    let b = generate(Preset::Winding, 5);
+    assert_eq!(a.terrain.heightfield(33), b.terrain.heightfield(33));
+    assert_ne!(
+        a.terrain.heightfield(33),
+        generate(Preset::Winding, 6).terrain.heightfield(33)
+    );
+    assert_eq!(a.terrain.heightfield(33).len(), 33 * 33);
+}
+
+#[test]
+fn old_roads_do_not_climb_steep_hills_head_on() {
+    // along each arterial the grade stays gentle on average: roads follow the land
+    for t in towns().iter().filter(|t| t.preset == Preset::Winding) {
+        for r in t.roads.iter().filter(|r| r.class == RoadClass::Arterial) {
+            let mut sum = 0.0;
+            let mut n = 0.0;
+            for w in r.points.windows(2) {
+                let len = d(w[0], w[1]);
+                if len > 1.0 {
+                    sum += ((t.height_at(w[1]) - t.height_at(w[0])) / len).abs();
+                    n += 1.0;
+                }
+            }
+            if n > 20.0 {
+                assert!(
+                    sum / n < 0.07,
+                    "{} seed {}: arterial climbs at {:.3}",
+                    t.preset.name(),
+                    t.seed,
+                    sum / n
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn lake_towns_have_a_lake_with_a_drive_round_it() {
+    for t in towns().iter().filter(|t| t.preset == Preset::LakeTown) {
+        assert_eq!(t.water.len(), 2, "river and lake");
+        let lake = &t.water[1];
+        // the drive: collector pieces that stay about 55 m off the shore, nearly all the way round
+        let mut drive_len = 0.0;
+        for r in t.roads.iter().filter(|r| r.class == RoadClass::Collector) {
+            if r.points
+                .iter()
+                .all(|p| (ring_dist(*p, lake) - 55.0).abs() < 8.0)
+            {
+                drive_len += r.points.windows(2).map(|w| d(w[0], w[1])).sum::<f64>();
+            }
+        }
+        let shore: f64 = lake.windows(2).map(|w| d(w[0], w[1])).sum();
+        assert!(
+            drive_len > shore * 0.9,
+            "seed {}: lakeside drive covers {drive_len:.0} of {shore:.0} m",
+            t.seed
+        );
+        assert!(
+            t.lots.iter().any(|l| ring_dist(l.centre, lake) < 160.0),
+            "seed {}: nothing built near the lake",
+            t.seed
+        );
+        for r in &t.roads {
+            for p in &r.points {
+                assert!(
+                    !point_in(*p, lake),
+                    "{:?} road runs through the lake (seed {})",
+                    r.class,
+                    t.seed
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn crossroads_towns_have_two_highways_crossing_at_the_hall() {
+    for t in towns().iter().filter(|t| t.preset == Preset::Crossroads) {
+        let through = t
+            .roads
+            .iter()
+            .filter(|r| r.class == RoadClass::Arterial)
+            .filter(|r| {
+                r.points
+                    .windows(2)
+                    .any(|w| seg_closest(t.hall, w[0], w[1]) < 60.0)
+            })
+            .count();
+        assert!(
+            through >= 2,
+            "{} seed {}: only {through} roads through the centre",
+            t.preset.name(),
+            t.seed
+        );
+    }
+}
+
+#[test]
+fn sunbelt_towns_are_pods_and_commercial_corners_on_a_mile_grid() {
+    for t in towns().iter().filter(|t| t.preset == Preset::Sunbelt) {
+        let pods = t
+            .additions
+            .iter()
+            .filter(|a| a.pattern == us_gen::Pattern::Pods)
+            .count();
+        let malls = t.additions.iter().filter(|a| a.zone == Zone::Mall).count();
+        assert!(pods >= 3, "seed {}: {pods} pods", t.seed);
+        assert!(malls >= 1, "seed {}: no commercial corners", t.seed);
+        let culs = t.cul_de_sacs.len();
+        assert!(culs >= 20, "seed {}: only {culs} cul-de-sacs", t.seed);
     }
 }
