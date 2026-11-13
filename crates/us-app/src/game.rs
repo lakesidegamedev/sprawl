@@ -16,6 +16,8 @@ use us_render::{Camera, Scene, Style, pick_ground, project};
 use us_sim::{ABANDON_ABOVE_X10, Phase, Sim, hall_sites};
 use winit::keyboard::KeyCode;
 
+pub mod touch;
+
 const DAY_SECONDS: f64 = 1.3;
 const SPEEDS: [f64; 4] = [0.0, 1.0, 3.0, 8.0];
 const SPEED_LABELS: [&str; 4] = ["II", "1X", "3X", "8X"];
@@ -129,6 +131,7 @@ pub struct State {
     left: Option<Press>,
     right: Option<Press>,
     click: Option<(f32, f32)>,
+    touches: touch::Touches,
     fps: f32,
     fps_acc: (f32, u32),
     style: Style,
@@ -223,6 +226,7 @@ impl State {
             left: None,
             right: None,
             click: None,
+            touches: touch::Touches::default(),
             fps: 0.0,
             fps_acc: (0.0, 0),
             style: Style::default(),
@@ -330,6 +334,7 @@ impl State {
     }
 
     pub fn release_all(&mut self) {
+        self.touches.clear();
         self.keys.clear();
         self.left = None;
         self.right = None;
@@ -589,6 +594,9 @@ impl State {
                     .inner_margin(egui::Margin::same(28))
                     .show(ui, |ui| {
                         self.title_block(ui);
+                        // sign-in is desktop only; the App Store keeps the iOS app current
+                        #[cfg(not(target_os = "ios"))]
+                        {
                         let status = self.lakeside.status();
                         if let Some(a) = &status.account {
                             ui.vertical_centered(|ui| {
@@ -613,6 +621,7 @@ impl State {
                                 ui.add_space(6.0);
                             });
                         }
+                        }
                         ui.vertical_centered(|ui| {
                             if theme::button(ui, "NEW TOWN").clicked() {
                                 self.screen = Screen::NewTown;
@@ -620,6 +629,8 @@ impl State {
                             if theme::button(ui, "SETTINGS").clicked() {
                                 self.screen = Screen::Settings;
                             }
+                            // iOS apps are closed from the home screen, never by the app
+                            #[cfg(not(target_os = "ios"))]
                             if theme::button(ui, "QUIT").clicked() {
                                 self.quit = true;
                             }
@@ -700,19 +711,22 @@ impl State {
                     .show(ui, |ui| {
                         ui.label(heading("SETTINGS", 32.0));
                         ui.add_space(6.0);
-                        label(ui, "WINDOW", 14.0);
-                        ui.horizontal(|ui| {
-                            ui.selectable_value(
-                                &mut self.settings.fullscreen,
-                                false,
-                                RichText::new("WINDOWED").font(pixel(16.0)),
-                            );
-                            ui.selectable_value(
-                                &mut self.settings.fullscreen,
-                                true,
-                                RichText::new("FULLSCREEN").font(pixel(16.0)),
-                            );
-                        });
+                        #[cfg(not(target_os = "ios"))]
+                        {
+                            label(ui, "WINDOW", 14.0);
+                            ui.horizontal(|ui| {
+                                ui.selectable_value(
+                                    &mut self.settings.fullscreen,
+                                    false,
+                                    RichText::new("WINDOWED").font(pixel(16.0)),
+                                );
+                                ui.selectable_value(
+                                    &mut self.settings.fullscreen,
+                                    true,
+                                    RichText::new("FULLSCREEN").font(pixel(16.0)),
+                                );
+                            });
+                        }
                         label(ui, "UI SCALE", 14.0);
                         ui.add(
                             egui::Slider::new(&mut self.settings.ui_scale, 0.8..=1.8).step_by(0.1),
@@ -730,9 +744,12 @@ impl State {
                                 RichText::new("FAST").font(pixel(16.0)),
                             );
                         });
-                        label(ui, "F11 TOGGLES FULLSCREEN IN GAME", 12.0);
-                        ui.add_space(8.0);
-                        self.account_ui(ui);
+                        #[cfg(not(target_os = "ios"))]
+                        {
+                            label(ui, "F11 TOGGLES FULLSCREEN IN GAME", 12.0);
+                            ui.add_space(8.0);
+                            self.account_ui(ui);
+                        }
                         ui.add_space(10.0);
                         if theme::button(ui, "BACK").clicked() {
                             if self.settings_from_game && self.game.is_some() {
@@ -914,15 +931,23 @@ impl State {
 
         // top bar
         egui::Panel::top("hud").frame(theme::bar()).show(ui, |ui| {
-            ui.horizontal(|ui| {
+            // phones in portrait: two rows instead of one
+            let narrow = ui.available_width() < 760.0;
+            let left = |ui: &mut egui::Ui, g: &Game| {
                 let light = INK;
-                let t = |s: String| RichText::new(s).font(pixel(16.0)).color(light);
-                ui.label(
-                    RichText::new("URBAN SPRAWL")
-                        .font(pixel(16.0))
-                        .color(ACCENT),
-                );
-                ui.add_space(14.0);
+                let t = |s: String| {
+                    RichText::new(s)
+                        .font(pixel(if narrow { 13.0 } else { 16.0 }))
+                        .color(light)
+                };
+                if !narrow {
+                    ui.label(
+                        RichText::new("URBAN SPRAWL")
+                            .font(pixel(if narrow { 13.0 } else { 16.0 }))
+                            .color(ACCENT),
+                    );
+                    ui.add_space(14.0);
+                }
                 if g.placed {
                     ui.label(t(g.sim.date().text().to_uppercase()));
                     ui.add_space(10.0);
@@ -935,7 +960,7 @@ impl State {
                     };
                     ui.label(
                         RichText::new(format!("TREASURY {}", money(g.sim.treasury)))
-                            .font(pixel(16.0))
+                            .font(pixel(if narrow { 13.0 } else { 16.0 }))
                             .color(tc),
                     );
                     ui.add_space(10.0);
@@ -951,50 +976,78 @@ impl State {
                             if net < 0 { "" } else { "+" },
                             money(net)
                         ))
-                        .font(pixel(16.0))
+                        .font(pixel(if narrow { 13.0 } else { 16.0 }))
                         .color(nc),
                     );
                 } else {
                     ui.label(t("PLACE THE TOWN HALL".to_string()));
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .button(RichText::new("MENU").font(pixel(14.0)).color(INK))
-                        .clicked()
-                    {
-                        g.menu_open = true;
-                    }
-                    if let Some(n) = &who {
-                        ui.label(
-                            RichText::new(format!("SIGNED IN: {}", n.to_uppercase()))
-                                .font(pixel(10.0))
-                                .color(Color32::from_rgb(170, 176, 196)),
-                        );
-                    }
+            };
+            let controls = |ui: &mut egui::Ui, g: &mut Game| {
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("MENU").font(pixel(14.0)).color(INK))
+                            .min_size(if narrow {
+                                vec2(70.0, 44.0)
+                            } else {
+                                vec2(0.0, 0.0)
+                            }),
+                    )
+                    .clicked()
+                {
+                    g.menu_open = true;
+                }
+                if let Some(n) = &who {
                     ui.label(
-                        RichText::new(format!("{fps:.0} FPS"))
-                            .font(pixel(12.0))
+                        RichText::new(format!("SIGNED IN: {}", n.to_uppercase()))
+                            .font(pixel(10.0))
                             .color(Color32::from_rgb(170, 176, 196)),
                     );
-                    if g.placed {
-                        for i in (0..4).rev() {
-                            let on = g.speed == i;
-                            let b = egui::Button::new(
-                                RichText::new(SPEED_LABELS[i])
-                                    .font(pixel(14.0))
-                                    .color(if on { theme::LINE } else { INK }),
-                            )
-                            .fill(if on { ACCENT } else { theme::RAISED })
-                            .min_size(vec2(38.0, 26.0));
-                            if ui.add(b).clicked() {
-                                g.speed = i;
-                            }
+                }
+                ui.label(
+                    RichText::new(format!("{fps:.0} FPS"))
+                        .font(pixel(12.0))
+                        .color(Color32::from_rgb(170, 176, 196)),
+                );
+                if g.placed {
+                    let order: Vec<usize> = if narrow {
+                        (0..4).collect()
+                    } else {
+                        (0..4).rev().collect()
+                    };
+                    for i in order {
+                        let on = g.speed == i;
+                        let b = egui::Button::new(
+                            RichText::new(SPEED_LABELS[i])
+                                .font(pixel(14.0))
+                                .color(if on { theme::LINE } else { INK }),
+                        )
+                        .fill(if on { ACCENT } else { theme::RAISED })
+                        .min_size(if narrow {
+                            vec2(52.0, 44.0)
+                        } else {
+                            vec2(38.0, 26.0)
+                        });
+                        if ui.add(b).clicked() {
+                            g.speed = i;
                         }
                     }
+                }
+            };
+            if narrow {
+                ui.vertical(|ui| {
+                    ui.horizontal_wrapped(|ui| left(ui, g));
+                    ui.horizontal(|ui| controls(ui, g));
                 });
-            });
+            } else {
+                ui.horizontal(|ui| {
+                    left(ui, g);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        controls(ui, g)
+                    });
+                });
+            }
         });
-
         // banner
         let banner = if !g.placed {
             Some("CLICK A CROSSROADS TO PLACE THE TOWN HALL".to_string())
@@ -1244,6 +1297,7 @@ impl State {
                             if theme::button(ui, "QUIT TO MENU").clicked() {
                                 to_menu = true;
                             }
+                            #[cfg(not(target_os = "ios"))]
                             if theme::button(ui, "QUIT GAME").clicked() {
                                 quit = true;
                             }

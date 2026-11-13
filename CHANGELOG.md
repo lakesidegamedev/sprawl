@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- iOS app (iPhone and iPad), simulator first: the same game on Metal, with touch (one finger pans, pinch zooms, two-finger twist rotates, two-finger vertical drag tilts, tap selects or places the hall, long press explains), safe areas, 44 point controls, a two row top bar on phones, and pause and resume when the app goes to the background. No Lakeside sign-in, updater, quit button or window settings on iOS. The Xcode project is generated from `packaging/ios/project.yml`; CI builds it for the Simulator without signing and keeps screenshots for a day. A protected manual TestFlight upload workflow is added and is untested until the Apple agreement is accepted and the app record exists.
 - Internal: the app is now a library with a thin desktop binary, and platform specific code sits in `platform/` modules, so an iOS front end can share the game. No change for players.
 - Preview 2: a visible goal and first-run tips (population goals, three short hints you can dismiss), event messages (new neighbourhood, first shop, school, church and fire station, treasury running low or below zero), a readable controls strip, clearer hall placement text, the signed-in name in the top bar and pause menu, signed-out and launcher sign-in lines on the main menu. Fix: Back in Settings opened from the pause menu threw away the running town; it now returns to the pause menu. Shown version is 1.0.0 preview 2 and the release title follows the tag.
 - Fix a flaky updater test: parallel download tests shared one scratch folder.

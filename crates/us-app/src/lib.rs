@@ -2,16 +2,16 @@
 //! wrapper over [`run`]; other platforms start the game through their own entry point.
 
 mod cam;
-mod game;
+pub(crate) mod game;
 mod platform;
 mod theme;
 mod world;
 
-use game::State;
+use game::{State, touch};
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
@@ -31,6 +31,9 @@ struct Gfx {
 
 struct App {
     gfx: Option<Gfx>,
+    /// The window outlives the graphics: when the app goes to the background the graphics are
+    /// dropped (iOS takes the surface away) and rebuilt on the way back.
+    window: Option<Arc<Window>>,
     st: State,
     last: Instant,
     fatal: Option<String>,
@@ -60,14 +63,25 @@ impl App {
             .with_title(format!("Urban Sprawl {VERSION_LABEL}"))
             .with_inner_size(winit::dpi::LogicalSize::new(1360.0, 820.0))
             .with_min_inner_size(winit::dpi::LogicalSize::new(900.0, 560.0));
-        let window = match el.create_window(attrs) {
-            Ok(w) => Arc::new(w),
-            Err(e) => {
-                self.fatal = Some(format!("could not open a window: {e}"));
-                el.exit();
-                return;
-            }
+        #[cfg(target_os = "ios")]
+        let attrs = {
+            use winit::platform::ios::WindowAttributesExtIOS;
+            attrs
+                .with_prefers_status_bar_hidden(true)
+                .with_prefers_home_indicator_hidden(true)
         };
+        let window = match self.window.clone() {
+            Some(w) => w,
+            None => match el.create_window(attrs) {
+                Ok(w) => Arc::new(w),
+                Err(e) => {
+                    self.fatal = Some(format!("could not open a window: {e}"));
+                    el.exit();
+                    return;
+                }
+            },
+        };
+        self.window = Some(window.clone());
         let renderer = match us_render::Renderer::for_window_handle(window.clone()) {
             Ok(r) => r,
             Err(e) => {
@@ -136,6 +150,7 @@ impl App {
         }
 
         let (w, h) = (size.width, size.height);
+        self.st.touch_tick();
         self.st.update(dt, w, h);
 
         let raw = gfx.egui_state.take_egui_input(&gfx.window);
@@ -209,8 +224,16 @@ impl App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.gfx.is_none() {
+            self.last = Instant::now();
             self.init_gfx(el);
         }
+    }
+
+    fn suspended(&mut self, _el: &ActiveEventLoop) {
+        // Backgrounded: stop drawing and let go of the graphics. The game stands still because
+        // it only advances when a frame is drawn.
+        self.gfx = None;
+        self.st.release_all();
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -256,6 +279,35 @@ impl ApplicationHandler for App {
                     st.key(code, down, event.repeat, resp.consumed);
                 }
             }
+            WindowEvent::Touch(t) => {
+                let phase = match t.phase {
+                    TouchPhase::Started => touch::Phase::Down,
+                    TouchPhase::Moved => touch::Phase::Move,
+                    TouchPhase::Ended => touch::Phase::Up,
+                    TouchPhase::Cancelled => touch::Phase::Cancel,
+                };
+                // Does the finger land on a button or panel? Decided from the last frame's layout.
+                let ppp = gfx.egui_ctx.pixels_per_point();
+                let at = egui::pos2(t.location.x as f32 / ppp, t.location.y as f32 / ppp);
+                let on_ui = phase == touch::Phase::Down
+                    && (gfx
+                        .egui_ctx
+                        .layer_id_at(at)
+                        .is_some_and(|l| l.order != egui::Order::Background)
+                        || gfx
+                            .egui_ctx
+                            .interactive_rects_last_pass()
+                            .iter()
+                            .any(|r| r.expand(4.0).contains(at)));
+                st.touch(
+                    t.id,
+                    phase,
+                    t.location.x as f32,
+                    t.location.y as f32,
+                    on_ui,
+                    gfx.window.inner_size().height,
+                );
+            }
             WindowEvent::Focused(false) => st.release_all(),
             _ => {}
         }
@@ -292,6 +344,7 @@ pub fn run() {
     el.set_control_flow(ControlFlow::Poll);
     let mut app = App {
         gfx: None,
+        window: None,
         st: State::new(),
         last: Instant::now(),
         fatal: None,

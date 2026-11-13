@@ -87,6 +87,14 @@ pub fn install(ctx: &egui::Context) {
         s.spacing.item_spacing = egui::vec2(8.0, 8.0);
         s.spacing.button_padding = egui::vec2(12.0, 6.0);
         s.spacing.slider_width = 200.0;
+        if cfg!(target_os = "ios") {
+            // fingers, not a pointer: every control is at least 44 points tall and wide
+            s.spacing.interact_size = egui::vec2(44.0, 44.0);
+            s.spacing.button_padding = egui::vec2(14.0, 10.0);
+            s.spacing.item_spacing = egui::vec2(10.0, 10.0);
+            s.spacing.icon_width = 28.0;
+            s.spacing.slider_rail_height = 12.0;
+        }
     });
 }
 
@@ -116,7 +124,8 @@ pub fn heading(text: &str, size: f32) -> egui::RichText {
 
 pub fn button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(
-        egui::Button::new(egui::RichText::new(text).font(pixel(16.0)).color(INK))
-            .min_size(egui::vec2(220.0, 40.0)),
+        egui::Button::new(egui::RichText::new(text).font(pixel(16.0)).color(INK)).min_size(
+            egui::vec2(220.0, if cfg!(target_os = "ios") { 48.0 } else { 40.0 }),
+        ),
     )
 }
