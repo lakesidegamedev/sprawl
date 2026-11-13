@@ -145,9 +145,27 @@ pub fn build(preset: Preset, seed: u64, river: &River) -> Skeleton {
             let radials: Vec<Vec<Pt>> = roads.iter().skip(1).map(|(l, _)| l.clone()).collect();
             let mut keep_rng = Rng::new(seed, 9);
             for (r0, salt, keep) in [(950.0, 3u64, 0.75), (1750.0, 8u64, 0.6)] {
-                let ring = ring_road(r0, &mut Rng::new(seed, salt));
+                let mut ring = ring_road(r0, &mut Rng::new(seed, salt));
+                // start the loop at its point nearest the river so the river cut never splits
+                // one stretch of ring into two pieces that meet at a bare joint
+                ring.pop();
+                let k = (0..ring.len())
+                    .min_by(|&a, &b| {
+                        let off = |p: Pt| (p.y - river.y(p.x.clamp(0.0, S))).abs();
+                        off(ring[a]).total_cmp(&off(ring[b]))
+                    })
+                    .unwrap_or(0);
+                ring.rotate_left(k);
+                ring.push(ring[0]);
                 for arc in without_zone(within_map(&ring), &drive_zone) {
-                    for q in split_line_at(&arc, &radials) {
+                    let mut pieces = split_line_at(&arc, &radials);
+                    // a ring that was never cut starts and ends at the same bare spot: rejoin it
+                    if pieces.len() > 1 && arc[0].dist(*arc.last().unwrap()) < 1e-6 {
+                        let first = pieces.remove(0);
+                        let last = pieces.last_mut().unwrap();
+                        last.extend(first.into_iter().skip(1));
+                    }
+                    for q in pieces {
                         if length(&q) > 200.0 && keep_rng.chance(keep) {
                             roads.push((q, RoadClass::Arterial));
                         }
@@ -164,15 +182,81 @@ pub fn build(preset: Preset, seed: u64, river: &River) -> Skeleton {
             )) {
                 rails.push(p);
             }
-            for p in within_map(&river.line(-120.0)) {
-                roads.push((p, RoadClass::Arterial));
-            }
         }
     }
+    riverside_drives(&mut roads, river, preset == Preset::Winding);
     let _ = TAU;
     Skeleton {
         roads,
         rails,
         rail_angle,
+    }
+}
+
+/// Arterials stop 116 m short of the river unless bridged. Every side of the river where one
+/// stops gets a riverside drive, and each stopped arterial is tied into it. Winding towns always
+/// have the drive on the north-facing bank.
+fn riverside_drives(roads: &mut Vec<(Vec<Pt>, RoadClass)>, river: &River, always_low: bool) {
+    let side_of = |e: Pt| -> Option<f64> {
+        let o = e.y - river.y(e.x.clamp(0.0, S));
+        if (110.0..=122.0).contains(&o) {
+            Some(120.0)
+        } else if (-122.0..=-110.0).contains(&o) {
+            Some(-120.0)
+        } else {
+            None
+        }
+    };
+    let mut sides: Vec<f64> = Vec::new();
+    if always_low {
+        sides.push(-120.0);
+    }
+    for (l, c) in roads.iter() {
+        if *c != RoadClass::Arterial {
+            continue;
+        }
+        for e in [l[0], *l.last().unwrap()] {
+            if let Some(sd) = side_of(e)
+                && !sides.contains(&sd)
+            {
+                sides.push(sd);
+            }
+        }
+    }
+    sides.sort_by(|a, b| a.total_cmp(b));
+    let mut drives: Vec<(f64, Vec<Vec<Pt>>)> = Vec::new();
+    for sd in sides {
+        drives.push((sd, within_map(&river.line(sd))));
+    }
+    for (l, c) in roads.iter_mut() {
+        if *c != RoadClass::Arterial {
+            continue;
+        }
+        let n = l.len();
+        for front in [true, false] {
+            let e = if front { l[0] } else { l[n - 1] };
+            let Some(sd) = side_of(e) else { continue };
+            let Some((_, pieces)) = drives.iter().find(|(s, _)| *s == sd) else {
+                continue;
+            };
+            let best = pieces
+                .iter()
+                .map(|p| project(p, e))
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((_, dist, q)) = best
+                && dist < 12.0
+            {
+                if front {
+                    l.insert(0, q);
+                } else {
+                    l.push(q);
+                }
+            }
+        }
+    }
+    for (_, pieces) in drives {
+        for p in pieces {
+            roads.push((p, RoadClass::Arterial));
+        }
     }
 }

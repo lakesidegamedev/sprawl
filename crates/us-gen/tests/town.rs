@@ -476,3 +476,127 @@ fn four_km_town_generates_in_under_three_seconds() {
         assert!(!t.lots.is_empty());
     }
 }
+
+fn seg_seg_dist(a: Pt, b: Pt, c: Pt, e: Pt) -> f64 {
+    let o = |p: Pt, q: Pt, r: Pt| (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+    let (d1, d2, d3, d4) = (o(c, e, a), o(c, e, b), o(a, b, c), o(a, b, e));
+    if ((d1 > 0.0) != (d2 > 0.0)) && ((d3 > 0.0) != (d4 > 0.0)) {
+        return 0.0;
+    }
+    seg_closest(a, c, e)
+        .min(seg_closest(b, c, e))
+        .min(seg_closest(c, a, b))
+        .min(seg_closest(e, a, b))
+}
+
+/// Components of the road network (everything but rail), joined where roads cross or touch.
+fn components(t: &Town) -> Vec<Vec<usize>> {
+    let ids: Vec<usize> = (0..t.roads.len())
+        .filter(|&i| t.roads[i].class != RoadClass::Rail)
+        .collect();
+    let cell = 64.0;
+    let mut cells: HashMap<(i64, i64), Vec<(usize, usize)>> = HashMap::new();
+    for &ri in &ids {
+        for (si, w) in t.roads[ri].points.windows(2).enumerate() {
+            let (x0, x1) = (w[0].x.min(w[1].x), w[0].x.max(w[1].x));
+            let (y0, y1) = (w[0].y.min(w[1].y), w[0].y.max(w[1].y));
+            for cx in ((x0 - 2.0) / cell).floor() as i64..=((x1 + 2.0) / cell).floor() as i64 {
+                for cy in ((y0 - 2.0) / cell).floor() as i64..=((y1 + 2.0) / cell).floor() as i64 {
+                    cells.entry((cx, cy)).or_default().push((ri, si));
+                }
+            }
+        }
+    }
+    let mut parent: Vec<usize> = (0..t.roads.len()).collect();
+    fn find(p: &mut [usize], mut x: usize) -> usize {
+        while p[x] != x {
+            p[x] = p[p[x]];
+            x = p[x];
+        }
+        x
+    }
+    let mut keys: Vec<_> = cells.keys().copied().collect();
+    keys.sort();
+    for k in keys {
+        let v = &cells[&k];
+        for i in 0..v.len() {
+            for j in i + 1..v.len() {
+                let ((ra, sa), (rb, sb)) = (v[i], v[j]);
+                if ra == rb {
+                    continue;
+                }
+                let (pa, pb) = (&t.roads[ra].points, &t.roads[rb].points);
+                if seg_seg_dist(pa[sa], pa[sa + 1], pb[sb], pb[sb + 1]) <= 1.5 {
+                    let (x, y) = (find(&mut parent, ra), find(&mut parent, rb));
+                    if x != y {
+                        parent[x] = y;
+                    }
+                }
+            }
+        }
+    }
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for &i in &ids {
+        let r = find(&mut parent, i);
+        groups.entry(r).or_default().push(i);
+    }
+    let mut out: Vec<Vec<usize>> = groups.into_values().collect();
+    out.sort_by_key(|g| std::cmp::Reverse(g.len()));
+    out
+}
+
+#[test]
+fn whole_road_network_is_one_connected_piece() {
+    for p in PRESETS {
+        for s in 1..=12u64 {
+            let t = generate(p, s);
+            let comps = components(&t);
+            assert_eq!(
+                comps.len(),
+                1,
+                "{} seed {s}: {} components, small ones: {:?}",
+                p.name(),
+                comps.len(),
+                comps[1..]
+                    .iter()
+                    .take(3)
+                    .map(|g| (g.len(), t.roads[g[0]].points[0]))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
+#[test]
+fn no_arterial_ends_in_open_land() {
+    for p in PRESETS {
+        for s in 1..=12u64 {
+            let t = generate(p, s);
+            let g = RoadGrid::new(&t.roads);
+            for (i, r) in t
+                .roads
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.class == RoadClass::Arterial)
+            {
+                for e in [r.points[0], *r.points.last().unwrap()] {
+                    let on_edge = e.x < 1.0
+                        || e.x > t.size - 1.0
+                        || e.y > t.size - 1.0
+                        || e.y < t.highway_y + 1.0;
+                    let on_road = g
+                        .near(e, 14.0)
+                        .iter()
+                        .any(|&(ri, dist)| ri != i && dist <= t.roads[ri].class.half_width() + 1.0);
+                    assert!(
+                        on_edge || on_road,
+                        "{} seed {s}: arterial {i} ends in open land at ({:.0}, {:.0})",
+                        p.name(),
+                        e.x,
+                        e.y
+                    );
+                }
+            }
+        }
+    }
+}

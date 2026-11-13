@@ -515,6 +515,7 @@ pub fn build(preset: Preset, seed: u64, river: &River) -> Built {
     trim_covered_interiors(&mut drafts);
     add_border_streets(&mut drafts, &additions, &borders_wanted);
     connect_ends(&mut drafts);
+    join_stranded(&mut drafts, &mut additions, river);
     promote_collectors(&mut drafts);
     Built { drafts, additions }
 }
@@ -790,6 +791,140 @@ fn promote_collectors(drafts: &mut [Draft]) {
         let r = find(&mut parent, k);
         if total[r] >= 800.0 {
             drafts[border[k]].class = RoadClass::Collector;
+        }
+    }
+}
+
+const ENTRANCE_MAX: f64 = 150.0;
+
+/// Union-find over the non-rail drafts: roads that cross or touch share a component.
+/// Returns the component id per draft (`usize::MAX` for rail).
+fn components(drafts: &[Draft]) -> Vec<usize> {
+    let mut idx = SegIndex::new(S, 64.0);
+    for (i, d) in drafts.iter().enumerate() {
+        if d.class != RoadClass::Rail {
+            idx.add_line(&d.line, i as u32);
+        }
+    }
+    let mut parent: Vec<usize> = (0..drafts.len()).collect();
+    fn find(p: &mut [usize], mut x: usize) -> usize {
+        while p[x] != x {
+            p[x] = p[p[x]];
+            x = p[x];
+        }
+        x
+    }
+    for (i, d) in drafts.iter().enumerate() {
+        if d.class == RoadClass::Rail {
+            continue;
+        }
+        for p in sample_line(&d.line, 3.0) {
+            idx.for_each_within(p, 1.6, |_, o| {
+                let (a, b) = (find(&mut parent, i), find(&mut parent, o as usize));
+                if a != b {
+                    parent[a] = b;
+                }
+            });
+        }
+    }
+    (0..drafts.len())
+        .map(|i| {
+            if drafts[i].class == RoadClass::Rail {
+                usize::MAX
+            } else {
+                find(&mut parent, i)
+            }
+        })
+        .collect()
+}
+
+fn sample_line(line: &[Pt], step: f64) -> Vec<Pt> {
+    let mut out = vec![line[0]];
+    for w in line.windows(2) {
+        let n = ((w[0].dist(w[1]) / step).ceil() as usize).max(1);
+        for k in 1..=n {
+            out.push(w[0].lerp(w[1], k as f64 / n as f64));
+        }
+    }
+    out
+}
+
+/// Every street must be reachable from the highway. A group of streets cut off from the rest
+/// gets an entrance road to the nearest connected road when one is under 150 m away and dry;
+/// otherwise its additions go back to farmland.
+fn join_stranded(drafts: &mut Vec<Draft>, additions: &mut [Addition], river: &River) {
+    let wet = river.band(-60.0, 60.0);
+    for _round in 0..40 {
+        let comp = components(drafts);
+        let Some(main) = drafts.iter().position(|d| d.class == RoadClass::Highway) else {
+            return;
+        };
+        let main_c = comp[main];
+        // the stranded group holding the lowest-numbered draft
+        let Some(first) = (0..drafts.len()).find(|&i| comp[i] != usize::MAX && comp[i] != main_c)
+        else {
+            return;
+        };
+        let group_c = comp[first];
+        let members: Vec<usize> = (0..drafts.len()).filter(|&i| comp[i] == group_c).collect();
+        let mut main_idx = SegIndex::new(S, 64.0);
+        for (i, d) in drafts.iter().enumerate() {
+            if comp[i] == main_c {
+                main_idx.add_line(&d.line, i as u32);
+            }
+        }
+        // shortest dry link from any point of the group to the connected network
+        let mut best: Option<(f64, Pt, Pt)> = None;
+        for &m in &members {
+            if drafts[m].class == RoadClass::Alley {
+                continue;
+            }
+            for p in sample_line(&drafts[m].line, 6.0) {
+                if let Some(h) = main_idx.nearest(p, ENTRANCE_MAX, None)
+                    && best.is_none_or(|b| h.dist < b.0)
+                    && h.dist > 0.5
+                {
+                    let dry = [0.25, 0.5, 0.75]
+                        .iter()
+                        .all(|f| !point_in_ring(p.lerp(h.pt, *f), &wet));
+                    if dry {
+                        best = Some((h.dist, p, h.pt));
+                    }
+                }
+            }
+        }
+        let owners: Vec<usize> = {
+            let mut o: Vec<usize> = members
+                .iter()
+                .map(|&m| drafts[m].addition)
+                .filter(|&a| a != usize::MAX)
+                .collect();
+            o.sort_unstable();
+            o.dedup();
+            o
+        };
+        if let Some((_, from, to)) = best {
+            drafts.push(Draft {
+                line: vec![from, to],
+                class: RoadClass::Local,
+                tag: Tag::Interior,
+                addition: owners.first().copied().unwrap_or(usize::MAX),
+            });
+        } else {
+            let gone: std::collections::HashSet<usize> = members.iter().copied().collect();
+            let mut k = 0;
+            drafts.retain(|_| {
+                let keep = !gone.contains(&k);
+                k += 1;
+                keep
+            });
+            for ai in owners {
+                if !drafts.iter().any(|d| d.addition == ai) {
+                    additions[ai].zone = Zone::Farm;
+                    additions[ai].pattern = Pattern::Farmland;
+                    additions[ai].entrances.clear();
+                }
+            }
         }
     }
 }
