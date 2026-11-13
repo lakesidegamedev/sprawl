@@ -78,6 +78,8 @@ jobs:
           URBAN_SPRAWL_SMOKE=12 timeout 120 xvfb-run -a -s "-screen 0 1280x800x24" target/release/urban-sprawl 2>&1 | tee smoke.log
           grep -q "^smoke: day" smoke.log
       - uses: actions/upload-artifact@v4
+        # Public repo: pull request runs only prove the build; they never publish game files.
+        if: github.event_name != 'pull_request'
         with:
           name: urban-sprawl-${{ matrix.name }}
           path: ${{ steps.pkg.outputs.file }}
