@@ -9,7 +9,7 @@ use crate::theme::{
 use egui::{Align2, Color32, Context, Pos2, RichText, Sense, Stroke, Ui, vec2};
 use glam::Vec3;
 use us_gen::{Pt, pt};
-use us_render::{View, project};
+use us_render::{Overlay, OverlayKind, View, project};
 use us_sim::{
     ABANDON_ABOVE_X10, BOND_MONTHS, BOND_RATE_X10, BOND_SIZE, BUDGET_MAX_PCT, BUDGET_MIN_PCT,
     CivicKind, Class, Date, Dept, Event, EventKind, LedgerNow, LoanError, MapKind, Phase, Service,
@@ -197,70 +197,56 @@ impl MapView {
         })
     }
 
-    /// Five steps from low to high, each with its words.
-    fn steps(self) -> Vec<(Color32, &'static str)> {
-        let cold = [
-            Color32::from_rgb(52, 70, 128),
-            Color32::from_rgb(60, 118, 168),
-            Color32::from_rgb(63, 191, 138),
-            Color32::from_rgb(226, 176, 74),
-            Color32::from_rgb(244, 232, 150),
-        ];
+    /// One line under the legend where the colours need explaining.
+    fn note(self) -> Option<&'static str> {
         match self {
-            MapView::Normal => vec![],
-            MapView::LandValue => vec![
-                (cold[0], "Very low"),
-                (cold[1], "Low"),
-                (cold[2], "Fair"),
-                (cold[3], "High"),
-                (cold[4], "Very high"),
-            ],
-            MapView::Level => vec![
-                (cold[0], "Level 1"),
-                (cold[1], "Level 2"),
-                (cold[2], "Level 3"),
-                (cold[3], "Level 4"),
-                (cold[4], "Level 5"),
-            ],
-            MapView::Use => vec![
-                (BLUE, "Homes"),
-                (GOLD, "Shops"),
-                (CORAL, "Industry"),
-                (TEAL, "Civic"),
-                (Color32::from_rgb(143, 163, 122), "Farm"),
-            ],
-            MapView::Coverage(_) => vec![
-                (Color32::from_rgb(229, 96, 94), "None"),
-                (Color32::from_rgb(240, 138, 75), "Thin"),
-                (Color32::from_rgb(226, 176, 74), "Partial"),
-                (Color32::from_rgb(155, 212, 90), "Good"),
-                (Color32::from_rgb(63, 191, 138), "Full"),
-            ],
-            MapView::Demand(_) => vec![
-                (cold[0], "None"),
-                (cold[1], "Weak"),
-                (cold[2], "Fair"),
-                (cold[3], "Strong"),
-                (cold[4], "Very strong"),
-            ],
-            MapView::Traffic => vec![
-                (Color32::from_rgb(63, 191, 138), "Free"),
-                (Color32::from_rgb(155, 212, 90), "Light"),
-                (Color32::from_rgb(226, 176, 74), "Busy"),
-                (Color32::from_rgb(240, 138, 75), "Heavy"),
-                (Color32::from_rgb(229, 96, 94), "Jammed"),
-            ],
+            MapView::Demand(_) => Some("Other kinds of building stay grey"),
+            MapView::Level => Some("Empty land shows as level 1"),
+            _ => None,
         }
     }
 
-    fn color_of(self, v: f32) -> Color32 {
-        let steps = self.steps();
-        let bin = if self == MapView::Use {
-            (v.round() as usize).clamp(1, 5) - 1
-        } else {
-            ((v.clamp(0.0, 0.999)) * 5.0) as usize
+    fn overlay_kind(self) -> Option<OverlayKind> {
+        Some(match self {
+            MapView::Normal => return None,
+            MapView::LandValue => OverlayKind::LandValue,
+            MapView::Level => OverlayKind::BuildingLevel,
+            MapView::Use => OverlayKind::Use,
+            MapView::Coverage(_) => OverlayKind::ServiceCoverage,
+            MapView::Demand(_) => OverlayKind::Demand,
+            MapView::Traffic => OverlayKind::Traffic,
+        })
+    }
+
+    /// The renderer's own steps for this view, low to high, with their words.
+    fn steps(self) -> Vec<(Color32, &'static str)> {
+        let Some(k) = self.overlay_kind() else {
+            return vec![];
         };
-        steps[bin.min(4)].0
+        let words: &[&str] = match self {
+            MapView::Normal => &[],
+            MapView::LandValue => &["Very low", "Low", "Fair", "Good", "High", "Very high"],
+            MapView::Level => &["Level 1", "Level 2", "Level 3", "Level 4", "Level 5"],
+            MapView::Use => &[
+                "Homes",
+                "Shops",
+                "Industry",
+                "Civic",
+                "Open land",
+                "Farm",
+                "Other",
+            ],
+            MapView::Coverage(_) => &["None", "Thin", "Partial", "Good", "Full"],
+            MapView::Demand(_) => &[
+                "Very low", "Low", "Soft", "Balanced", "Firm", "High", "Crowded",
+            ],
+            MapView::Traffic => &["Free", "Light", "Busy", "Heavy", "Jammed"],
+        };
+        k.palette()
+            .iter()
+            .zip(words)
+            .map(|(c, w)| (Color32::from_rgb(c[0], c[1], c[2]), *w))
+            .collect()
     }
 }
 
@@ -301,10 +287,10 @@ pub struct UiState {
     pub events: Vec<Event>,
     news_seen: usize,
     ledger: LedgerNow,
-    lot_vals: Vec<f32>,
-    road_vals: Vec<f32>,
-    val_age: f32,
-    val_view: MapView,
+    /// Seconds since the view was last pushed to the renderer, and which view it showed.
+    ov_age: f32,
+    ov_view: MapView,
+    clock: f32,
     cover: [f32; 6],
     cover_age: f32,
     /// Coverage of the selected lot, by service.
@@ -331,10 +317,9 @@ impl Default for UiState {
             events: Vec::new(),
             news_seen: 0,
             ledger: LedgerNow::default(),
-            lot_vals: Vec::new(),
-            road_vals: Vec::new(),
-            val_age: 9.0,
-            val_view: MapView::Normal,
+            ov_age: 9.0,
+            ov_view: MapView::Normal,
+            clock: 0.0,
             cover: [0.0; 6],
             cover_age: 9.0,
             sel_cov: Vec::new(),
@@ -374,14 +359,21 @@ impl Game {
             self.ui.news_seen = self.ui.events.len();
         }
         self.ui.ledger = self.sim.ledger_now();
-        self.ui.val_age += dt;
-        if let Some(k) = self.ui.view.kind()
-            && (self.ui.val_age > 0.5 || self.ui.val_view != self.ui.view)
+        self.ui.clock += dt;
+        self.live.scene.set_time(self.ui.clock);
+        self.ui.ov_age += dt;
+        if self.ui.view != self.ui.ov_view
+            || (self.ui.view != MapView::Normal && self.ui.ov_age > 0.5)
         {
-            self.ui.val_age = 0.0;
-            self.ui.val_view = self.ui.view;
-            self.ui.lot_vals = self.sim.lot_values(k);
-            self.ui.road_vals = self.sim.road_values(k);
+            self.ui.ov_age = 0.0;
+            self.ui.ov_view = self.ui.view;
+            match self.overlay_values() {
+                Some(ov) => {
+                    self.live.ensure_geometry(&self.sim);
+                    self.live.scene.set_overlay(Some(ov));
+                }
+                None => self.live.scene.set_overlay(None),
+            }
         }
         self.ui.cover_age += dt;
         if self.ui.budget_open && self.ui.cover_age > 1.0 {
@@ -1247,70 +1239,45 @@ impl Game {
 
     // ----- map overlay -----
 
-    pub(super) fn overlay_ui(
-        &self,
-        painter: &egui::Painter,
-        clip: egui::Rect,
-        view: &View,
-        w: u32,
-        h: u32,
-        ppp: f32,
-    ) {
+    /// What the renderer needs to tint the town for the chosen view.
+    fn overlay_values(&self) -> Option<Overlay> {
         let mv = self.ui.view;
-        if mv == MapView::Normal {
-            return;
-        }
-        // keep markers out from under the bars
-        let painter = &painter.with_clip_rect(clip);
-        if mv == MapView::Traffic {
-            for (run, &v) in self.sim.road_runs().iter().zip(&self.ui.road_vals) {
-                if run.addition.is_some_and(|a| !self.sim.is_revealed(a)) {
-                    continue;
-                }
-                let pts: Vec<Pos2> = run
-                    .points
-                    .iter()
-                    .filter_map(|p| project(view, Vec3::new(p.x as f32, p.y as f32, 0.0)))
-                    .map(|s| super::to_screen(s, w, h, ppp))
-                    .collect();
-                if pts.len() >= 2 {
-                    painter.add(egui::Shape::line(pts, Stroke::new(5.0, mv.color_of(v))));
-                }
+        let kind = mv.overlay_kind()?;
+        let sim = &self.sim;
+        let (lots, roads) = match mv {
+            MapView::Normal => return None,
+            MapView::Traffic => (Vec::new(), sim.road_values(MapKind::Traffic)),
+            MapView::Use => {
+                // the renderer numbers its categories differently from the simulation
+                let v = sim.lot_values(MapKind::Use);
+                (
+                    v.iter()
+                        .map(|&c| match c.round() as i32 {
+                            1 => 0.0,
+                            2 => 1.0,
+                            3 => 2.0,
+                            4 => 3.0,
+                            5 => 5.0,
+                            _ => 4.0,
+                        })
+                        .collect(),
+                    Vec::new(),
+                )
             }
-            return;
-        }
-        for (i, l) in self.sim.lots().iter().enumerate() {
-            if matches!(l.phase, Phase::Hidden | Phase::Cleared { .. }) {
-                continue;
+            MapView::Demand(c) => {
+                // own class: how much the town wants more; everything else stays at balanced
+                let d = sim.class_demand(c);
+                (
+                    sim.lots()
+                        .iter()
+                        .map(|l| if class_of(l.kind) == Some(c) { d } else { 0.5 })
+                        .collect(),
+                    Vec::new(),
+                )
             }
-            let Some(&v) = self.ui.lot_vals.get(i) else {
-                continue;
-            };
-            let skip = match mv {
-                MapView::Use | MapView::Level => v <= 0.0,
-                MapView::Demand(_) => v <= 0.0 && class_of(l.kind).is_none(),
-                _ => false,
-            };
-            if skip {
-                continue;
-            }
-            let c = Vec3::new(l.pos.x as f32, l.pos.y as f32, 0.0);
-            let (Some(a), Some(b)) = (
-                project(view, c),
-                project(view, c + Vec3::new(l.radius.min(30.0) as f32, 0.0, 0.0)),
-            ) else {
-                continue;
-            };
-            let (a, b) = (
-                super::to_screen(a, w, h, ppp),
-                super::to_screen(b, w, h, ppp),
-            );
-            let r = a.distance(b).clamp(3.0, 40.0);
-            let col = mv.color_of(v);
-            let rect = egui::Rect::from_center_size(a, vec2(r * 1.15, r * 1.15));
-            painter.rect_filled(rect, 0.0, col);
-            painter.rect_stroke(rect, 0.0, Stroke::new(1.5, LINE), egui::StrokeKind::Outside);
-        }
+            other => (sim.lot_values(other.kind()?), Vec::new()),
+        };
+        Some(Overlay { kind, lots, roads })
     }
 
     pub(super) fn legend_ui(&self, ctx: &Context) {
@@ -1340,16 +1307,9 @@ impl Game {
                                 lab(ui, name, 10.0);
                             }
                         });
-                        lab_c(
-                            ui,
-                            if mv == MapView::Traffic {
-                                "Shown along the roads"
-                            } else {
-                                "Shown as a marker on each lot"
-                            },
-                            9.0,
-                            Color32::from_rgb(170, 176, 196),
-                        );
+                        if let Some(note) = mv.note() {
+                            lab_c(ui, note, 12.0, Color32::from_rgb(170, 176, 196));
+                        }
                     });
             });
     }

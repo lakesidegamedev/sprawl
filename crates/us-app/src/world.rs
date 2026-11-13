@@ -8,7 +8,7 @@ use std::time::Instant;
 use us_gen::{LotKind, Pt, RoadClass, Town, Zone};
 use us_render::live::{abandoned, base_ground, construction, roads_ground, zone_ground};
 use us_render::obj::Obj;
-use us_render::{Chunk, Mesh, Rng, Scene, kit};
+use us_render::{Chunk, LotInfo, Mesh, Rng, RoadInfo, Scene, kit};
 use us_sim::{LotState, Phase, Sim};
 
 const CELL: f32 = 256.0;
@@ -32,6 +32,9 @@ pub struct LiveScene {
     rev: u64,
     ground_chunks: usize,
     pub triangles: usize,
+    /// Lots or roads changed since the scene was last told the geometry.
+    geo_dirty: bool,
+    geo_at: Instant,
 }
 
 fn cell_of(x: f64, y: f64) -> Cell {
@@ -169,11 +172,58 @@ impl LiveScene {
             rev: 1,
             ground_chunks: 0,
             triangles: 0,
+            geo_dirty: true,
+            geo_at: Instant::now(),
         };
         if show_hall {
             ls.mark(hall_cell);
         }
+        ls.ensure_geometry(sim);
         ls
+    }
+
+    /// Tell the scene where lots and roads are, so map views, traffic and smoke work. Lots and
+    /// roads that do not exist yet are parked far off the map so a view never shows them.
+    pub fn ensure_geometry(&mut self, sim: &Sim) {
+        if !self.geo_dirty {
+            return;
+        }
+        self.geo_dirty = false;
+        self.geo_at = Instant::now();
+        const OFF: f64 = -50_000.0;
+        let lots: Vec<LotInfo> = sim
+            .lots()
+            .iter()
+            .map(|l| {
+                let gone = matches!(l.phase, Phase::Hidden | Phase::Cleared { .. });
+                LotInfo {
+                    x: if gone { OFF as f32 } else { l.pos.x as f32 },
+                    y: if gone { OFF as f32 } else { l.pos.y as f32 },
+                    theta: l.facing as f32,
+                    kind: l.kind,
+                    level: l.level.clamp(1, 5),
+                }
+            })
+            .collect();
+        let roads: Vec<RoadInfo> = sim
+            .road_runs()
+            .iter()
+            .map(|r| {
+                let built = r.addition.is_none_or(|a| sim.is_revealed(a));
+                RoadInfo {
+                    class: r.class,
+                    points: if built {
+                        r.points.clone()
+                    } else {
+                        vec![us_gen::pt(OFF, OFF), us_gen::pt(OFF, OFF + 10.0)]
+                    },
+                    works: None,
+                }
+            })
+            .collect();
+        self.scene.set_geometry(lots, roads);
+        self.scene
+            .set_road_volumes(&sim.road_values(us_sim::MapKind::Traffic));
     }
 
     fn add_ground_chunk(&mut self, sim: &Sim, addition: usize) {
@@ -228,10 +278,16 @@ impl LiveScene {
     pub fn sync(&mut self, sim: &mut Sim, max_ms: f32) {
         let t0 = Instant::now();
         let (_, revealed) = sim.take_changes();
+        if !revealed.is_empty() {
+            self.geo_dirty = true;
+        }
         for a in revealed {
             self.add_ground_chunk(sim, a);
         }
         // lots the mayor placed are appended to the simulation's list
+        if self.stage.len() < sim.lots().len() {
+            self.geo_dirty = true;
+        }
         while self.stage.len() < sim.lots().len() {
             let i = self.stage.len();
             let l = &sim.lots()[i];
@@ -259,6 +315,9 @@ impl LiveScene {
             if t0.elapsed().as_secs_f32() * 1000.0 > max_ms {
                 break;
             }
+        }
+        if self.geo_dirty && self.geo_at.elapsed().as_secs_f32() > 1.0 {
+            self.ensure_geometry(sim);
         }
         self.triangles = self.scene.triangles();
     }

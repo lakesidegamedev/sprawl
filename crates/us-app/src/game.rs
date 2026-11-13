@@ -1024,8 +1024,6 @@ impl State {
         }
 
         if g.placed {
-            let clip = ui.available_rect_before_wrap();
-            g.overlay_ui(&painter, clip, &view, w, h, ppp);
             g.selection_reach(&painter, &view, w, h, ppp);
             g.ghost_ui(ctx, &painter, &view, w, h);
         }
