@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- The repository is public: README says what the game is and that it is an unreleased, paid preview; LICENSE.md (all rights reserved, Silkscreen under the OFL); contributor guide without internal notes; builds are no longer attached to GitHub releases.
+- The repository is public: README says what the game is and that it is an unreleased, paid preview; LICENSE.md (all rights reserved, Silkscreen under the OFL); contributor guide without internal notes; builds are no longer attached to GitHub releases, and build artifacts expire after one day.
 - Fix: the Linux build is compiled on Ubuntu 22.04 so it runs on 22.04, 24.04, Debian 12 and other current distributions (preview 1 needed glibc 2.43 and closed at once on them).
 - Fix: when the graphics cannot start (for example Linux with no Vulkan driver), the game shows a message saying why and what to install, instead of closing silently; a panic on the main thread is shown too.
 - Linux AppImage carries the keyboard libraries the window needs, and CI now starts every Linux build the way the Lakeside launcher does (launcher environment, made-up sign-in code, stock desktop) and fails if it does not stay up.

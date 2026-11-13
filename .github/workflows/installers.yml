@@ -57,6 +57,7 @@ jobs:
           name: installers-windows-latest
           path: out/*
           if-no-files-found: error
+          retention-days: 1  # public repo: anyone signed in can download artifacts
 
   linux:
     runs-on: ubuntu-22.04  # oldest glibc we support (2.35): a binary built on a newer Ubuntu will not start on 22.04 or 24.04
@@ -84,6 +85,7 @@ jobs:
           name: installers-ubuntu-latest
           path: out/*
           if-no-files-found: error
+          retention-days: 1  # public repo: anyone signed in can download artifacts
 
   # Start the AppImage exactly as the Lakeside launcher does, on a clean runner set up like a stock
   # desktop (a virtual display and Mesa's Vulkan driver, which Ubuntu desktop installs by default,
@@ -138,6 +140,7 @@ jobs:
           name: installers-mac
           path: out/*
           if-no-files-found: error
+          retention-days: 1  # public repo: anyone signed in can download artifacts
 
   manifest:
     needs: [windows, linux, mac, launch-check]
@@ -179,3 +182,4 @@ jobs:
           name: launcher-manifest
           path: out/launcher-manifest.json
           if-no-files-found: error
+          retention-days: 1  # public repo: anyone signed in can download artifacts

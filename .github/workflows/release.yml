@@ -82,4 +82,5 @@ jobs:
           name: urban-sprawl-${{ matrix.name }}
           path: ${{ steps.pkg.outputs.file }}
           if-no-files-found: error
+          retention-days: 1  # public repo: anyone signed in can download artifacts
 
