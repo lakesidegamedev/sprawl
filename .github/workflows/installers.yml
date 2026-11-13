@@ -14,9 +14,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version shown to players, for example 1.0.0-preview.1"
+        description: "Version shown to players, for example 1.0.0-preview.2"
         required: false
-        default: "1.0.0-preview.1"
+        default: "1.0.0-preview.2"
 
 permissions:
   contents: read

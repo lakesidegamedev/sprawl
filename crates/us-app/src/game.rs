@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use us_gen::{Preset, Pt, Town, generate, pt};
+use us_gen::{LotKind, Preset, Pt, Town, generate, pt};
 use us_render::{Camera, Scene, Style, pick_ground, project};
 use us_sim::{ABANDON_ABOVE_X10, Phase, Sim, hall_sites};
 use winit::keyboard::KeyCode;
@@ -58,6 +58,26 @@ struct Stats {
     demand: f64,
 }
 
+/// First-run guidance and event feedback for a running town.
+#[derive(Default)]
+struct Coach {
+    /// (text, seconds left, is a warning)
+    toasts: Vec<(String, f32, bool)>,
+    goal_idx: usize,
+    tip_hidden: bool,
+    /// Shop, school, church, fire station: first one built.
+    seen_kind: [bool; 4],
+    last_left: Option<usize>,
+    reveal_acc: usize,
+    reveal_cool: f32,
+    warn_cool: f32,
+    neg_flagged: bool,
+    scan_t: f32,
+}
+
+/// Population goals, in order.
+const POP_GOALS: [i64; 6] = [100, 250, 500, 1000, 2000, 4000];
+
 struct Game {
     town: Arc<Town>,
     preset: Preset,
@@ -73,6 +93,7 @@ struct Game {
     banner: Option<(String, f32)>,
     menu_open: bool,
     stats: Stats,
+    coach: Coach,
 }
 
 struct Demo {
@@ -402,6 +423,9 @@ impl State {
             s.sync_total_ms += ms;
         }
         g.refresh_stats();
+        if g.placed && !g.menu_open {
+            g.coach_tick(dt);
+        }
     }
 
     pub fn frame_done(&mut self, dt: f32, _drawn: bool) {
@@ -452,6 +476,7 @@ impl State {
             banner: None,
             menu_open: false,
             stats: Stats::default(),
+            coach: Coach::default(),
         });
         self.screen = Screen::Game;
     }
@@ -571,6 +596,20 @@ impl State {
                                 if status.launcher {
                                     label(ui, "Through the Lakeside launcher, which keeps this copy up to date.", 12.0);
                                 }
+                                ui.add_space(6.0);
+                            });
+                        } else if status.handoff_pending {
+                            ui.vertical_centered(|ui| {
+                                label(ui, "Signing in through the Lakeside launcher...", 12.0);
+                                ui.add_space(6.0);
+                            });
+                        } else {
+                            ui.vertical_centered(|ui| {
+                                label(
+                                    ui,
+                                    "Playing signed out. Sign in under Settings to get updates.",
+                                    12.0,
+                                );
                                 ui.add_space(6.0);
                             });
                         }
@@ -696,7 +735,17 @@ impl State {
                         self.account_ui(ui);
                         ui.add_space(10.0);
                         if theme::button(ui, "BACK").clicked() {
-                            self.screen = Screen::Menu;
+                            if self.settings_from_game && self.game.is_some() {
+                                // back to the pause menu of the running town
+                                self.settings_from_game = false;
+                                self.screen = Screen::Game;
+                                if let Some(g) = self.game.as_mut() {
+                                    g.menu_open = true;
+                                }
+                            } else {
+                                self.settings_from_game = false;
+                                self.screen = Screen::Menu;
+                            }
                         }
                     });
             });
@@ -798,6 +847,7 @@ impl State {
         let mut to_menu = false;
         let mut quit = false;
         let mut open_settings = false;
+        let who = self.lakeside.status().account.map(|a| a.name);
         let g = self.game.as_mut().unwrap();
         let view = g.cam.camera().view(w as f32 / h as f32);
         let painter = ctx.layer_painter(egui::LayerId::new(
@@ -914,6 +964,13 @@ impl State {
                     {
                         g.menu_open = true;
                     }
+                    if let Some(n) = &who {
+                        ui.label(
+                            RichText::new(format!("SIGNED IN: {}", n.to_uppercase()))
+                                .font(pixel(10.0))
+                                .color(Color32::from_rgb(170, 176, 196)),
+                        );
+                    }
                     ui.label(
                         RichText::new(format!("{fps:.0} FPS"))
                             .font(pixel(12.0))
@@ -951,13 +1008,86 @@ impl State {
                     theme::panel().show(ui, |ui| {
                         ui.label(heading(&b, 18.0));
                         if !g.placed {
-                            label(ui, "THE ORANGE MARKERS ARE OLD CROSSROADS. YOUR MAIN STREET WILL RUN TO THE HIGHWAY.", 12.0);
+                            label(ui, "THE WHITE SQUARES ARE OLD CROSSROADS. THE ONE NEAREST YOUR CURSOR GLOWS ORANGE. YOUR MAIN STREET WILL RUN TO THE HIGHWAY.", 12.0);
                         }
                     });
                 });
         }
 
         if g.placed {
+            // goal and first-run tips
+            let goal = POP_GOALS.get(g.coach.goal_idx).copied();
+            let day = g.sim.day;
+            let tip = if g.coach.tip_hidden {
+                None
+            } else if day < 60 {
+                Some(
+                    "PEOPLE MOVE IN AS BUILDINGS FINISH. CLICK ANY BUILDING TO SEE WHY IT WAS BUILT.",
+                )
+            } else if day < 150 {
+                Some("TAXES PAY FOR THE TOWN. WATCH THE TREASURY AND THE MONTHLY NUMBER BESIDE IT.")
+            } else if day < 300 {
+                Some(
+                    "LOW TAX GROWS FASTER BUT FILLS THE TREASURY SLOWER. HIGH TAX EMPTIES BUILDINGS. TRY THE SLIDER.",
+                )
+            } else {
+                None
+            };
+            let pop = g.stats.pop;
+            let mut hide_tip = false;
+            egui::Area::new(egui::Id::new("goal"))
+                .anchor(Align2::LEFT_TOP, vec2(14.0, 58.0))
+                .show(ctx, |ui| {
+                    theme::panel().show(ui, |ui| {
+                        ui.set_width(320.0);
+                        label(ui, "GOAL", 12.0);
+                        match goal {
+                            Some(n) => {
+                                ui.label(heading(&format!("REACH {n} PEOPLE ({pop} NOW)"), 16.0))
+                            }
+                            None => ui.label(heading("KEEP YOUR TOWN GROWING", 16.0)),
+                        };
+                        if let Some(t) = tip {
+                            ui.add_space(4.0);
+                            ui.add(
+                                egui::Label::new(RichText::new(t).font(pixel(11.0)).color(TEXT))
+                                    .wrap(),
+                            );
+                            if ui
+                                .button(RichText::new("GOT IT").font(pixel(11.0)).color(INK))
+                                .clicked()
+                            {
+                                hide_tip = true;
+                            }
+                        }
+                    });
+                });
+            if hide_tip {
+                g.coach.tip_hidden = true;
+            }
+            // event feed
+            if !g.coach.toasts.is_empty() {
+                egui::Area::new(egui::Id::new("toasts"))
+                    .anchor(Align2::RIGHT_TOP, vec2(-14.0, 58.0))
+                    .interactable(false)
+                    .show(ctx, |ui| {
+                        for (text, _, bad) in g.coach.toasts.iter().rev() {
+                            theme::panel().show(ui, |ui| {
+                                ui.set_width(300.0);
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(text).font(pixel(12.0)).color(if *bad {
+                                            BAD
+                                        } else {
+                                            TEXT
+                                        }),
+                                    )
+                                    .wrap(),
+                                );
+                            });
+                        }
+                    });
+            }
             // tax and demand
             egui::Area::new(egui::Id::new("tax"))
                 .anchor(Align2::LEFT_BOTTOM, vec2(14.0, -14.0))
@@ -1070,11 +1200,16 @@ impl State {
             .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -6.0))
             .interactable(false)
             .show(ctx, |ui| {
-                ui.add(egui::Label::new(
-                    RichText::new("WASD PAN   Q E ROTATE   RIGHT DRAG ORBIT   WHEEL ZOOM   0 1 2 3 SPEED   SPACE PAUSE")
-                        .font(pixel(10.0))
-                        .color(Color32::from_rgb(40, 44, 56)),
-                ).extend());
+                egui::Frame::new()
+                    .fill(Color32::from_rgba_unmultiplied(11, 22, 34, 190))
+                    .inner_margin(egui::Margin::symmetric(8, 3))
+                    .show(ui, |ui| {
+                        ui.add(egui::Label::new(
+                            RichText::new("WASD PAN   Q E ROTATE   RIGHT DRAG ORBIT   WHEEL ZOOM   0 1 2 3 SPEED   SPACE PAUSE")
+                                .font(pixel(10.0))
+                                .color(Color32::from_rgb(200, 208, 222)),
+                        ).extend());
+                    });
             });
 
         if g.menu_open {
@@ -1097,6 +1232,9 @@ impl State {
                                 ),
                                 12.0,
                             );
+                            if let Some(n) = &who {
+                                label(ui, &format!("SIGNED IN AS {}", n.to_uppercase()), 12.0);
+                            }
                             if theme::button(ui, "RESUME").clicked() {
                                 g.menu_open = false;
                             }
@@ -1128,6 +1266,112 @@ impl State {
 }
 
 impl Game {
+    fn toast(&mut self, text: impl Into<String>, bad: bool) {
+        self.coach.toasts.push((text.into(), 9.0, bad));
+        if self.coach.toasts.len() > 4 {
+            self.coach.toasts.remove(0);
+        }
+    }
+
+    /// Watches the town and speaks up when something worth knowing happens.
+    fn coach_tick(&mut self, dt: f32) {
+        for t in self.coach.toasts.iter_mut() {
+            t.1 -= dt;
+        }
+        self.coach.toasts.retain(|t| t.1 > 0.0);
+        self.coach.reveal_cool -= dt;
+        self.coach.warn_cool -= dt;
+        self.coach.scan_t -= dt;
+
+        // new streets opening up
+        let left = self.sim.additions_left();
+        if let Some(prev) = self.coach.last_left
+            && left < prev
+        {
+            self.coach.reveal_acc += prev - left;
+        }
+        self.coach.last_left = Some(left);
+        if self.coach.reveal_acc > 0 && self.coach.reveal_cool <= 0.0 {
+            let n = self.coach.reveal_acc;
+            self.coach.reveal_acc = 0;
+            self.coach.reveal_cool = 30.0;
+            self.toast(
+                format!(
+                    "A NEW NEIGHBOURHOOD OPENS: {n} NEW STREET{}",
+                    if n == 1 { "" } else { "S" }
+                ),
+                false,
+            );
+        }
+
+        // population goals
+        while self.coach.goal_idx < POP_GOALS.len()
+            && self.stats.pop >= POP_GOALS[self.coach.goal_idx]
+        {
+            let goal = POP_GOALS[self.coach.goal_idx];
+            self.coach.goal_idx += 1;
+            self.toast(format!("GOAL REACHED: {goal} PEOPLE LIVE HERE"), false);
+        }
+
+        // first of each landmark kind
+        if self.coach.scan_t <= 0.0 {
+            self.coach.scan_t = 0.5;
+            let mut found = [false; 4];
+            for l in self.sim.lots() {
+                if l.exempt || !matches!(l.phase, Phase::Built { .. }) {
+                    continue;
+                }
+                match l.kind {
+                    LotKind::Shop => found[0] = true,
+                    LotKind::School => found[1] = true,
+                    LotKind::Church => found[2] = true,
+                    LotKind::Fire => found[3] = true,
+                    _ => {}
+                }
+            }
+            const MSG: [&str; 4] = [
+                "THE FIRST SHOP OPENS. SHOPS BRING JOBS AND TAX",
+                "THE FIRST SCHOOL OPENS",
+                "THE FIRST CHURCH IS BUILT",
+                "THE FIRE STATION IS READY",
+            ];
+            for i in 0..4 {
+                if found[i] && !self.coach.seen_kind[i] {
+                    self.coach.seen_kind[i] = true;
+                    self.toast(MSG[i], false);
+                }
+            }
+        }
+
+        // money
+        let net = self.stats.income - self.stats.expense;
+        if self.sim.treasury < 0 {
+            if !self.coach.neg_flagged {
+                self.coach.neg_flagged = true;
+                self.toast(
+                    "THE TREASURY IS BELOW ZERO. RAISE THE TAX OR SLOW DOWN",
+                    true,
+                );
+            }
+        } else {
+            self.coach.neg_flagged = false;
+            if net < 0 && self.coach.warn_cool <= 0.0 {
+                let months = self.sim.treasury / (-net).max(1);
+                if months < 6 {
+                    self.coach.warn_cool = 60.0;
+                    self.toast(
+                        format!(
+                            "THE TREASURY RUNS OUT IN ABOUT {} MONTH{} AT THIS RATE. RAISE THE TAX",
+                            months.max(1),
+                            if months <= 1 { "" } else { "S" }
+                        ),
+                        true,
+                    );
+                }
+            }
+        }
+    }
+
     fn place(&mut self, site: Pt) {
         let mut sim = Sim::new(&self.town, site, self.seed);
         let mut live = LiveScene::new(self.town.clone(), &sim, true);

@@ -16,7 +16,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
-pub const VERSION_LABEL: &str = "1.0.0 preview 1";
+pub const VERSION_LABEL: &str = "1.0.0 preview 2";
 
 struct Gfx {
     window: Arc<Window>,
