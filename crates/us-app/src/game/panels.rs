@@ -543,6 +543,72 @@ impl Game {
                 "bond" => {
                     let _ = self.sim.take_loan();
                 }
+                "hour" => {
+                    self.hour = n as f32;
+                    self.hour_frozen = true;
+                }
+                "pause" => self.speed = 0,
+                "zoom" => {
+                    if let Some(Sel::Lot(i)) = self.sel {
+                        let p = self.sim.lots()[i].pos;
+                        self.cam
+                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), n as f32);
+                    }
+                }
+                "upgrade" => {
+                    for _ in 0..3000 {
+                        if self
+                            .sim
+                            .lots()
+                            .iter()
+                            .any(|l| matches!(l.phase, Phase::Building { .. }) && l.next_level > 0)
+                        {
+                            break;
+                        }
+                        self.sim.step_day();
+                    }
+                    let found = self
+                        .sim
+                        .lots()
+                        .iter()
+                        .find(|l| matches!(l.phase, Phase::Building { .. }) && l.next_level > 0)
+                        .map(|l| l.pos);
+                    if let Some(p) = found {
+                        self.cam
+                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 220.0);
+                    }
+                }
+                "burned" => {
+                    for _ in 0..3000 {
+                        if self.sim.lots().iter().any(|l| l.fire.is_some()) {
+                            break;
+                        }
+                        self.sim.step_day();
+                    }
+                    let found = self
+                        .sim
+                        .lots()
+                        .iter()
+                        .find(|l| l.fire.is_some())
+                        .map(|l| l.pos);
+                    if let Some(p) = found {
+                        self.cam
+                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 220.0);
+                    }
+                }
+                "works" => {
+                    for _ in 0..3000 {
+                        self.live.sync(&mut self.sim, 1.0e9);
+                        if self.live.works_place(&self.sim).is_some() {
+                            break;
+                        }
+                        self.sim.step_day();
+                    }
+                    if let Some(p) = self.live.works_place(&self.sim) {
+                        self.cam
+                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 260.0);
+                    }
+                }
                 "nolevers" => self.ui.levers_open = false,
                 _ => {}
             }
