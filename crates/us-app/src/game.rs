@@ -235,6 +235,12 @@ impl State {
             account_note: Arc::new(Mutex::new(String::new())),
             account_busy: Arc::new(AtomicBool::new(false)),
         };
+        if let Some(v) = std::env::var("URBAN_SPRAWL_SMOKE_SCALE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+        {
+            st.settings.ui_scale = v.clamp(0.8, 1.8);
+        }
         st.make_demo();
         st
     }

@@ -231,6 +231,17 @@ impl LiveScene {
         for a in revealed {
             self.add_ground_chunk(sim, a);
         }
+        // lots the mayor placed are appended to the simulation's list
+        while self.stage.len() < sim.lots().len() {
+            let i = self.stage.len();
+            let l = &sim.lots()[i];
+            self.cell_lots
+                .entry(cell_of(l.pos.x, l.pos.y))
+                .or_default()
+                .push(i);
+            self.stage.push(0);
+            self.objs.push(None);
+        }
         let day = sim.day;
         for (i, l) in sim.lots().iter().enumerate() {
             let s = stage_of(l, day);
@@ -326,4 +337,40 @@ fn append(dst: &mut Mesh, src: Mesh) {
     dst.vertices.extend(src.vertices);
     dst.cast.extend(src.cast.into_iter().map(|i| i + off));
     dst.plain.extend(src.plain.into_iter().map(|i| i + off));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use us_gen::{Preset, generate};
+    use us_sim::{CivicKind, Phase, hall_sites};
+
+    /// Placing a civic building appends a lot; the scene must follow without panicking.
+    #[test]
+    fn scene_follows_placed_civic_building() {
+        let town = Arc::new(generate(Preset::Grid, 3));
+        let hall = hall_sites(&town)[0];
+        let mut sim = Sim::new(&town, hall, 3);
+        for _ in 0..300 {
+            sim.step_day();
+        }
+        let mut live = LiveScene::new(town, &sim, true);
+        live.sync(&mut sim, 1.0e9);
+        let spot = sim
+            .lots()
+            .iter()
+            .filter(|l| l.phase == Phase::Vacant)
+            .map(|l| l.pos)
+            .find(|&p| sim.check_civic(CivicKind::Park, p).is_ok())
+            .expect("an empty lot beside a road");
+        let before = sim.lots().len();
+        sim.place_civic(CivicKind::Park, spot).expect("placed");
+        assert_eq!(sim.lots().len(), before + 1);
+        for _ in 0..90 {
+            sim.step_day();
+        }
+        live.sync(&mut sim, 1.0e9);
+        assert_eq!(live.stage.len(), sim.lots().len());
+        assert!(live.stage[before] != 0, "the new building is drawn");
+    }
 }

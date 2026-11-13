@@ -107,7 +107,7 @@ pub struct Chart<'a> {
     pub fmt: Fmt,
 }
 
-const MARGIN_L: f32 = 60.0;
+const MARGIN_L: f32 = 78.0;
 
 pub fn draw(ui: &mut Ui, size: egui::Vec2, c: &Chart) {
     let (resp, painter) = ui.allocate_painter(size, Sense::hover());
@@ -206,7 +206,7 @@ pub fn draw(ui: &mut Ui, size: egui::Vec2, c: &Chart) {
     ];
     let by_month = n <= 14;
     let stride = if by_month {
-        ((n as f32 * 76.0 / plot.width()).ceil() as usize).max(1)
+        ((n as f32 * 96.0 / plot.width()).ceil() as usize).max(1)
     } else if n > 72 {
         12 * ((n as f32 / 12.0 * 64.0 / plot.width()).ceil() as usize).max(1)
     } else {
@@ -224,7 +224,7 @@ pub fn draw(ui: &mut Ui, size: egui::Vec2, c: &Chart) {
             continue;
         }
         let x = x_of(i);
-        if x - last_label_x < 66.0 {
+        if x - last_label_x < 86.0 {
             continue;
         }
         last_label_x = x;
@@ -236,7 +236,7 @@ pub fn draw(ui: &mut Ui, size: egui::Vec2, c: &Chart) {
             Stroke::new(1.0, INK),
         );
         let text = if by_month {
-            format!("{} {}", MON[month as usize - 1], year % 100)
+            format!("{} {}", MON[month as usize - 1], year)
         } else {
             year.to_string()
         };

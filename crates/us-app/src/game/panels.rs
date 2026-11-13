@@ -109,6 +109,10 @@ fn window(
     body: impl FnOnce(&mut Ui),
 ) -> bool {
     let mut closed = false;
+    // at a large UI scale the screen has fewer points: shrink and scroll rather than overflow
+    let screen = ctx.content_rect();
+    let width = width.min(screen.width() - 30.0).max(240.0);
+    let max_h = (screen.height() - 150.0).max(160.0);
     egui::Window::new(id)
         .title_bar(false)
         .frame(theme::panel())
@@ -127,7 +131,13 @@ fn window(
                 });
             });
             ui.add_space(2.0);
-            body(ui);
+            egui::ScrollArea::vertical()
+                .max_height(max_h)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.set_width(width - 14.0);
+                    body(ui);
+                });
         });
     closed
 }
@@ -282,6 +292,8 @@ pub struct UiState {
     pub stats_open: bool,
     pub news_open: bool,
     pub tool: Option<CivicKind>,
+    /// Screenshot hook: hold the ghost at this spot instead of under the cursor.
+    fixed_ghost: Option<Pt>,
     pub view: MapView,
     tab: usize,
     range: Range,
@@ -311,6 +323,7 @@ impl Default for UiState {
             stats_open: false,
             news_open: false,
             tool: None,
+            fixed_ghost: None,
             view: MapView::Normal,
             tab: 0,
             range: Range::All,
@@ -476,6 +489,61 @@ impl Game {
                     self.ui.stats_open = true;
                     self.ui.tab = n.min(TABS.len() - 1);
                 }
+                "spot" => {
+                    // first empty lot where the chosen building fits, for a screenshot
+                    let kind = self.ui.tool.unwrap_or(CivicKind::School);
+                    let found = self
+                        .sim
+                        .lots()
+                        .iter()
+                        .filter(|l| l.phase == Phase::Vacant)
+                        .map(|l| l.pos)
+                        .filter(|&p| self.sim.check_civic(kind, p).is_ok())
+                        .nth(n);
+                    if let Some(p) = found {
+                        self.ui.fixed_ghost = Some(p);
+                        self.cam
+                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 1500.0);
+                    }
+                }
+                "civic" => {
+                    let kind = CivicKind::ALL[n.min(5)];
+                    let found = self
+                        .sim
+                        .lots()
+                        .iter()
+                        .filter(|l| l.phase == Phase::Vacant)
+                        .map(|l| l.pos)
+                        .find(|&p| self.sim.check_civic(kind, p).is_ok());
+                    if let Some(p) = found
+                        && let Ok(i) = self.sim.place_civic(kind, p)
+                    {
+                        for _ in 0..90 {
+                            self.sim.step_day();
+                        }
+                        self.sel = Some(Sel::Lot(i));
+                        self.cam
+                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 1500.0);
+                    }
+                }
+                "sel" | "selsvc" => {
+                    let want_svc = k == "selsvc";
+                    let found = self.sim.lots().iter().position(|l| {
+                        matches!(l.phase, Phase::Built { .. })
+                            && !l.exempt
+                            && if want_svc {
+                                l.kind == us_gen::LotKind::School
+                            } else {
+                                class_of(l.kind).is_some()
+                            }
+                    });
+                    if let Some(i) = found {
+                        let p = self.sim.lots()[i].pos;
+                        self.sel = Some(Sel::Lot(i + if want_svc { 0 } else { n }));
+                        self.cam
+                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 650.0);
+                    }
+                }
                 "year" => self.ui.range = Range::Year,
                 "five" => self.ui.range = Range::Five,
                 "news" => self.ui.news_open = true,
@@ -588,79 +656,88 @@ impl Game {
                         );
                         return;
                     }
-                    for c in Class::ALL {
-                        let rate = self.sim.tax_rates().get(c);
-                        let income = ledger.income.get(c);
-                        let per_point = if rate > 0 {
-                            income * 10 / rate as i64
-                        } else {
-                            self.sim
-                                .history()
-                                .last()
-                                .filter(|s| s.tax_x10.get(c) > 0)
-                                .map_or(0, |s| s.income.get(c) * 10 / s.tax_x10.get(c) as i64)
-                        };
-                        ui.horizontal(|ui| {
-                            let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-                            ui.painter().rect_filled(r, 0.0, class_color(c));
-                            lab(ui, c.label(), 14.0);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    let d = self.sim.class_demand(c);
-                                    lab_c(
-                                        ui,
-                                        format!("DEMAND {:.0}%", d * 100.0),
-                                        11.0,
-                                        if d < 0.3 {
-                                            BAD
-                                        } else if d < 0.55 {
-                                            GOLD
-                                        } else {
-                                            GOOD
+                    let max_h = (ctx.content_rect().height() - 330.0).max(120.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(max_h)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            for c in Class::ALL {
+                                let rate = self.sim.tax_rates().get(c);
+                                let income = ledger.income.get(c);
+                                let per_point = if rate > 0 {
+                                    income * 10 / rate as i64
+                                } else {
+                                    self.sim
+                                        .history()
+                                        .last()
+                                        .filter(|s| s.tax_x10.get(c) > 0)
+                                        .map_or(0, |s| {
+                                            s.income.get(c) * 10 / s.tax_x10.get(c) as i64
+                                        })
+                                };
+                                ui.horizontal(|ui| {
+                                    let (r, _) =
+                                        ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                                    ui.painter().rect_filled(r, 0.0, class_color(c));
+                                    lab(ui, c.label(), 14.0);
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let d = self.sim.class_demand(c);
+                                            lab_c(
+                                                ui,
+                                                format!("DEMAND {:.0}%", d * 100.0),
+                                                11.0,
+                                                if d < 0.3 {
+                                                    BAD
+                                                } else if d < 0.55 {
+                                                    GOLD
+                                                } else {
+                                                    GOOD
+                                                },
+                                            );
                                         },
                                     );
-                                },
-                            );
+                                });
+                                let mut pct = rate as f32 / 10.0;
+                                let r = ui.add(
+                                    egui::Slider::new(
+                                        &mut pct,
+                                        TAX_MIN_X10 as f32 / 10.0..=TAX_MAX_X10 as f32 / 10.0,
+                                    )
+                                    .step_by(0.5)
+                                    .custom_formatter(|v, _| format!("{v:.1}%")),
+                                );
+                                if r.changed() {
+                                    self.sim.set_tax_class(c, (pct * 10.0).round() as u32);
+                                }
+                                let (msg, col) = if rate > ABANDON_ABOVE_X10 {
+                                    ("Too high: buildings empty out", BAD)
+                                } else if rate >= 100 {
+                                    ("High: growth is slow", ORANGE)
+                                } else if rate <= 40 {
+                                    ("Low: fast growth, thin income", GOOD)
+                                } else {
+                                    ("Balanced", TEXT)
+                                };
+                                ui.horizontal(|ui| {
+                                    lab_c(ui, msg, 12.0, col);
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            lab(ui, format!("{}/MO", money(income)), 12.0);
+                                        },
+                                    );
+                                });
+                                lab_c(
+                                    ui,
+                                    format!("Each point is about {} a month", money(per_point)),
+                                    12.0,
+                                    Color32::from_rgb(170, 176, 196),
+                                );
+                                ui.add_space(2.0);
+                            }
                         });
-                        let mut pct = rate as f32 / 10.0;
-                        let r = ui.add(
-                            egui::Slider::new(
-                                &mut pct,
-                                TAX_MIN_X10 as f32 / 10.0..=TAX_MAX_X10 as f32 / 10.0,
-                            )
-                            .step_by(0.5)
-                            .custom_formatter(|v, _| format!("{v:.1}%")),
-                        );
-                        if r.changed() {
-                            self.sim.set_tax_class(c, (pct * 10.0).round() as u32);
-                        }
-                        let (msg, col) = if rate > ABANDON_ABOVE_X10 {
-                            ("Too high: buildings empty out", BAD)
-                        } else if rate >= 100 {
-                            ("High: growth is slow", ORANGE)
-                        } else if rate <= 40 {
-                            ("Low: fast growth, thin income", GOOD)
-                        } else {
-                            ("Balanced", TEXT)
-                        };
-                        ui.horizontal(|ui| {
-                            lab_c(ui, msg, 12.0, col);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    lab(ui, format!("{}/MO", money(income)), 12.0);
-                                },
-                            );
-                        });
-                        lab_c(
-                            ui,
-                            format!("Each point is about {} a month", money(per_point)),
-                            12.0,
-                            Color32::from_rgb(170, 176, 196),
-                        );
-                        ui.add_space(2.0);
-                    }
                     ui.separator();
                     let net = self.stats.income - self.stats.expense;
                     lab(
@@ -1021,20 +1098,30 @@ impl Game {
     ) {
         let Some(kind) = self.ui.tool else { return };
         let ppp = ctx.pixels_per_point();
-        let Some(pos) = ctx.pointer_hover_pos() else {
-            return;
+        let hover = ctx.pointer_hover_pos();
+        let p = if let Some(p) = self.ui.fixed_ghost {
+            p
+        } else {
+            let Some(pos) = hover else { return };
+            if ctx.egui_wants_pointer_input() {
+                return;
+            }
+            let ndc = (
+                pos.x * ppp / w as f32 * 2.0 - 1.0,
+                1.0 - pos.y * ppp / h as f32 * 2.0,
+            );
+            let Some(g) = us_render::pick_ground(view, ndc) else {
+                return;
+            };
+            pt(g.x as f64, g.y as f64)
         };
-        if ctx.egui_wants_pointer_input() {
-            return;
-        }
-        let ndc = (
-            pos.x * ppp / w as f32 * 2.0 - 1.0,
-            1.0 - pos.y * ppp / h as f32 * 2.0,
-        );
-        let Some(g) = us_render::pick_ground(view, ndc) else {
-            return;
+        let pos = match (
+            self.ui.fixed_ghost,
+            project(view, Vec3::new(p.x as f32, p.y as f32, 0.0)),
+        ) {
+            (Some(_), Some(s)) => super::to_screen(s, w, h, ppp),
+            _ => hover.unwrap_or(Pos2::ZERO),
         };
-        let p = pt(g.x as f64, g.y as f64);
         let verdict = self.sim.check_civic(kind, p);
         let ok = verdict.is_ok();
         let col = if ok { GOOD } else { BAD };
@@ -1255,7 +1342,11 @@ impl Game {
                         });
                         lab_c(
                             ui,
-                            "Shown as a marker on each lot",
+                            if mv == MapView::Traffic {
+                                "Shown along the roads"
+                            } else {
+                                "Shown as a marker on each lot"
+                            },
                             9.0,
                             Color32::from_rgb(170, 176, 196),
                         );
@@ -1415,6 +1506,9 @@ impl Game {
         let mut new_tab = tab;
         let mut new_range = self.ui.range;
         let n_months = days.len();
+        let screen = ctx.content_rect();
+        let ww = 800.0f32.min(screen.width() - 30.0).max(240.0);
+        let ch = (screen.height() - 360.0).clamp(150.0, 330.0);
         let closed = window(ctx, "stats", "Graphs", 800.0, pos, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
@@ -1446,7 +1540,7 @@ impl Game {
                 });
             });
             lab(ui, TABS[tab], 14.0);
-            let size = vec2(780.0, 330.0);
+            let size = vec2(ww - 30.0, ch);
             charts::draw(
                 ui,
                 size,
