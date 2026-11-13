@@ -3,7 +3,7 @@
 #![allow(deprecated)]
 
 use crate::cam::CamCtl;
-use crate::theme::{self, ACCENT, BAD, GOOD, INK, TEXT, heading, pixel};
+use crate::theme::{self, ACCENT, BAD, INK, TEXT, heading, pixel};
 use crate::world::LiveScene;
 use egui::{Align2, Color32, Pos2, RichText, Stroke, vec2};
 use glam::Vec3;
@@ -13,9 +13,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use us_gen::{LotKind, Preset, Pt, Town, generate, pt};
 use us_render::{Camera, Scene, Style, pick_ground, project};
-use us_sim::{ABANDON_ABOVE_X10, Phase, Sim, hall_sites};
+use us_sim::{Phase, Sim, hall_sites};
 use winit::keyboard::KeyCode;
 
+mod charts;
+mod panels;
 pub mod touch;
 
 const DAY_SECONDS: f64 = 1.3;
@@ -57,7 +59,6 @@ struct Stats {
     building: usize,
     income: i64,
     expense: i64,
-    demand: f64,
 }
 
 /// First-run guidance and event feedback for a running town.
@@ -96,6 +97,7 @@ struct Game {
     menu_open: bool,
     stats: Stats,
     coach: Coach,
+    ui: panels::UiState,
 }
 
 struct Demo {
@@ -236,6 +238,12 @@ impl State {
             account_note: Arc::new(Mutex::new(String::new())),
             account_busy: Arc::new(AtomicBool::new(false)),
         };
+        if let Some(v) = std::env::var("URBAN_SPRAWL_SMOKE_SCALE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+        {
+            st.settings.ui_scale = v.clamp(0.8, 1.8);
+        }
         st.make_demo();
         st
     }
@@ -322,6 +330,9 @@ impl State {
             return;
         }
         let Some(g) = self.game.as_mut() else { return };
+        if g.placed && g.ui_key(code) {
+            return;
+        }
         match code {
             KeyCode::Digit0 | KeyCode::Numpad0 => g.speed = 0,
             KeyCode::Digit1 | KeyCode::Numpad1 => g.speed = 1,
@@ -405,7 +416,11 @@ impl State {
                     g.place(s);
                 }
             } else if let Some(p) = pick_ground(&view, ndc) {
-                g.select_at(pt(p.x as f64, p.y as f64));
+                if g.ui.tool.is_some() {
+                    g.place_tool(pt(p.x as f64, p.y as f64));
+                } else {
+                    g.select_at(pt(p.x as f64, p.y as f64));
+                }
             }
         }
         if g.placed && g.speed > 0 && !g.menu_open {
@@ -428,6 +443,7 @@ impl State {
             s.sync_total_ms += ms;
         }
         g.refresh_stats();
+        g.ui_tick(dt);
         if g.placed && !g.menu_open {
             g.coach_tick(dt);
         }
@@ -482,6 +498,7 @@ impl State {
             menu_open: false,
             stats: Stats::default(),
             coach: Coach::default(),
+            ui: panels::UiState::default(),
         });
         self.screen = Screen::Game;
     }
@@ -514,6 +531,9 @@ impl State {
                         for _ in 0..days {
                             g.sim.step_day();
                         }
+                    }
+                    if let Ok(spec) = std::env::var("URBAN_SPRAWL_SMOKE_UI") {
+                        g.ui_hook(&spec);
                     }
                 }
                 s.stage = 2;
@@ -649,30 +669,17 @@ impl State {
                         ui.label(heading("NEW TOWN", 32.0));
                         ui.add_space(6.0);
                         label(ui, "TOWN STYLE", 14.0);
-                        ui.horizontal(|ui| {
-                            ui.selectable_value(
-                                &mut self.preset,
-                                Preset::Grid,
-                                RichText::new("GRID TOWN").font(pixel(16.0)),
-                            );
-                            ui.selectable_value(
-                                &mut self.preset,
-                                Preset::Winding,
-                                RichText::new("WINDING TOWN").font(pixel(16.0)),
-                            );
+                        ui.horizontal_wrapped(|ui| {
+                            for p in Preset::ALL {
+                                ui.selectable_value(
+                                    &mut self.preset,
+                                    p,
+                                    RichText::new(format!("{} TOWN", p.label().to_uppercase()))
+                                        .font(pixel(16.0)),
+                                );
+                            }
                         });
-                        label(
-                            ui,
-                            match self.preset {
-                                Preset::Grid => {
-                                    "Prairie railroad town: straight streets, a grid of old roads."
-                                }
-                                Preset::Winding => {
-                                    "River and hills town: crooked streets that follow the land."
-                                }
-                            },
-                            12.0,
-                        );
+                        label(ui, self.preset.blurb(), 12.0);
                         ui.add_space(6.0);
                         label(ui, "SEED", 14.0);
                         ui.horizontal(|ui| {
@@ -979,6 +986,7 @@ impl State {
                         .font(pixel(if narrow { 13.0 } else { 16.0 }))
                         .color(nc),
                     );
+                    g.sparks_ui(ui);
                 } else {
                     ui.label(t("PLACE THE TOWN HALL".to_string()));
                 }
@@ -1048,6 +1056,18 @@ impl State {
                 });
             }
         });
+
+        if g.placed {
+            egui::Panel::top("tools")
+                .frame(theme::bar())
+                .show(ui, |ui| g.toolbar_ui(ui));
+        }
+
+        if g.placed {
+            g.selection_reach(&painter, &view, w, h, ppp);
+            g.ghost_ui(ctx, &painter, &view, w, h);
+        }
+
         // banner
         let banner = if !g.placed {
             Some("CLICK A CROSSROADS TO PLACE THE TOWN HALL".to_string())
@@ -1056,7 +1076,7 @@ impl State {
         };
         if let Some(b) = banner {
             egui::Area::new(egui::Id::new("banner"))
-                .anchor(Align2::CENTER_TOP, vec2(0.0, 56.0))
+                .anchor(Align2::CENTER_TOP, vec2(0.0, 96.0))
                 .show(ctx, |ui| {
                     theme::panel().show(ui, |ui| {
                         ui.label(heading(&b, 18.0));
@@ -1089,7 +1109,7 @@ impl State {
             let pop = g.stats.pop;
             let mut hide_tip = false;
             egui::Area::new(egui::Id::new("goal"))
-                .anchor(Align2::LEFT_TOP, vec2(14.0, 58.0))
+                .anchor(Align2::LEFT_TOP, vec2(14.0, 96.0))
                 .show(ctx, |ui| {
                     theme::panel().show(ui, |ui| {
                         ui.set_width(320.0);
@@ -1121,7 +1141,7 @@ impl State {
             // event feed
             if !g.coach.toasts.is_empty() {
                 egui::Area::new(egui::Id::new("toasts"))
-                    .anchor(Align2::RIGHT_TOP, vec2(-14.0, 58.0))
+                    .anchor(Align2::RIGHT_TOP, vec2(-14.0, 96.0))
                     .interactable(false)
                     .show(ctx, |ui| {
                         for (text, _, bad) in g.coach.toasts.iter().rev() {
@@ -1141,72 +1161,24 @@ impl State {
                         }
                     });
             }
-            // tax and demand
-            egui::Area::new(egui::Id::new("tax"))
-                .anchor(Align2::LEFT_BOTTOM, vec2(14.0, -14.0))
-                .show(ctx, |ui| {
-                    theme::panel().show(ui, |ui| {
-                        ui.set_width(300.0);
-                        ui.label(heading("PROPERTY TAX", 18.0));
-                        let mut pct = g.sim.tax_pct() as f32;
-                        let r = ui.add(
-                            egui::Slider::new(&mut pct, 0.0..=20.0)
-                                .step_by(0.5)
-                                .custom_formatter(|v, _| format!("{v:.1}%")),
-                        );
-                        if r.changed() {
-                            g.sim.set_tax_x10((pct * 10.0).round() as u32);
-                        }
-                        ui.add_space(2.0);
-                        let tax = g.sim.tax_x10();
-                        let (msg, col) = if tax > ABANDON_ABOVE_X10 {
-                            ("TOO HIGH: BUILDINGS EMPTY OUT", BAD)
-                        } else if tax >= 100 {
-                            ("HIGH: GROWTH IS SLOW", Color32::from_rgb(190, 120, 30))
-                        } else if tax <= 40 {
-                            ("LOW: FAST GROWTH, THIN TREASURY", GOOD)
-                        } else {
-                            ("BALANCED", TEXT)
-                        };
-                        ui.label(RichText::new(msg).font(pixel(12.0)).color(col));
-                        ui.add_space(4.0);
-                        label(ui, "DEMAND", 14.0);
-                        let (rect, _) =
-                            ui.allocate_exact_size(vec2(276.0, 20.0), egui::Sense::hover());
-                        let p = ui.painter();
-                        p.rect_filled(rect, egui::CornerRadius::ZERO, theme::EDGE);
-                        let inner = rect.shrink(3.0);
-                        p.rect_filled(inner, egui::CornerRadius::ZERO, theme::PANEL_DARK);
-                        let mut f = inner;
-                        f.set_width(inner.width() * g.stats.demand as f32);
-                        let dc = if g.stats.demand < 0.3 {
-                            BAD
-                        } else if g.stats.demand < 0.55 {
-                            Color32::from_rgb(220, 170, 50)
-                        } else {
-                            GOOD
-                        };
-                        p.rect_filled(f, egui::CornerRadius::ZERO, dc);
-                        ui.add_space(2.0);
-                        label(
-                            ui,
-                            &format!(
-                                "BUILT {}  BUILDING {}  EMPTY {}",
-                                g.stats.built, g.stats.building, g.stats.empty
-                            ),
-                            12.0,
-                        );
-                        label(
-                            ui,
-                            &format!(
-                                "TAX IN {}  COSTS {}",
-                                money(g.stats.income),
-                                money(g.stats.expense)
-                            ),
-                            12.0,
-                        );
-                    });
-                });
+            let screen_w = w as f32 / ppp;
+            g.levers_ui(ctx);
+            if g.ui.budget_open {
+                g.budget_ui(ctx);
+            }
+            if g.ui.loans_open {
+                g.loans_ui(ctx);
+            }
+            if g.ui.build_open {
+                g.build_ui(ctx, screen_w);
+            }
+            if g.ui.stats_open {
+                g.stats_ui(ctx, screen_w);
+            }
+            if g.ui.news_open {
+                g.news_ui(ctx, screen_w);
+            }
+            g.legend_ui(ctx);
             // why panel
             if let Some(sel) = g.sel {
                 let (title, status, built, reason) = match sel {
@@ -1237,6 +1209,9 @@ impl State {
                                 egui::Label::new(RichText::new(reason).size(15.0).color(TEXT))
                                     .wrap(),
                             );
+                            if let Sel::Lot(i) = sel {
+                                g.why_extra(ui, i);
+                            }
                             ui.add_space(4.0);
                             if ui
                                 .button(RichText::new("CLOSE").font(pixel(12.0)).color(INK))
@@ -1258,7 +1233,7 @@ impl State {
                     .inner_margin(egui::Margin::symmetric(8, 3))
                     .show(ui, |ui| {
                         ui.add(egui::Label::new(
-                            RichText::new("WASD PAN   Q E ROTATE   RIGHT DRAG ORBIT   WHEEL ZOOM   0 1 2 3 SPEED   SPACE PAUSE")
+                            RichText::new("WASD PAN   Q E ROTATE   RIGHT DRAG ORBIT   WHEEL ZOOM   0 1 2 3 SPEED   SPACE PAUSE   P K O B G J PANELS   M MAP VIEW")
                                 .font(pixel(10.0))
                                 .color(Color32::from_rgb(200, 208, 222)),
                         ).extend());
@@ -1277,10 +1252,7 @@ impl State {
                                 ui,
                                 &format!(
                                     "{} TOWN, SEED {}",
-                                    match g.preset {
-                                        Preset::Grid => "GRID",
-                                        Preset::Winding => "WINDING",
-                                    },
+                                    g.preset.label().to_uppercase(),
                                     g.seed
                                 ),
                                 12.0,
@@ -1470,7 +1442,6 @@ impl Game {
             building: self.sim.building_count(),
             income,
             expense,
-            demand: self.sim.demand(),
         };
     }
 }

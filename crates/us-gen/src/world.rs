@@ -2,6 +2,7 @@
 
 use crate::geom::{Pt, cos, pt, sin};
 use crate::rng::Rng;
+use crate::terrain::Terrain;
 
 pub const S: f64 = 4096.0;
 pub const HWY_Y: f64 = 70.0;
@@ -74,7 +75,13 @@ pub fn noise(x: f64, y: f64) -> f64 {
 }
 
 /// An old road that wanders from `start` along `heading` until it leaves the map.
-pub fn wander_line(start: Pt, heading: f64, rng: &mut Rng, amp: f64) -> Vec<Pt> {
+pub fn wander_line(
+    start: Pt,
+    heading: f64,
+    rng: &mut Rng,
+    amp: f64,
+    terrain: Option<&Terrain>,
+) -> Vec<Pt> {
     let step = 20.0;
     let ph = [
         rng.uniform(0.0, 6.3),
@@ -85,11 +92,14 @@ pub fn wander_line(start: Pt, heading: f64, rng: &mut Rng, amp: f64) -> Vec<Pt> 
     let (mut x, mut y) = (start.x, start.y);
     let mut l = 0.0;
     while l < 6000.0 {
-        let h = heading
+        let mut h = heading
             + amp
                 * (0.55 * sin(l / 520.0 + ph[0])
                     + 0.3 * sin(l / 230.0 + ph[1])
                     + 0.15 * sin(l / 110.0 + ph[2]));
+        if let Some(t) = terrain {
+            h = follow_contour(t, pt(x, y), h);
+        }
         x += step * cos(h);
         y += step * sin(h);
         pts.push(pt(x, y));
@@ -122,4 +132,67 @@ pub fn ln_angle(a: f64, through: Pt) -> Vec<Pt> {
         pt(through.x - dx * l, through.y - dy * l),
         pt(through.x + dx * l, through.y + dy * l),
     ]
+}
+
+/// Turn a heading towards the nearest contour direction where the ground is steep, so old roads
+/// bend round hillsides instead of climbing them.
+pub fn follow_contour(t: &Terrain, at: Pt, h: f64) -> f64 {
+    let g = t.gradient(at);
+    let s = g.len();
+    if s < 0.025 {
+        return h;
+    }
+    let pi = std::f64::consts::PI;
+    let along = libm::atan2(g.x, -g.y);
+    // the contour direction closest to the heading (it runs both ways)
+    let mut d = (along - h).rem_euclid(pi);
+    if d > pi / 2.0 {
+        d -= pi;
+    }
+    // no pull when the heading is square to the contour, or the road would flip back and forth
+    let blend = ((s - 0.025) / 0.07).clamp(0.0, 0.75) * cos(d).powi(2);
+    h + d * blend
+}
+
+/// A blobby lake with a shore that streets can follow.
+#[derive(Clone, Debug)]
+pub struct Lake {
+    pub c: Pt,
+    pub r: f64,
+    pub a: f64,
+    pub pa: f64,
+    pub b: f64,
+    pub pb: f64,
+}
+
+impl Lake {
+    pub fn new(rng: &mut Rng) -> Lake {
+        Lake {
+            c: pt(
+                2800.0 + rng.uniform(-80.0, 120.0),
+                1450.0 + rng.uniform(-200.0, 250.0),
+            ),
+            r: 430.0 * rng.uniform(0.9, 1.1),
+            a: rng.uniform(0.1, 0.17),
+            pa: rng.uniform(0.0, TAU),
+            b: rng.uniform(0.05, 0.1),
+            pb: rng.uniform(0.0, TAU),
+        }
+    }
+
+    fn radius(&self, t: f64) -> f64 {
+        self.r * (1.0 + self.a * sin(2.0 * t + self.pa) + self.b * sin(3.0 * t + self.pb))
+    }
+
+    /// Closed ring `off` metres out from the shoreline (negative goes inland), first point repeated.
+    pub fn ring(&self, off: f64) -> Vec<Pt> {
+        let n = 180;
+        (0..=n)
+            .map(|i| {
+                let t = TAU * (i % n) as f64 / n as f64;
+                let r = self.radius(t) + off;
+                pt(self.c.x + r * cos(t), self.c.y + r * sin(t))
+            })
+            .collect()
+    }
 }

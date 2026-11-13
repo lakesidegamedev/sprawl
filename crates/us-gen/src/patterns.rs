@@ -48,6 +48,7 @@ pub fn grid_lines(
     alleys: bool,
     origin: Pt,
     bend: f64,
+    jog: (f64, f64),
     rng: &mut Rng,
 ) -> (Vec<Line>, Vec<Line>) {
     let loc = rotate_all(poly, origin, -ang);
@@ -65,8 +66,10 @@ pub fn grid_lines(
         }
     };
     let mut y = ((miny - phase.1 - origin.y) / depth).floor() * depth + phase.1 + origin.y;
+    let mut rows: Vec<f64> = Vec::new();
     let mut guard = 0;
     while y < maxy + depth && guard < 400 {
+        rows.push(y);
         let ph = rng.uniform(0.0, 6.0);
         if bend != 0.0 {
             add(
@@ -94,7 +97,20 @@ pub fn grid_lines(
     let mut x = ((minx - phase.0 - origin.x) / length_).floor() * length_ + phase.0 + origin.x;
     guard = 0;
     while x < maxx + length_ && guard < 400 {
-        add(vec![pt(x, miny - 20.0), pt(x, maxy + 20.0)], &mut streets);
+        if jog.0 > 0.0 && rows.len() > 2 {
+            // between each pair of cross streets the street shifts sideways, so it meets the
+            // along-street in two T-junctions instead of one four-way crossing
+            let mut edges: Vec<f64> = vec![miny - 20.0];
+            edges.extend(rows.iter().copied().filter(|r| *r > miny && *r < maxy));
+            edges.push(maxy + 20.0);
+            for (i, w) in edges.windows(2).enumerate() {
+                let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
+                let off = if rng.chance(jog.0) { sign * jog.1 } else { 0.0 };
+                add(vec![pt(x + off, w[0]), pt(x + off, w[1])], &mut streets);
+            }
+        } else {
+            add(vec![pt(x, miny - 20.0), pt(x, maxy + 20.0)], &mut streets);
+        }
         x += length_;
         guard += 1;
     }
@@ -103,6 +119,7 @@ pub fn grid_lines(
 
 /// Curving streets along the cell's long axis, optional wavy cross streets, optional cul-de-sacs.
 /// Built in the cell's own frame and rotated back.
+#[allow(clippy::too_many_arguments)]
 pub fn curvy_local(
     cell: &[Pt],
     rng: &mut Rng,
@@ -111,8 +128,9 @@ pub fn curvy_local(
     cross: Option<f64>,
     culs: bool,
     wl: f64,
+    flow: Option<f64>,
 ) -> (Vec<Line>, Vec<Line>) {
-    let ang = axis_angle(cell);
+    let ang = flow.unwrap_or_else(|| axis_angle(cell));
     let c = centroid(cell);
     let loc = rotate_all(cell, c, -ang);
     let (lo, hi) = crate::geom::bbox(&loc);
@@ -461,6 +479,7 @@ mod tests {
             true,
             pt(1200.0, 1150.0),
             0.0,
+            (0.0, 0.0),
             &mut rng,
         );
         assert!(!s.is_empty() && !l.is_empty());

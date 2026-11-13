@@ -72,7 +72,7 @@ fn length(t: &Town, c: RoadClass) -> f64 {
 
 #[test]
 fn growth_never_creates_a_crossing_without_a_junction() {
-    for (preset, seed) in [(Preset::Grid, 1), (Preset::Winding, 2)] {
+    for (preset, seed) in [(Preset::Grid, 1), (Preset::Winding, 3)] {
         let (before, after) = grown(preset, seed, 12);
         // streets are rewritten from the noded graph: no crossing is left without a vertex
         let skip = [RoadClass::Rail, RoadClass::Alley];

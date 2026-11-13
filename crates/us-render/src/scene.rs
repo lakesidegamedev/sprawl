@@ -1,9 +1,15 @@
 //! Town to meshes: ground layers, roads, and the buildings merged into chunk meshes.
 
+use crate::calendar::Calendar;
 use crate::ground::{Ground, layer};
+use crate::instances::{self, Car, Instance, Path, Walker};
 use crate::kit;
+use crate::levels;
+use crate::live::{self, RoadDraw};
 use crate::mesh::Mesh;
 use crate::obj::{Obj, Rgb};
+use crate::overlay::{self, LotInfo, Overlay};
+use crate::parts::Region;
 use crate::rng::Rng;
 use glam::Vec3;
 use std::collections::BTreeMap;
@@ -38,12 +44,92 @@ const CHUNK: f32 = 256.0;
 
 static NEXT_UID: AtomicU64 = AtomicU64::new(1);
 
+/// Outline ids reserved for each chunk of a town scene.
+const IDS_PER_CHUNK: u32 = 24_000;
+
 pub struct Chunk {
     /// Bump when `mesh` changes so the renderer re-uploads just this chunk.
     pub rev: u64,
     pub mesh: Mesh,
+    /// A simpler form of `mesh` for when the chunk is small on screen (big faces only, no ink).
+    /// `None` always draws `mesh`.
+    pub far: Option<Mesh>,
     pub lo: Vec3,
     pub hi: Vec3,
+}
+
+/// A road as the scene keeps it, so it can change class and show roadworks.
+#[derive(Clone, Debug)]
+pub struct RoadInfo {
+    pub class: RoadClass,
+    pub points: Vec<Pt>,
+    /// `Some(progress)` while the road is being rebuilt.
+    pub works: Option<f32>,
+}
+
+/// What a lot's building is doing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LotState {
+    /// Standing and in use.
+    Normal,
+    /// Going up (a new building or an upgrade): progress 0 to 1, with fence and crane.
+    Building(f32),
+    /// Burned out; follow with `Building` to show it rebuilt.
+    Burned,
+}
+
+struct Placement {
+    obj: Obj,
+    x: f32,
+    y: f32,
+    theta: f32,
+    chunk: usize,
+}
+
+struct LotLook {
+    original: Obj,
+    level: Option<u8>,
+    state: LotState,
+}
+
+struct TownData {
+    town: Town,
+    placements: Vec<Placement>,
+    /// Placement index of each lot's building.
+    lot_place: Vec<usize>,
+    looks: Vec<LotLook>,
+    chunk_members: Vec<Vec<usize>>,
+}
+
+struct OverlayState {
+    mesh: Mesh,
+    rev: u64,
+}
+
+#[derive(Default)]
+struct Extras {
+    lots: Vec<LotInfo>,
+    lot_active: Vec<bool>,
+    roads: Vec<RoadInfo>,
+    paths: Vec<Path>,
+    volumes: Vec<f32>,
+    cars: Vec<Car>,
+    chimneys: Vec<[f32; 3]>,
+    walkers: Vec<Walker>,
+    lamps: Vec<Instance>,
+    centre: [f32; 2],
+    overlay: Option<OverlayState>,
+    overlay_rev: u64,
+    town: Option<TownData>,
+}
+
+/// Everything that moves, worked out for one frame.
+#[derive(Default)]
+pub struct FrameInstances {
+    pub cars: Vec<Instance>,
+    pub puffs: Vec<Instance>,
+    pub people: Vec<Instance>,
+    pub lamps: Vec<Instance>,
 }
 
 pub struct Scene {
@@ -55,6 +141,11 @@ pub struct Scene {
     pub ground_rev: u64,
     pub chunks: Vec<Chunk>,
     pub hall: Vec3,
+    /// The game date and hour. `None` draws the plain noon look.
+    pub calendar: Option<Calendar>,
+    /// Animation clock in seconds: cars, smoke and people move with it.
+    pub time: f32,
+    x: Extras,
 }
 
 impl Scene {
@@ -68,6 +159,9 @@ impl Scene {
             ground_rev: 0,
             chunks: Vec::new(),
             hall,
+            calendar: None,
+            time: 0.0,
+            x: Extras::default(),
         }
     }
 
@@ -81,16 +175,274 @@ impl Scene {
     }
 
     pub fn from_town(t: &Town) -> Scene {
-        let ground = build_ground(t);
-        let chunks = build_chunks(t);
-        Scene {
+        let roads: Vec<RoadInfo> = t
+            .roads
+            .iter()
+            .map(|r| RoadInfo {
+                class: r.class,
+                points: r.points.clone(),
+                works: None,
+            })
+            .collect();
+        let ground = build_ground(t, &roads);
+        let (td, chunks) = build_chunks(t);
+        let mut s = Scene {
             uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
             size: t.size as f32,
-            ground: ground.mesh,
+            ground,
             ground_rev: 0,
             chunks,
             hall: Vec3::new(t.hall.x as f32, t.hall.y as f32, 0.0),
+            calendar: None,
+            time: 0.0,
+            x: Extras::default(),
+        };
+        let lots: Vec<LotInfo> = t
+            .lots
+            .iter()
+            .map(|l| LotInfo {
+                x: l.centre.x as f32,
+                y: l.centre.y as f32,
+                theta: l.facing as f32,
+                kind: l.kind,
+                level: 2,
+            })
+            .collect();
+        s.x.town = Some(td);
+        s.set_geometry(lots, roads);
+        s
+    }
+
+    // ---- what the scene knows about the town ----
+
+    /// Tell the scene about the lots and roads of a hand-built scene, so map views, traffic and
+    /// smoke work on it. (`from_town` does this itself.)
+    pub fn set_geometry(&mut self, lots: Vec<LotInfo>, roads: Vec<RoadInfo>) {
+        self.x.paths = roads
+            .iter()
+            .map(|r| Path::new(r.class, &r.points))
+            .collect();
+        self.x.lot_active = vec![true; lots.len()];
+        self.x.lots = lots;
+        self.x.roads = roads;
+        self.x.centre = [self.hall.x, self.hall.y];
+        self.x.lamps = instances::lamp_instances(&self.x.paths);
+        self.x.walkers = instances::make_walkers(&self.x.paths, self.x.centre, 260.0);
+        self.x.cars = instances::make_cars(&self.x.paths, &self.x.volumes);
+        self.refresh_chimneys();
+    }
+
+    /// Change what the overlay and smoke know about one lot of a hand-built scene.
+    pub fn set_lot_info(&mut self, i: usize, level: u8, active: bool) {
+        if let Some(l) = self.x.lots.get_mut(i) {
+            l.level = level.clamp(1, levels::MAX_LEVEL);
+            self.x.lot_active[i] = active;
+            self.refresh_chimneys();
         }
+    }
+
+    pub fn lot_count(&self) -> usize {
+        self.x.lots.len()
+    }
+
+    pub fn road_count(&self) -> usize {
+        self.x.roads.len()
+    }
+
+    fn refresh_chimneys(&mut self) {
+        let mut v = Vec::new();
+        for (i, l) in self.x.lots.iter().enumerate() {
+            if !self.x.lot_active.get(i).copied().unwrap_or(true) {
+                continue;
+            }
+            let (s, c) = (libm::sinf(l.theta), libm::cosf(l.theta));
+            for [cx, cy, top] in levels::chimneys(l.kind, l.level) {
+                v.push([l.x + c * cx - s * cy, l.y + s * cx + c * cy, top]);
+            }
+        }
+        self.x.chimneys = v;
+    }
+
+    // ---- map views ----
+
+    /// Show a map view, or `None` to go back to the town. `lots` and `roads` of the overlay are
+    /// indexed like the town's lot and road lists.
+    pub fn set_overlay(&mut self, ov: Option<Overlay>) {
+        match ov {
+            None => {
+                self.x.overlay = None;
+            }
+            Some(ov) => {
+                let roads: Vec<(RoadClass, &[Pt])> = self
+                    .x
+                    .roads
+                    .iter()
+                    .map(|r| (r.class, r.points.as_slice()))
+                    .collect();
+                let (mass, hall) = match &self.x.town {
+                    Some(td) => (
+                        (0..self.x.lots.len())
+                            .map(|i| levels::massing(&td.placements[td.lot_place[i]].obj))
+                            .collect::<Vec<_>>(),
+                        td.placements
+                            .first()
+                            .map(|h| (h.x, h.y, h.theta, levels::massing(&h.obj))),
+                    ),
+                    None => (Vec::new(), None),
+                };
+                let mesh = overlay::build_mesh(&self.x.lots, &mass, hall, &roads, &ov);
+                self.x.overlay_rev += 1;
+                self.x.overlay = Some(OverlayState {
+                    mesh,
+                    rev: self.x.overlay_rev,
+                });
+            }
+        }
+    }
+
+    pub fn overlay_active(&self) -> bool {
+        self.x.overlay.is_some()
+    }
+
+    pub(crate) fn overlay_mesh(&self) -> Option<(&Mesh, u64)> {
+        self.x.overlay.as_ref().map(|o| (&o.mesh, o.rev))
+    }
+
+    // ---- traffic, smoke, people ----
+
+    /// Traffic volume of every road, 0 (empty) to 1 (jammed), indexed like the road list. The
+    /// number of cars on each road follows it.
+    pub fn set_road_volumes(&mut self, volumes: &[f32]) {
+        self.x.volumes = volumes.to_vec();
+        self.x.cars = instances::make_cars(&self.x.paths, &self.x.volumes);
+    }
+
+    pub fn car_count(&self) -> usize {
+        self.x.cars.len()
+    }
+
+    pub fn set_time(&mut self, seconds: f32) {
+        self.time = seconds;
+    }
+
+    pub fn set_calendar(&mut self, c: Option<Calendar>) {
+        self.calendar = c;
+    }
+
+    /// Cars, smoke puffs and people at the scene's current clock. Empty in a map view.
+    pub fn instances(&self) -> FrameInstances {
+        if self.x.overlay.is_some() {
+            return FrameInstances::default();
+        }
+        FrameInstances {
+            cars: instances::car_instances(&self.x.paths, &self.x.cars, self.time),
+            puffs: instances::puff_instances(&self.x.chimneys, self.time),
+            people: instances::walker_instances(&self.x.paths, &self.x.walkers, self.time),
+            lamps: self.x.lamps.clone(),
+        }
+    }
+
+    // ---- buildings over time ----
+
+    /// Change what lots look like: level (1 to 5, `None` for the original look) and state. Only
+    /// the chunks that hold changed lots are rebuilt. Works on scenes made by `from_town`.
+    pub fn set_lots(&mut self, changes: &[(usize, Option<u8>, LotState)]) {
+        let Some(td) = self.x.town.as_mut() else {
+            return;
+        };
+        let mut dirty: Vec<usize> = Vec::new();
+        for &(i, level, state) in changes {
+            if i >= td.looks.len() {
+                continue;
+            }
+            let level = level.map(|l| l.clamp(1, levels::MAX_LEVEL));
+            let look = &mut td.looks[i];
+            look.level = level;
+            look.state = state;
+            let lot = &td.town.lots[i];
+            let base = match level {
+                None => look.original.clone(),
+                Some(l) => levels::build_lot_level_in(
+                    Region::of(td.town.preset),
+                    lot.kind,
+                    l,
+                    &mut Rng::new(td.town.seed ^ 0x1e7e_1000, i as u64 * 131 + l as u64),
+                ),
+            };
+            let obj = match state {
+                LotState::Normal => base,
+                LotState::Building(p) => levels::building_site(&base, p),
+                LotState::Burned => {
+                    levels::burned(&base, &mut Rng::new(td.town.seed ^ 0xb0b0, i as u64))
+                }
+            };
+            let pi = td.lot_place[i];
+            td.placements[pi].obj = obj;
+            let ch = td.placements[pi].chunk;
+            if !dirty.contains(&ch) {
+                dirty.push(ch);
+            }
+            self.x.lots[i].level = level.unwrap_or(2);
+            self.x.lot_active[i] = state == LotState::Normal;
+        }
+        for ch in dirty {
+            let (mesh, far, lo, hi) = emit_chunk(&td.placements, &td.chunk_members[ch], ch);
+            let c = &mut self.chunks[ch];
+            c.mesh = mesh;
+            c.far = Some(far);
+            c.lo = lo;
+            c.hi = hi;
+            c.rev += 1;
+        }
+        self.refresh_chimneys();
+    }
+
+    pub fn set_lot(&mut self, i: usize, level: Option<u8>, state: LotState) {
+        self.set_lots(&[(i, level, state)]);
+    }
+
+    // ---- roads over time ----
+
+    /// Change roads in place: new class and roadworks state (`Some(progress)` while it is being
+    /// rebuilt). The ground is re-meshed once for the whole batch.
+    pub fn set_roads(&mut self, changes: &[(usize, RoadClass, Option<f32>)]) {
+        let mut any = false;
+        for &(i, class, works) in changes {
+            let Some(r) = self.x.roads.get_mut(i) else {
+                continue;
+            };
+            if r.class != class || r.works != works {
+                r.class = class;
+                r.works = works;
+                self.x.paths[i] = Path::new(class, &r.points);
+                any = true;
+            }
+        }
+        if !any {
+            return;
+        }
+        if let Some(td) = &self.x.town {
+            self.ground = build_ground(&td.town, &self.x.roads);
+            self.ground_rev += 1;
+        }
+        self.x.cars = instances::make_cars(&self.x.paths, &self.x.volumes);
+    }
+
+    pub fn road_class(&self, i: usize) -> Option<RoadClass> {
+        self.x.roads.get(i).map(|r| r.class)
+    }
+
+    /// The ground of a hand-built scene is the host's; this rebuilds it for `from_town` scenes.
+    pub fn road_draws(&self) -> Vec<RoadDraw<'_>> {
+        self.x
+            .roads
+            .iter()
+            .map(|r| RoadDraw {
+                class: r.class,
+                points: &r.points,
+                works: r.works,
+            })
+            .collect()
     }
 }
 
@@ -113,89 +465,6 @@ fn zone_colour(zone: Zone, pattern: Pattern, seed: u64, ai: usize) -> Option<Rgb
         Zone::Farm => Some(FIELDS[(hash2(seed, ai as u64) % FIELDS.len() as u64) as usize]),
         Zone::Inner | Zone::Outer => None,
     }
-}
-
-fn road_rank(c: RoadClass) -> u8 {
-    match c {
-        RoadClass::Alley => 0,
-        RoadClass::Local => 1,
-        RoadClass::Collector => 2,
-        RoadClass::Arterial => 3,
-        RoadClass::Highway => 4,
-        RoadClass::Rail => 5,
-    }
-}
-
-fn build_ground(t: &Town) -> Ground {
-    let mut g = Ground::default();
-    let s = t.size as f32;
-    g.rect(-1500.0, -1500.0, s + 1500.0, s + 1500.0, layer::BASE, GRASS);
-    for (ai, a) in t.additions.iter().enumerate() {
-        if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, ai) {
-            g.polygon(&a.polygon, layer::ZONE, c);
-        }
-    }
-    for w in &t.water {
-        g.polygon(&Ground::grow(w, 14.0), layer::SAND, SAND);
-        g.polygon(w, layer::WATER, WATER);
-    }
-    let mut order: Vec<usize> = (0..t.roads.len())
-        .filter(|&i| t.roads[i].class != RoadClass::Rail)
-        .collect();
-    order.sort_by_key(|&i| (road_rank(t.roads[i].class), i));
-    // dark edges first, then every surface over them
-    for &i in &order {
-        let r = &t.roads[i];
-        g.ribbon(
-            &r.points,
-            r.class.half_width() as f32 + 0.5,
-            0.0,
-            layer::EDGE,
-            EDGE,
-        );
-    }
-    for c in &t.cul_de_sacs {
-        g.disc(c.pos, 9.5, layer::EDGE, EDGE);
-    }
-    let mut culs_drawn = false;
-    for &i in &order {
-        let r = &t.roads[i];
-        if !culs_drawn && road_rank(r.class) > road_rank(RoadClass::Local) {
-            for c in &t.cul_de_sacs {
-                g.disc(c.pos, 9.0, layer::ROAD, ASPHALT);
-            }
-            culs_drawn = true;
-        }
-        let col = if r.class == RoadClass::Highway {
-            ASPHALT_HWY
-        } else {
-            ASPHALT
-        };
-        g.ribbon(
-            &r.points,
-            r.class.half_width() as f32,
-            0.0,
-            layer::ROAD,
-            col,
-        );
-    }
-    if !culs_drawn {
-        for c in &t.cul_de_sacs {
-            g.disc(c.pos, 9.0, layer::ROAD, ASPHALT);
-        }
-    }
-    for &i in &order {
-        let r = &t.roads[i];
-        if matches!(r.class, RoadClass::Arterial | RoadClass::Highway) {
-            g.ribbon(&r.points, 0.22, 0.0, layer::MARK, YELLOW);
-        }
-    }
-    for r in t.roads.iter().filter(|r| r.class == RoadClass::Rail) {
-        g.ribbon(&r.points, 2.6, 0.0, layer::RAIL, BALLAST);
-        g.ribbon(&r.points, 0.2, 0.9, layer::RAIL + 0.06, STEEL);
-        g.ribbon(&r.points, 0.2, -0.9, layer::RAIL + 0.06, STEEL);
-    }
-    g
 }
 
 /// Uniform grid over road segments, for "how far is this spot from any road".
@@ -275,34 +544,61 @@ fn trees_for(kind: LotKind, rng: &mut Rng) -> usize {
     }
 }
 
-struct ChunkBuild {
-    mesh: Mesh,
-    lo: Vec3,
-    hi: Vec3,
+fn build_ground(t: &Town, roads: &[RoadInfo]) -> Mesh {
+    let mut g = Ground::default();
+    let s = t.size as f32;
+    g.rect(-1500.0, -1500.0, s + 1500.0, s + 1500.0, layer::BASE, GRASS);
+    for (ai, a) in t.additions.iter().enumerate() {
+        if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, ai) {
+            g.polygon(&a.polygon, layer::ZONE, c);
+        }
+    }
+    for w in &t.water {
+        g.polygon(&Ground::grow(w, 14.0), layer::SAND, SAND);
+        g.polygon(w, layer::WATER, WATER);
+    }
+    let draws: Vec<RoadDraw> = roads
+        .iter()
+        .map(|r| RoadDraw {
+            class: r.class,
+            points: &r.points,
+            works: r.works,
+        })
+        .collect();
+    let culs: Vec<Pt> = t.cul_de_sacs.iter().map(|c| c.pos).collect();
+    live::add_roads(&mut g, &draws, &culs);
+    g.mesh
 }
 
-fn build_chunks(t: &Town) -> Vec<Chunk> {
-    let mut cells: BTreeMap<(i32, i32), ChunkBuild> = BTreeMap::new();
-    let mut next_id: u32 = 1;
-    let place = |obj: &Obj,
-                 x: f32,
-                 y: f32,
-                 theta: f32,
-                 cells: &mut BTreeMap<(i32, i32), ChunkBuild>,
-                 next_id: &mut u32| {
-        let key = ((x / CHUNK).floor() as i32, (y / CHUNK).floor() as i32);
-        let cb = cells.entry(key).or_insert_with(|| ChunkBuild {
-            mesh: Mesh::default(),
-            lo: Vec3::splat(f32::MAX),
-            hi: Vec3::splat(f32::MIN),
-        });
-        obj.emit(&mut cb.mesh, next_id, x, y, theta, 1.0);
-        let b = obj.footprint();
-        let reach = b[0].abs().max(b[1].abs()).max(b[2].abs()).max(b[3].abs()) * 1.5 + 1.0;
-        cb.lo = cb.lo.min(Vec3::new(x - reach, y - reach, 0.0));
-        cb.hi = cb.hi.max(Vec3::new(x + reach, y + reach, 60.0));
-    };
+fn chunk_key(x: f32, y: f32) -> (i32, i32) {
+    ((x / CHUNK).floor() as i32, (y / CHUNK).floor() as i32)
+}
 
+/// One chunk's mesh and bounds from the placements it holds.
+fn emit_chunk(
+    placements: &[Placement],
+    members: &[usize],
+    ordinal: usize,
+) -> (Mesh, Mesh, Vec3, Vec3) {
+    let mut mesh = Mesh::default();
+    let mut far = Mesh::default();
+    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    let mut next_id = ordinal as u32 * IDS_PER_CHUNK + 1;
+    for &pi in members {
+        let p = &placements[pi];
+        p.obj.emit(&mut mesh, &mut next_id, p.x, p.y, p.theta, 1.0);
+        p.obj.emit_far(&mut far, p.x, p.y, p.theta);
+        let b = p.obj.footprint();
+        let reach = b[0].abs().max(b[1].abs()).max(b[2].abs()).max(b[3].abs()) * 1.5 + 1.0;
+        lo = lo.min(Vec3::new(p.x - reach, p.y - reach, 0.0));
+        hi = hi.max(Vec3::new(p.x + reach, p.y + reach, 90.0));
+    }
+    (mesh, far, lo, hi)
+}
+
+fn build_chunks(t: &Town) -> (TownData, Vec<Chunk>) {
+    let region = Region::of(t.preset);
+    let mut raw: Vec<(Obj, f32, f32, f32)> = Vec::new();
     // town hall faces the nearest road
     let hall = pt(t.hall.x, t.hall.y);
     let mut best: Option<(f64, Pt)> = None;
@@ -325,22 +621,28 @@ fn build_chunks(t: &Town) -> Vec<Chunk> {
         libm::atan2f((q.x - hall.x) as f32, -(q.y - hall.y) as f32)
     });
     let mut hrng = Rng::new(t.seed, 0x4a11);
-    place(
-        &kit::town_hall(&mut hrng),
+    raw.push((
+        kit::town_hall(&mut hrng),
         hall.x as f32,
         hall.y as f32,
         theta,
-        &mut cells,
-        &mut next_id,
-    );
+    ));
 
     let green = [kit::TREE, kit::TREE_D];
+    let mut lot_place = Vec::with_capacity(t.lots.len());
+    let mut looks = Vec::with_capacity(t.lots.len());
     for (i, lot) in t.lots.iter().enumerate() {
         let mut rng = Rng::new(t.seed ^ 0x5eed_0000, i as u64 * 7919 + 13);
-        let obj = kit::build_lot(lot.kind, &mut rng);
+        let obj = kit::build_lot_in(region, lot.kind, &mut rng);
         let (x, y) = (lot.centre.x as f32, lot.centre.y as f32);
         let theta = lot.facing as f32;
-        place(&obj, x, y, theta, &mut cells, &mut next_id);
+        lot_place.push(raw.len());
+        looks.push(LotLook {
+            original: obj.clone(),
+            level: None,
+            state: LotState::Normal,
+        });
+        raw.push((obj.clone(), x, y, theta));
         let n = trees_for(lot.kind, &mut rng);
         if n == 0 {
             continue;
@@ -360,15 +662,9 @@ fn build_chunks(t: &Town) -> Vec<Chunk> {
                 }
                 placed.push([lx, ly]);
                 let (rad, h) = (rng.range(1.8, 2.8), rng.range(5.0, 8.0));
-                let tree = kit::tree(rad, h, rng.pick(&green));
-                place(
-                    &tree,
-                    x + ct * lx - st * ly,
-                    y + st * lx + ct * ly,
-                    0.0,
-                    &mut cells,
-                    &mut next_id,
-                );
+                let (tx, ty) = (x + ct * lx - st * ly, y + st * lx + ct * ly);
+                let col = kit::tree_variant(rng.pick(&green), tx, ty);
+                raw.push((kit::tree(rad, h, col), tx, ty, 0.0));
                 break;
             }
         }
@@ -404,18 +700,54 @@ fn build_chunks(t: &Town) -> Vec<Chunk> {
                 continue;
             }
             let (rad, h) = (rng.range(1.8, 2.8), rng.range(5.0, 8.0));
-            let tree = kit::tree(rad, h, rng.pick(&green));
-            place(&tree, p.x as f32, p.y as f32, 0.0, &mut cells, &mut next_id);
+            let col = kit::tree_variant(rng.pick(&green), p.x as f32, p.y as f32);
+            raw.push((kit::tree(rad, h, col), p.x as f32, p.y as f32, 0.0));
         }
     }
 
-    cells
-        .into_values()
-        .map(|c| Chunk {
-            rev: 0,
-            mesh: c.mesh,
-            lo: c.lo,
-            hi: c.hi,
+    // group into chunks, in chunk order
+    let mut cells: BTreeMap<(i32, i32), Vec<usize>> = BTreeMap::new();
+    for (pi, r) in raw.iter().enumerate() {
+        cells.entry(chunk_key(r.1, r.2)).or_default().push(pi);
+    }
+    let chunk_members: Vec<Vec<usize>> = cells.into_values().collect();
+    let mut placements: Vec<Placement> = raw
+        .into_iter()
+        .map(|(obj, x, y, theta)| Placement {
+            obj,
+            x,
+            y,
+            theta,
+            chunk: 0,
         })
-        .collect()
+        .collect();
+    for (ci, m) in chunk_members.iter().enumerate() {
+        for &pi in m {
+            placements[pi].chunk = ci;
+        }
+    }
+    let chunks = chunk_members
+        .iter()
+        .enumerate()
+        .map(|(ci, m)| {
+            let (mesh, far, lo, hi) = emit_chunk(&placements, m, ci);
+            Chunk {
+                rev: 0,
+                mesh,
+                far: Some(far),
+                lo,
+                hi,
+            }
+        })
+        .collect();
+    (
+        TownData {
+            town: t.clone(),
+            placements,
+            lot_place,
+            looks,
+            chunk_members,
+        },
+        chunks,
+    )
 }

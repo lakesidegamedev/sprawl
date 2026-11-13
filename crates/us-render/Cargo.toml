@@ -9,7 +9,7 @@ description = "Urban Sprawl 3D renderer: draws a generated town in a cel look wi
 
 [dependencies]
 us-gen = { path = "../us-gen" }
-wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "dx12", "metal"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "gles", "dx12", "metal"] }
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "1"
 glam = "0.30"
