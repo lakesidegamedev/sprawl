@@ -70,16 +70,53 @@ pub fn zone_ground(t: &Town, index: usize) -> Mesh {
     g.mesh
 }
 
+/// One road to draw, with an optional roadworks state (progress 0 to 1).
+#[derive(Clone, Copy, Debug)]
+pub struct RoadDraw<'a> {
+    pub class: RoadClass,
+    pub points: &'a [Pt],
+    /// `Some(progress)` while the road is being rebuilt: bare earth with orange edge strips.
+    pub works: Option<f32>,
+}
+
+pub const DIRT: Rgb = [190, 152, 104];
+pub const CONE_ORANGE: Rgb = [238, 132, 40];
+
 /// Roads and turning bulbs, drawn with dark edges under the surface the way the static scene does.
 pub fn roads_ground(roads: &[(RoadClass, &[Pt])], culs: &[Pt]) -> Mesh {
-    let mut g = Ground::default();
-    let mut order: Vec<usize> = (0..roads.len())
-        .filter(|&i| roads[i].0 != RoadClass::Rail)
+    let draws: Vec<RoadDraw> = roads
+        .iter()
+        .map(|&(class, points)| RoadDraw {
+            class,
+            points,
+            works: None,
+        })
         .collect();
-    order.sort_by_key(|&i| (road_rank(roads[i].0), i));
+    roads_ground_state(&draws, culs)
+}
+
+/// Like `roads_ground`, with roadworks.
+pub fn roads_ground_state(roads: &[RoadDraw], culs: &[Pt]) -> Mesh {
+    let mut g = Ground::default();
+    add_roads(&mut g, roads, culs);
+    g.mesh
+}
+
+/// Add roads, turning bulbs, markings and rails to a ground builder.
+pub fn add_roads(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt]) {
+    let mut order: Vec<usize> = (0..roads.len())
+        .filter(|&i| roads[i].class != RoadClass::Rail)
+        .collect();
+    order.sort_by_key(|&i| (road_rank(roads[i].class), i));
     for &i in &order {
-        let (c, pts) = roads[i];
-        g.ribbon(pts, c.half_width() as f32 + 0.5, 0.0, layer::EDGE, EDGE);
+        let r = &roads[i];
+        g.ribbon(
+            r.points,
+            r.class.half_width() as f32 + 0.5,
+            0.0,
+            layer::EDGE,
+            EDGE,
+        );
     }
     for &c in culs {
         g.disc(c, 9.5, layer::EDGE, EDGE);
@@ -88,28 +125,44 @@ pub fn roads_ground(roads: &[(RoadClass, &[Pt])], culs: &[Pt]) -> Mesh {
         g.disc(c, 9.0, layer::ROAD, ASPHALT);
     }
     for &i in &order {
-        let (c, pts) = roads[i];
-        let col = if c == RoadClass::Highway {
+        let r = &roads[i];
+        let col = if r.works.is_some() {
+            DIRT
+        } else if r.class == RoadClass::Highway {
             ASPHALT_HWY
         } else {
             ASPHALT
         };
-        g.ribbon(pts, c.half_width() as f32, 0.0, layer::ROAD, col);
+        g.ribbon(r.points, r.class.half_width() as f32, 0.0, layer::ROAD, col);
     }
     for &i in &order {
-        let (c, pts) = roads[i];
-        if matches!(c, RoadClass::Arterial | RoadClass::Highway) {
-            g.ribbon(pts, 0.22, 0.0, layer::MARK, YELLOW);
+        let r = &roads[i];
+        let hw = r.class.half_width() as f32;
+        if let Some(p) = r.works {
+            for side in [-1.0f32, 1.0] {
+                g.ribbon(r.points, 0.35, side * (hw - 0.6), layer::MARK, CONE_ORANGE);
+            }
+            // fresh surface laid so far, as a dark stripe down the middle
+            if p > 0.5 {
+                g.ribbon(
+                    r.points,
+                    (hw - 1.4).max(0.4),
+                    0.0,
+                    layer::MARK - 0.02,
+                    ASPHALT,
+                );
+            }
+        } else if matches!(r.class, RoadClass::Arterial | RoadClass::Highway) {
+            g.ribbon(r.points, 0.22, 0.0, layer::MARK, YELLOW);
         }
     }
-    for (c, pts) in roads {
-        if *c == RoadClass::Rail {
-            g.ribbon(pts, 2.6, 0.0, layer::RAIL, BALLAST);
-            g.ribbon(pts, 0.2, 0.9, layer::RAIL + 0.06, STEEL);
-            g.ribbon(pts, 0.2, -0.9, layer::RAIL + 0.06, STEEL);
+    for r in roads {
+        if r.class == RoadClass::Rail {
+            g.ribbon(r.points, 2.6, 0.0, layer::RAIL, BALLAST);
+            g.ribbon(r.points, 0.2, 0.9, layer::RAIL + 0.06, STEEL);
+            g.ribbon(r.points, 0.2, -0.9, layer::RAIL + 0.06, STEEL);
         }
     }
-    g.mesh
 }
 
 fn mix(c: Rgb, to: Rgb, k: f32) -> Rgb {

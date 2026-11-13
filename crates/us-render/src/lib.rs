@@ -8,19 +8,26 @@
 //! Headless renders use whatever adapter wgpu finds; on a machine without a GPU that is the
 //! Mesa software Vulkan driver.
 
+mod calendar;
 mod camera;
 pub mod ground;
+pub mod instances;
 pub mod kit;
+pub mod levels;
 pub mod live;
 mod mesh;
 pub mod obj;
+pub mod overlay;
 mod renderer;
 mod rng;
 mod scene;
 
+pub use calendar::{Calendar, DayPhase, Season};
 pub use camera::{Camera, View, pick_ground, project};
+pub use levels::{MAX_LEVEL, build_lot_level};
 pub use mesh::{ID_GROUND, ID_NONE, Mesh, VERTEX_BYTES, Vertex};
 pub use obj::{Obj, Poly, Rgb, V3};
+pub use overlay::{LotInfo, Overlay, OverlayKind, use_category};
 pub use renderer::{AdapterSummary, Frame, FrameStats, NoAdapter, Renderer, Style, SurfaceTarget};
 pub use rng::Rng;
-pub use scene::{Chunk, Scene};
+pub use scene::{Chunk, FrameInstances, GRASS, LotState, RoadInfo, Scene};
