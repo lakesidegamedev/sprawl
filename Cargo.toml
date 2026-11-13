@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/us-gen", "crates/us-gen-cli", "crates/us-metrics", "crates/us-traffic", "crates/us-grow", "crates/us-grow-cli"]
+members = ["crates/us-gen", "crates/us-gen-cli", "crates/us-render", "crates/us-metrics", "crates/us-traffic", "crates/us-grow", "crates/us-grow-cli"]
 resolver = "3"
 
 [workspace.package]
@@ -14,4 +14,7 @@ overflow-checks = true
 lto = "thin"
 
 [profile.dev.package.us-gen]
+opt-level = 2
+
+[profile.dev.package.us-render]
 opt-level = 2
