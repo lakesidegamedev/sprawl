@@ -39,6 +39,8 @@ const CHUNK: f32 = 256.0;
 static NEXT_UID: AtomicU64 = AtomicU64::new(1);
 
 pub struct Chunk {
+    /// Bump when `mesh` changes so the renderer re-uploads just this chunk.
+    pub rev: u64,
     pub mesh: Mesh,
     pub lo: Vec3,
     pub hi: Vec3,
@@ -49,11 +51,26 @@ pub struct Scene {
     pub uid: u64,
     pub size: f32,
     pub ground: Mesh,
+    /// Bump when `ground` changes.
+    pub ground_rev: u64,
     pub chunks: Vec<Chunk>,
     pub hall: Vec3,
 }
 
 impl Scene {
+    /// An empty scene a host fills and edits over time (chunks added, chunk meshes replaced with
+    /// a new `rev`). The GPU copy follows by `uid`, `ground_rev` and each chunk's `rev`.
+    pub fn dynamic(size: f32, ground: Mesh, hall: Vec3) -> Scene {
+        Scene {
+            uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
+            size,
+            ground,
+            ground_rev: 0,
+            chunks: Vec::new(),
+            hall,
+        }
+    }
+
     pub fn triangles(&self) -> usize {
         self.ground.triangles()
             + self
@@ -70,6 +87,7 @@ impl Scene {
             uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
             size: t.size as f32,
             ground: ground.mesh,
+            ground_rev: 0,
             chunks,
             hall: Vec3::new(t.hall.x as f32, t.hall.y as f32, 0.0),
         }
@@ -394,6 +412,7 @@ fn build_chunks(t: &Town) -> Vec<Chunk> {
     cells
         .into_values()
         .map(|c| Chunk {
+            rev: 0,
             mesh: c.mesh,
             lo: c.lo,
             hi: c.hi,
