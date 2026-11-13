@@ -142,14 +142,14 @@ pub fn construction(obj: &Obj, progress: f32) -> Obj {
 pub fn abandoned(obj: &Obj) -> Obj {
     let mut o = obj.clone();
     for p in &mut o.polys {
-        let g = ((p.color[0] as u32 * 3 + p.color[1] as u32 * 6 + p.color[2] as u32) / 10) as u8;
-        let grey = [
-            g.saturating_sub(10),
-            g.saturating_sub(8),
-            g.saturating_sub(4),
-        ];
-        p.color = mix(p.color, grey, 0.88);
-        p.flat = false;
+        if p.flat {
+            // windows and doors go dark
+            p.color = [52, 54, 62];
+            continue;
+        }
+        let g = ((p.color[0] as u32 * 3 + p.color[1] as u32 * 6 + p.color[2] as u32) / 10) as f32;
+        let d = (g * 0.62).round().clamp(40.0, 150.0) as u8;
+        p.color = mix(p.color, [d.saturating_add(6), d, d.saturating_sub(6)], 0.92);
     }
     o
 }

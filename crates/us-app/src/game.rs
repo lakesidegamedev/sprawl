@@ -85,6 +85,8 @@ struct Smoke {
     stage: u8,
     frames: u32,
     worst: f32,
+    /// Test hook: set this tax rate (tenths) after this many seconds.
+    tax_at: Option<(u32, f32)>,
 }
 
 pub struct State {
@@ -164,6 +166,10 @@ impl State {
                 stage: 0,
                 frames: 0,
                 worst: 0.0,
+                tax_at: std::env::var("URBAN_SPRAWL_SMOKE_TAX").ok().and_then(|v| {
+                    let (a, b) = v.split_once(':')?;
+                    Some((a.parse().ok()?, b.parse().ok()?))
+                }),
             });
         let mut st = State {
             screen: Screen::Menu,
@@ -447,6 +453,11 @@ impl State {
                 s.stage = 2;
             }
             2 if t > 5.0 => s.stage = 3,
+            3 if s.tax_at.is_some_and(|(_, at)| t > at) => {
+                if let (Some(g), Some((tax, _))) = (self.game.as_mut(), s.tax_at.take()) {
+                    g.sim.set_tax_x10(tax);
+                }
+            }
             3 if t > s.secs => {
                 if let Some(g) = self.game.as_ref() {
                     eprintln!(
