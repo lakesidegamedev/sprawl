@@ -79,6 +79,8 @@ pub struct RoadDraw<'a> {
     pub works: Option<f32>,
 }
 
+/// Marker colour of snow banked along a road edge: drawn in winter only.
+pub const SNOW_EDGE: Rgb = [247, 248, 253];
 pub const DIRT: Rgb = [190, 152, 104];
 pub const CONE_ORANGE: Rgb = [238, 132, 40];
 
@@ -152,8 +154,23 @@ pub fn add_roads(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt]) {
                     ASPHALT,
                 );
             }
-        } else if matches!(r.class, RoadClass::Arterial | RoadClass::Highway) {
-            g.ribbon(r.points, 0.22, 0.0, layer::MARK, YELLOW);
+        } else {
+            if matches!(r.class, RoadClass::Arterial | RoadClass::Highway) {
+                g.ribbon(r.points, 0.22, 0.0, layer::MARK, YELLOW);
+            }
+            // snow banked along both edges, under the road surface so side streets cut through
+            // it: the shader shows it in winter only
+            if r.class != RoadClass::Highway {
+                for side in [-1.0f32, 1.0] {
+                    g.ribbon(
+                        r.points,
+                        0.8,
+                        side * (hw + 0.3),
+                        layer::ROAD - 0.02,
+                        SNOW_EDGE,
+                    );
+                }
+            }
         }
     }
     for r in roads {

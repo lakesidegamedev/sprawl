@@ -96,6 +96,28 @@ fn civic(r: &mut Renderer, out: &Out) {
     }
 }
 
+/// The middle of the thickest cluster of houses about a kilometre from the hall.
+fn suburb_target(t: &Town) -> Vec3 {
+    let houses: Vec<_> = t.lots.iter().filter(|l| l.kind == LotKind::House).collect();
+    let mut best: Option<(f64, usize)> = None;
+    for (i, h) in houses.iter().enumerate() {
+        let d = h.centre.dist(t.hall);
+        if !(800.0..1500.0).contains(&d) {
+            continue;
+        }
+        let near = houses
+            .iter()
+            .filter(|o| o.centre.dist(h.centre) < 70.0)
+            .count();
+        let score = near as f64 * 10.0 - (d - 1100.0).abs() * 0.02;
+        if best.is_none_or(|b| score > b.0) {
+            best = Some((score, i));
+        }
+    }
+    let h = houses[best.map_or(0, |b| b.1)];
+    Vec3::new(h.centre.x as f32, h.centre.y as f32, 0.0)
+}
+
 fn town_scene() -> (Town, Scene, Vec3) {
     let town = generate(Preset::Grid, 1);
     let scene = Scene::from_town(&town);
@@ -121,8 +143,40 @@ fn main() {
     if want("night") || want("seasons") {
         let (town, mut scene, hall) = town_scene();
         let aspect = W as f32 / H as f32;
-        let _ = (&town, LotKind::House, Calendar::from_date(6, 15, 12.0));
-        let down = Camera::framing(hall, 260.0, aspect, 45.0, 40.0);
-        let _ = (&mut scene, down);
+        let down = Camera::framing(
+            hall + Vec3::new(0.0, -120.0, 0.0),
+            230.0,
+            aspect,
+            45.0,
+            40.0,
+        );
+        let sub = Camera::framing(suburb_target(&town), 200.0, aspect, 40.0, 40.0);
+        let moments: [(&str, u32, u32, f32); 8] = [
+            ("spring", 4, 20, 12.0),
+            ("summer", 7, 10, 12.0),
+            ("autumn", 10, 12, 12.0),
+            ("winter", 1, 15, 12.0),
+            ("night-summer", 7, 10, 22.0),
+            ("night-winter", 1, 15, 22.0),
+            ("dusk", 6, 5, 18.5),
+            ("night-autumn", 10, 12, 22.0),
+        ];
+        for (name, m, d, h) in moments {
+            let want_it = if name.starts_with("night") || name == "dusk" {
+                want("night")
+            } else {
+                want("seasons")
+            };
+            if !want_it {
+                continue;
+            }
+            scene.set_calendar(Some(Calendar::from_date(m, d, h)));
+            for (vn, cam) in [("downtown", &down), ("suburb", &sub)] {
+                out.save(
+                    &format!("{name}-{vn}"),
+                    &r.render_to_rgba(&scene, cam, &style(2, 2), W, H),
+                );
+            }
+        }
     }
 }

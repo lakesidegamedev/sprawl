@@ -56,6 +56,16 @@ impl Default for Style {
     }
 }
 
+/// The ground greens as the season tints them; the same sums as `season_ground` in the shader.
+fn season_ground(c: [f64; 3], season: f32) -> [f64; 3] {
+    match season as u32 {
+        1 => [c[0] * 1.25 + 0.04, c[1] * 0.82, c[2] * 0.7],
+        2 => [c[0] * 1.06 + 0.02, c[1] * 1.04 + 0.02, c[2] * 1.05 + 0.03],
+        3 => [c[0] * 0.9, c[1] * 0.96, c[2] * 0.88],
+        _ => c,
+    }
+}
+
 fn pick(c: &GpuChunk, far: bool) -> &GpuMesh {
     match (&c.far, far) {
         (Some(f), true) => f,
@@ -629,13 +639,14 @@ impl Renderer {
             inst_pipeline,
             shadow_inst_pipeline,
             templates: Vec::new(),
-            inst_bufs: vec![None, None, None],
+            inst_bufs: vec![None, None, None, None],
             overlay_gpu: None,
         };
         r.templates = vec![
             r.upload_mesh(&crate::instances::car_mesh(), "car"),
             r.upload_mesh(&crate::instances::puff_mesh(), "puff"),
             r.upload_mesh(&crate::instances::person_mesh(), "person"),
+            r.upload_mesh(&crate::instances::lamp_mesh(), "lamp"),
         ];
         Ok(r)
     }
@@ -1064,7 +1075,13 @@ impl Renderer {
         let tone = cal.map_or([1.0; 3], |c| c.tone());
         let lit_windows = cal.map_or(0.0, |c| c.lit_windows());
         let map_view = scene.overlay_active();
-        let autumn = cal.is_some_and(|c| c.season() == Season::Autumn);
+        // 0 plain, 1 autumn, 2 spring, 3 summer (winter is the snow flag)
+        let season_code = cal.map_or(0.0, |c| match c.season() {
+            Season::Autumn => 1.0,
+            Season::Spring => 2.0,
+            Season::Summer => 3.0,
+            Season::Winter => 0.0,
+        });
         let snow = cal.is_some_and(|c| c.season() == Season::Winter);
         let lamps = cal.is_some_and(|c| c.phase() != DayPhase::Day);
         let (light_vp, texel, range) = light_matrix(scene, &view, sun, style.shadow_size);
@@ -1084,7 +1101,7 @@ impl Renderer {
             screen: [rw as f32, rh as f32, 0.0, 0.0],
             tone: [tone[0], tone[1], tone[2], lit_windows],
             look: [
-                autumn as u8 as f32,
+                season_code,
                 snow as u8 as f32,
                 map_view as u8 as f32,
                 lamps as u8 as f32,
@@ -1108,7 +1125,7 @@ impl Renderer {
         }
         // moving things for this frame
         let fi = scene.instances();
-        let sets: [&[crate::instances::Instance]; 3] = [&fi.cars, &fi.puffs, &fi.people];
+        let sets: [&[crate::instances::Instance]; 4] = [&fi.cars, &fi.puffs, &fi.people, &fi.lamps];
         for (k, set) in sets.iter().enumerate() {
             if set.is_empty() {
                 continue;
@@ -1267,6 +1284,8 @@ impl Renderer {
                 }
             } else if snow {
                 base = [236.0 / 255.0, 241.0 / 255.0, 247.0 / 255.0];
+            } else {
+                base = season_ground(base, season_code);
             }
             let clear = wgpu::Color {
                 r: base[0] * tone[0] as f64,

@@ -115,6 +115,7 @@ struct Extras {
     cars: Vec<Car>,
     chimneys: Vec<[f32; 3]>,
     walkers: Vec<Walker>,
+    lamps: Vec<Instance>,
     centre: [f32; 2],
     overlay: Option<OverlayState>,
     overlay_rev: u64,
@@ -127,6 +128,7 @@ pub struct FrameInstances {
     pub cars: Vec<Instance>,
     pub puffs: Vec<Instance>,
     pub people: Vec<Instance>,
+    pub lamps: Vec<Instance>,
 }
 
 pub struct Scene {
@@ -223,6 +225,7 @@ impl Scene {
         self.x.lots = lots;
         self.x.roads = roads;
         self.x.centre = [self.hall.x, self.hall.y];
+        self.x.lamps = instances::lamp_instances(&self.x.paths);
         self.x.walkers = instances::make_walkers(&self.x.paths, self.x.centre, 260.0);
         self.x.cars = instances::make_cars(&self.x.paths, &self.x.volumes);
         self.refresh_chimneys();
@@ -334,6 +337,7 @@ impl Scene {
             cars: instances::car_instances(&self.x.paths, &self.x.cars, self.time),
             puffs: instances::puff_instances(&self.x.chimneys, self.time),
             people: instances::walker_instances(&self.x.paths, &self.x.walkers, self.time),
+            lamps: self.x.lamps.clone(),
         }
     }
 
