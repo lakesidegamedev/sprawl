@@ -1,0 +1,13 @@
+[package]
+name = "us-traffic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Travel demand and user equilibrium traffic assignment on a generated town."
+
+[dependencies]
+us-gen = { path = "../us-gen" }
+us-metrics = { path = "../us-metrics" }
+libm = "=0.2.16"
