@@ -59,7 +59,7 @@ jobs:
           if-no-files-found: error
 
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04  # oldest glibc we support (2.35): a binary built on a newer Ubuntu will not start on 22.04 or 24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96.0
