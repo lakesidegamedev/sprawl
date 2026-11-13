@@ -7,6 +7,9 @@ license.workspace = true
 publish.workspace = true
 description = "Urban Sprawl desktop app: window, menus, camera and the playable town."
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "urban-sprawl"
 path = "src/main.rs"

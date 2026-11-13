@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Internal: the app is now a library with a thin desktop binary, and platform specific code sits in `platform/` modules, so an iOS front end can share the game. No change for players.
 - Preview 2: a visible goal and first-run tips (population goals, three short hints you can dismiss), event messages (new neighbourhood, first shop, school, church and fire station, treasury running low or below zero), a readable controls strip, clearer hall placement text, the signed-in name in the top bar and pause menu, signed-out and launcher sign-in lines on the main menu. Fix: Back in Settings opened from the pause menu threw away the running town; it now returns to the pause menu. Shown version is 1.0.0 preview 2 and the release title follows the tag.
 - Fix a flaky updater test: parallel download tests shared one scratch folder.
 - The repository is public: README says what the game is and that it is an unreleased, paid preview; LICENSE.md (all rights reserved, Silkscreen under the OFL); contributor guide without internal notes; builds are no longer attached to GitHub releases, and build artifacts expire after one day.
