@@ -771,3 +771,51 @@ fn sunbelt_towns_are_pods_and_commercial_corners_on_a_mile_grid() {
         assert!(culs >= 20, "seed {}: only {culs} cul-de-sacs", t.seed);
     }
 }
+
+fn ring_area(r: &[Pt]) -> f64 {
+    let mut s = 0.0;
+    for i in 0..r.len() {
+        let (a, b) = (r[i], r[(i + 1) % r.len()]);
+        s += a.x * b.y - b.x * a.y;
+    }
+    s.abs() / 2.0
+}
+
+/// Towns used to be about 700 buildings per square kilometre of developed land; they must now be
+/// about twice that, in every preset, without going past what the streets can hold.
+#[test]
+fn every_preset_is_about_twice_as_dense_as_before() {
+    for p in PRESETS {
+        let (mut land, mut built, mut foot) = (0.0, 0.0, 0.0);
+        for s in 1..=3 {
+            let t = town(p, s);
+            land += t
+                .additions
+                .iter()
+                .filter(|a| !matches!(a.zone, Zone::Farm | Zone::Park))
+                .map(|a| ring_area(&a.polygon))
+                .sum::<f64>();
+            for l in t
+                .lots
+                .iter()
+                .filter(|l| l.zone != Zone::Farm && !matches!(l.kind, us_gen::LotKind::Park))
+            {
+                built += 1.0;
+                foot += 0.7 * std::f64::consts::PI * l.radius * l.radius;
+            }
+        }
+        let per_km2 = built / (land / 1e6);
+        let coverage = foot / land;
+        assert!(
+            (1300.0..2200.0).contains(&per_km2),
+            "{}: {per_km2:.0} buildings per km2 of developed land",
+            p.name()
+        );
+        assert!(
+            (0.15..0.35).contains(&coverage),
+            "{}: {:.1} per cent of developed land built over",
+            p.name(),
+            coverage * 100.0
+        );
+    }
+}

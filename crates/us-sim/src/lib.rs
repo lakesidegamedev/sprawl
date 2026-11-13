@@ -37,7 +37,12 @@ pub const TAX_DEFAULT_X10: u32 = 70;
 /// Above this rate buildings start to empty out (14.0 percent).
 pub const ABANDON_ABOVE_X10: u32 = 140;
 /// Revealed, unbuilt lots the town keeps ahead of itself.
-const RESERVE: usize = 30;
+/// Empty lots kept ready ahead of the builders. Towns are about twice as dense as they were, so
+/// the reserve is twice as big.
+const RESERVE: usize = 60;
+/// Builders start this many times as many buildings a day as before the density change, because
+/// each neighbourhood now holds about twice as many lots.
+const PACE: f64 = 2.0;
 const EMPTY_DAYS_BEFORE_CLEARING: i32 = 150;
 pub const START_TREASURY: i64 = 600_000;
 
@@ -802,7 +807,7 @@ impl Sim {
 
         // growth
         let built = self.built_count() as f64;
-        let rate = 0.8 * growth_mult(tax) * (1.0 + (built / 700.0).min(1.5));
+        let rate = 0.8 * PACE * growth_mult(tax) * (1.0 + (built / (700.0 * PACE)).min(1.5));
         // the mood of the market: all three classes together
         let rate = rate * (0.6 + 0.8 * self.mean_demand());
         self.acc += rate;
@@ -1120,3 +1125,6 @@ mod tests_levers;
 
 #[cfg(test)]
 mod tests_world;
+
+#[cfg(test)]
+mod tests_density;

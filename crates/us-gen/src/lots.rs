@@ -119,14 +119,10 @@ impl Ctx<'_> {
                     } else {
                         0.4
                     };
-                    let k = kind_from(
+                    kind_from(
                         rng.weighted(&[5.0, 3.0, w_office, 1.2, 1.0]),
                         &[Shop, Apartments, Office, Parking, Row],
-                    );
-                    if k == Office {
-                        self.offices_left -= 1;
-                    }
-                    k
+                    )
                 } else {
                     kind_from(
                         rng.weighted(&[5.0, 2.0, 3.0, 1.0, 0.6, 0.15]),
@@ -283,27 +279,34 @@ pub fn make_lots(
             &[1.0, -1.0]
         };
         let total = length(&d.line);
-        let mut k = 7.0;
-        while k < total - 7.0 {
-            let (p, u) = interpolate(&d.line, k);
-            let mut adv: f64 = 14.0;
-            for &side in sides {
+        for &side in sides {
+            // `k` is where the next lot's centre would sit along the street; `edge` is where the
+            // last lot ended, so lots are packed shoulder to shoulder with only the zone's gap.
+            let mut k = 7.0;
+            let mut edge = 0.0_f64;
+            while k < total - 7.0 {
+                let (p, u) = interpolate(&d.line, k);
                 let n = pt(-u.y * side, u.x * side);
                 let probe = pt(p.x + n.x * (hw + 8.0), p.y + n.y * (hw + 8.0));
                 let (lz, dc) = ctx.zone_at(probe);
                 let (zone, kind) = match lz {
-                    Lz::Z(Zone::Park) => continue,
+                    Lz::Z(Zone::Park) => {
+                        k += 14.0;
+                        continue;
+                    }
                     Lz::Open => {
+                        k += 14.0 * rng.uniform(0.95, 1.15);
                         if class != RoadClass::Arterial || !rng.chance(0.02) {
                             continue;
                         }
                         (Zone::Farm, LotKind::Farm)
                     }
                     Lz::Fringe => {
+                        k += 14.0 * rng.uniform(0.95, 1.15);
                         if class != RoadClass::Arterial || rng.f64() > 0.22 {
                             continue;
                         }
-                        let k = rng.weighted(&[2.0, 1.5, 1.5, 2.0, 1.0]);
+                        let kk = rng.weighted(&[2.0, 1.5, 1.5, 2.0, 1.0]);
                         (
                             Zone::Farm,
                             [
@@ -312,7 +315,7 @@ pub fn make_lots(
                                 LotKind::FastFood,
                                 LotKind::House,
                                 LotKind::Warehouse,
-                            ][k],
+                            ][kk],
                         )
                     }
                     Lz::Z(z) => {
@@ -321,35 +324,160 @@ pub fn make_lots(
                     }
                 };
                 let r = kind.nominal_radius();
-                let dense = zone == Zone::Core
-                    && dc < 450.0
-                    && !matches!(kind, LotKind::Parking | LotKind::Church);
-                let off = hw + if dense { 1.0 } else { 3.0 } + r * 0.85;
-                let ctr = pt(p.x + n.x * off, p.y + n.y * off);
-                let rc = if dense { r * 0.7 } else { r };
-                if !site_ok(ctr, rc) || h.hit(ctr.x, ctr.y, rc) {
+                let attached = attached_at(zone, dc, kind);
+                let rc = if attached { r * 0.85 } else { r };
+                let (gap, setback) = frontage(zone, dc, kind, attached, rng);
+                // pack against the last lot, but never behind where the search stands
+                let kc = if zone == Zone::Farm {
+                    k
+                } else {
+                    (edge + gap + rc).max(k)
+                };
+                let (pc, uc) = interpolate(&d.line, kc.min(total - 1.0));
+                let nc = pt(-uc.y * side, uc.x * side);
+                let off = hw + setback + rc;
+                let ctr = pt(pc.x + nc.x * off, pc.y + nc.y * off);
+                let office_too_far = kind == LotKind::Office && ctr.dist(hall) > 245.0;
+                if office_too_far || !site_ok(ctr, rc) || h.hit(ctr.x, ctr.y, rc) {
+                    // blocked by a cross street or a neighbour: try again a little further on
+                    k = kc + 3.0;
                     continue;
+                }
+                if kind == LotKind::Office {
+                    ctx.offices_left = ctx.offices_left.saturating_sub(1);
                 }
                 lots.push(Lot {
                     centre: ctr,
                     radius: rc,
                     kind,
-                    facing: atan2(-n.x, n.y),
+                    facing: atan2(-nc.x, nc.y),
                     zone,
                     variant: rng.f64(),
                 });
                 h.add(ctr.x, ctr.y, rc);
-                let step = if zone == Zone::Farm {
-                    300.0
-                } else if dense {
-                    r * 1.4
+                if zone == Zone::Farm {
+                    k = kc + 300.0;
                 } else {
-                    r * 1.6
-                };
-                adv = adv.max(step);
+                    edge = kc + rc;
+                    k = edge + 1.0;
+                }
             }
-            k += adv * rng.uniform(0.95, 1.15);
+        }
+    }
+
+    // Back lots: a second and third row behind the street lots, so blocks are no longer hollow.
+    // Outer suburbs keep their big back yards and only get an occasional back house.
+    let front = lots.len();
+    for i in 0..front {
+        let mut cur = lots[i].clone();
+        for depth in 0..3 {
+            let Some(next) = back_lot(&mut ctx, rng, &cur, depth, &site_ok, &h) else {
+                break;
+            };
+            h.add(next.centre.x, next.centre.y, next.radius);
+            lots.push(next.clone());
+            cur = next;
         }
     }
     lots
+}
+
+/// Whether a lot at this spot is built shoulder to shoulder with its neighbours.
+fn attached_at(zone: Zone, dc: f64, kind: LotKind) -> bool {
+    matches!(kind, LotKind::Shop | LotKind::Row | LotKind::Apartments)
+        && match zone {
+            Zone::Core => dc < 600.0,
+            Zone::Inner => kind == LotKind::Row,
+            _ => false,
+        }
+}
+
+/// Gap between neighbours and distance from the kerb to the building line, in metres.
+fn frontage(zone: Zone, dc: f64, kind: LotKind, attached: bool, rng: &mut Rng) -> (f64, f64) {
+    if attached {
+        return (0.0, 1.0);
+    }
+    match zone {
+        Zone::Core => (rng.uniform(0.0, 1.5), 1.5),
+        Zone::Inner => {
+            if dc < 900.0 {
+                (rng.uniform(0.5, 2.5), 2.5)
+            } else {
+                (rng.uniform(1.0, 4.0), 3.5)
+            }
+        }
+        Zone::Outer => (rng.uniform(2.5, 6.5), 5.0),
+        Zone::Industry | Zone::Mall | Zone::Campus => (rng.uniform(1.5, 4.0), 3.0),
+        _ => {
+            let _ = kind;
+            (rng.uniform(2.0, 5.0), 3.0)
+        }
+    }
+}
+
+/// A lot behind `front`, in the block interior, or `None` if the ground is taken or too far from
+/// the street for this zone.
+fn back_lot(
+    ctx: &mut Ctx,
+    rng: &mut Rng,
+    front: &Lot,
+    depth: usize,
+    site_ok: &dyn Fn(Pt, f64) -> bool,
+    h: &DiskHash,
+) -> Option<Lot> {
+    use LotKind::*;
+    let zone = front.zone;
+    let max_depth = match zone {
+        Zone::Core => 3,
+        Zone::Inner => 2,
+        Zone::Outer => 1,
+        _ => 0,
+    };
+    if depth >= max_depth {
+        return None;
+    }
+    if !matches!(front.kind, House | Row | Shop | Apartments) {
+        return None;
+    }
+    if zone == Zone::Outer && (depth > 0 || rng.f64() > 0.3) {
+        return None;
+    }
+    let kind = match (zone, front.kind) {
+        (Zone::Core, Apartments) => Apartments,
+        (Zone::Core, _) => kind_from(rng.weighted(&[3.0, 2.0, 1.0]), &[Row, House, Apartments]),
+        (Zone::Inner, Apartments) => Apartments,
+        (Zone::Inner, _) => kind_from(rng.weighted(&[5.0, 2.0]), &[House, Row]),
+        _ => House,
+    };
+    let r = kind.nominal_radius();
+    let courtyard = if front.kind == Apartments && kind == Apartments {
+        7.0
+    } else {
+        0.0
+    };
+    let gap = match zone {
+        Zone::Core => 1.0,
+        Zone::Inner => 2.0,
+        _ => 7.0,
+    } + courtyard;
+    // behind the front lot: the front faces `facing`, so back is the direction it looks away from
+    let (fx, fy) = (-sin(front.facing), cos(front.facing));
+    let d = front.radius + r + gap;
+    let ctr = pt(front.centre.x + fx * d, front.centre.y + fy * d);
+    if !site_ok(ctr, r) || h.hit(ctr.x, ctr.y, r) {
+        return None;
+    }
+    // stay inside the same sort of ground: never back onto a park or open land
+    match ctx.zone_at(ctr).0 {
+        Lz::Z(z) if z == zone => {}
+        _ => return None,
+    }
+    Some(Lot {
+        centre: ctr,
+        radius: r,
+        kind,
+        facing: front.facing,
+        zone,
+        variant: rng.f64(),
+    })
 }

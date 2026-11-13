@@ -70,7 +70,7 @@ impl Out {
 }
 
 fn standard(r: &mut Renderer, out: &Out) {
-    for (preset, seed) in [(Preset::Grid, 1u64), (Preset::Winding, 2)] {
+    for (preset, seed) in Preset::ALL.map(|p| (p, 1u64)) {
         let t0 = Instant::now();
         let town = generate(preset, seed);
         let t1 = Instant::now();
