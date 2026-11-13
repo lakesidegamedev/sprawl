@@ -9,6 +9,7 @@ use crate::live::{self, RoadDraw};
 use crate::mesh::Mesh;
 use crate::obj::{Obj, Rgb};
 use crate::overlay::{self, LotInfo, Overlay};
+use crate::parts::Region;
 use crate::rng::Rng;
 use glam::Vec3;
 use std::collections::BTreeMap;
@@ -361,7 +362,8 @@ impl Scene {
             let lot = &td.town.lots[i];
             let base = match level {
                 None => look.original.clone(),
-                Some(l) => levels::build_lot_level(
+                Some(l) => levels::build_lot_level_in(
+                    Region::of(td.town.preset),
                     lot.kind,
                     l,
                     &mut Rng::new(td.town.seed ^ 0x1e7e_1000, i as u64 * 131 + l as u64),
@@ -595,6 +597,7 @@ fn emit_chunk(
 }
 
 fn build_chunks(t: &Town) -> (TownData, Vec<Chunk>) {
+    let region = Region::of(t.preset);
     let mut raw: Vec<(Obj, f32, f32, f32)> = Vec::new();
     // town hall faces the nearest road
     let hall = pt(t.hall.x, t.hall.y);
@@ -630,7 +633,7 @@ fn build_chunks(t: &Town) -> (TownData, Vec<Chunk>) {
     let mut looks = Vec::with_capacity(t.lots.len());
     for (i, lot) in t.lots.iter().enumerate() {
         let mut rng = Rng::new(t.seed ^ 0x5eed_0000, i as u64 * 7919 + 13);
-        let obj = kit::build_lot(lot.kind, &mut rng);
+        let obj = kit::build_lot_in(region, lot.kind, &mut rng);
         let (x, y) = (lot.centre.x as f32, lot.centre.y as f32);
         let theta = lot.facing as f32;
         lot_place.push(raw.len());

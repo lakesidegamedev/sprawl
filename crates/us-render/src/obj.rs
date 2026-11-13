@@ -66,7 +66,7 @@ impl Obj {
         self
     }
 
-    fn solid_poly(&mut self, s: u32, pts: &[V3], color: Rgb, shadow: bool, roof: bool) {
+    pub(crate) fn solid_poly(&mut self, s: u32, pts: &[V3], color: Rgb, shadow: bool, roof: bool) {
         self.polys.push(Poly {
             pts: pts.to_vec(),
             color,
@@ -78,7 +78,7 @@ impl Obj {
         });
     }
 
-    fn new_solid(&mut self, centre: V3) -> u32 {
+    pub(crate) fn new_solid(&mut self, centre: V3) -> u32 {
         self.solids.push(Solid { centre });
         (self.solids.len() - 1) as u32
     }
@@ -264,6 +264,300 @@ impl Obj {
             );
         }
         self
+    }
+
+    /// A face of solid `s`, wound so it looks outward whatever order the points come in. Repeated
+    /// neighbouring points are dropped, so a roof that degenerates to a point still works.
+    pub(crate) fn face(&mut self, s: u32, pts: &[V3], color: Rgb, roof: bool) {
+        let mut v: Vec<V3> = Vec::with_capacity(pts.len());
+        for p in pts {
+            if v.last().is_none_or(|q| {
+                (q[0] - p[0]).abs() + (q[1] - p[1]).abs() + (q[2] - p[2]).abs() > 1e-4
+            }) {
+                v.push(*p);
+            }
+        }
+        if v.len() > 1 {
+            let (f, l) = (v[0], v[v.len() - 1]);
+            if (f[0] - l[0]).abs() + (f[1] - l[1]).abs() + (f[2] - l[2]).abs() <= 1e-4 {
+                v.pop();
+            }
+        }
+        if v.len() < 3 {
+            return;
+        }
+        let c = self.solids[s as usize].centre;
+        let n = newell_raw(&v);
+        let k = v.len() as f32;
+        let m = [
+            v.iter().map(|p| p[0]).sum::<f32>() / k,
+            v.iter().map(|p| p[1]).sum::<f32>() / k,
+            v.iter().map(|p| p[2]).sum::<f32>() / k,
+        ];
+        if n[0] * (m[0] - c[0]) + n[1] * (m[1] - c[1]) + n[2] * (m[2] - c[2]) < 0.0 {
+            v.reverse();
+        }
+        self.solid_poly(s, &v, color, true, roof);
+    }
+
+    /// Hipped roof: four slopes, the ridge along the longer side.
+    #[allow(clippy::too_many_arguments)]
+    pub fn hip(
+        &mut self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        z: f32,
+        h: f32,
+        roof: Rgb,
+        over: f32,
+    ) -> &mut Self {
+        let (a, b, c, d) = (x0 - over, x1 + over, y0 - over, y1 + over);
+        let (xm, ym) = ((a + b) / 2.0, (c + d) / 2.0);
+        let half = ((b - a).min(d - c)) / 2.0;
+        let s = self.new_solid([xm, ym, z + h * 0.3]);
+        let (p0, p1, p2, p3) = ([a, c, z], [b, c, z], [b, d, z], [a, d, z]);
+        if b - a >= d - c {
+            let (r0, r1) = ([a + half, ym, z + h], [b - half, ym, z + h]);
+            self.face(s, &[p0, p1, r1, r0], roof, true);
+            self.face(s, &[p1, p2, r1], roof, true);
+            self.face(s, &[p2, p3, r0, r1], roof, true);
+            self.face(s, &[p3, p0, r0], roof, true);
+        } else {
+            let (r0, r1) = ([xm, c + half, z + h], [xm, d - half, z + h]);
+            self.face(s, &[p0, p1, r0], roof, true);
+            self.face(s, &[p1, p2, r1, r0], roof, true);
+            self.face(s, &[p2, p3, r1], roof, true);
+            self.face(s, &[p3, p0, r0, r1], roof, true);
+        }
+        self
+    }
+
+    /// One sloping roof rising toward `dir` (0 north, 1 south, 2 east, 3 west), with the walls
+    /// that close its high end and sides.
+    #[allow(clippy::too_many_arguments)]
+    pub fn shed(
+        &mut self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        z: f32,
+        h: f32,
+        roof: Rgb,
+        wall: Rgb,
+        dir: u8,
+        over: f32,
+    ) -> &mut Self {
+        let (w, dp) = if dir < 2 {
+            (x1 - x0, y1 - y0)
+        } else {
+            (y1 - y0, x1 - x0)
+        };
+        let map = |u: f32, v: f32, zz: f32| -> V3 {
+            match dir {
+                0 => [x0 + u, y0 + v, zz],
+                1 => [x0 + u, y1 - v, zz],
+                2 => [x0 + v, y0 + u, zz],
+                _ => [x1 - v, y0 + u, zz],
+            }
+        };
+        let s = self.new_solid(map(w / 2.0, dp * 0.5, z + h * 0.3));
+        let (u0, u1, v0) = (-over, w + over, -over);
+        self.face(
+            s,
+            &[
+                map(u0, v0, z),
+                map(u1, v0, z),
+                map(u1, dp, z + h),
+                map(u0, dp, z + h),
+            ],
+            roof,
+            true,
+        );
+        // the walls under the slope: the high end and two triangular sides
+        self.face(
+            s,
+            &[
+                map(u0, dp, z),
+                map(u1, dp, z),
+                map(u1, dp, z + h),
+                map(u0, dp, z + h),
+            ],
+            wall,
+            false,
+        );
+        for u in [u0, u1] {
+            self.face(
+                s,
+                &[map(u, v0, z), map(u, dp, z), map(u, dp, z + h)],
+                wall,
+                false,
+            );
+        }
+        self
+    }
+
+    /// Mansard roof: steep sloping sides, a flat top inset by `inset`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn mansard(
+        &mut self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        z: f32,
+        h: f32,
+        inset: f32,
+        roof: Rgb,
+        top: Rgb,
+    ) -> &mut Self {
+        let s = self.new_solid([(x0 + x1) / 2.0, (y0 + y1) / 2.0, z + h * 0.4]);
+        let (a, b, c, d) = (x0 - 0.25, x1 + 0.25, y0 - 0.25, y1 + 0.25);
+        let (ia, ib, ic, id) = (a + inset, b - inset, c + inset, d - inset);
+        let zt = z + h;
+        let lo = [[a, c, z], [b, c, z], [b, d, z], [a, d, z]];
+        let hi = [[ia, ic, zt], [ib, ic, zt], [ib, id, zt], [ia, id, zt]];
+        for i in 0..4 {
+            let j = (i + 1) % 4;
+            self.face(s, &[lo[i], lo[j], hi[j], hi[i]], roof, true);
+        }
+        self.face(s, &hi, top, false);
+        self
+    }
+
+    /// A flat roof with a low wall (parapet) all round it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn parapet(
+        &mut self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        z: f32,
+        ph: f32,
+        wall: Rgb,
+        cap: Rgb,
+        deck: Rgb,
+    ) -> &mut Self {
+        let t = 0.3;
+        self.poly(
+            &[
+                [x0, y0, z + 0.04],
+                [x1, y0, z + 0.04],
+                [x1, y1, z + 0.04],
+                [x0, y1, z + 0.04],
+            ],
+            deck,
+            false,
+            false,
+            false,
+        );
+        self.box_(
+            x0 - 0.1,
+            y0 - 0.1,
+            z,
+            x1 + 0.1,
+            y0 + t,
+            z + ph,
+            wall,
+            Some(cap),
+            true,
+        );
+        self.box_(
+            x0 - 0.1,
+            y1 - t,
+            z,
+            x1 + 0.1,
+            y1 + 0.1,
+            z + ph,
+            wall,
+            Some(cap),
+            true,
+        );
+        self.box_(
+            x0 - 0.1,
+            y0 + t,
+            z,
+            x0 + t - 0.1,
+            y1 - t,
+            z + ph,
+            wall,
+            Some(cap),
+            true,
+        );
+        self.box_(
+            x1 - t + 0.1,
+            y0 + t,
+            z,
+            x1 + 0.1,
+            y1 - t,
+            z + ph,
+            wall,
+            Some(cap),
+            true,
+        );
+        self
+    }
+
+    /// A convex footprint (counter-clockwise, x and y pairs) raised from `z0` to `z1`.
+    pub fn extrude(
+        &mut self,
+        pts: &[[f32; 2]],
+        z0: f32,
+        z1: f32,
+        color: Rgb,
+        top: Rgb,
+    ) -> &mut Self {
+        let k = pts.len() as f32;
+        let cx = pts.iter().map(|p| p[0]).sum::<f32>() / k;
+        let cy = pts.iter().map(|p| p[1]).sum::<f32>() / k;
+        let s = self.new_solid([cx, cy, (z0 + z1) / 2.0]);
+        for i in 0..pts.len() {
+            let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+            self.face(
+                s,
+                &[
+                    [a[0], a[1], z0],
+                    [b[0], b[1], z0],
+                    [b[0], b[1], z1],
+                    [a[0], a[1], z1],
+                ],
+                color,
+                false,
+            );
+        }
+        let ring: Vec<V3> = pts.iter().map(|p| [p[0], p[1], z1]).collect();
+        self.face(s, &ring, top, false);
+        self
+    }
+
+    /// A flat coloured panel on a wall running from `a` to `b` (the building outline is
+    /// counter-clockwise, so the outside is on the right), just clear of the wall.
+    pub fn wall_quad(
+        &mut self,
+        a: [f32; 2],
+        b: [f32; 2],
+        z0: f32,
+        z1: f32,
+        color: Rgb,
+    ) -> &mut Self {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l = (dx * dx + dy * dy).sqrt().max(1e-6);
+        let (nx, ny) = (dy / l * 0.06, -dx / l * 0.06);
+        self.poly(
+            &[
+                [a[0] + nx, a[1] + ny, z0],
+                [b[0] + nx, b[1] + ny, z0],
+                [b[0] + nx, b[1] + ny, z1],
+                [a[0] + nx, a[1] + ny, z1],
+            ],
+            color,
+            false,
+            true,
+            true,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]

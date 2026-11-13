@@ -143,4 +143,4 @@ fn mesh_hash_for_a_fixed_lot_set_is_stable() {
     assert_eq!(h, GOLDEN, "mesh hash changed: {h:#018x}");
 }
 
-const GOLDEN: u64 = 0xdf84_00f7_44d8_c83a;
+const GOLDEN: u64 = 0x0706_a25a_8553_b146;
