@@ -1,4 +1,4 @@
-//! `us-gen-cli --preset grid|winding --seed N --png out.png --stats out.json`
+//! `us-gen-cli --preset grid|winding|sunbelt|crossroads|lake --seed N --png out.png --stats out.json`
 
 mod font;
 mod render;
@@ -9,7 +9,7 @@ use us_gen::{Preset, RoadClass, Town, generate};
 
 fn usage() -> ! {
     eprintln!(
-        "usage: us-gen-cli --preset grid|winding --seed N [--png out.png] [--stats out.json]"
+        "usage: us-gen-cli --preset grid|winding|sunbelt|crossroads|lake --seed N [--png out.png] [--stats out.json]"
     );
     std::process::exit(2);
 }
@@ -69,11 +69,11 @@ fn main() {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--preset" => {
-                preset = Some(match args.next().as_deref() {
-                    Some("grid") => Preset::Grid,
-                    Some("winding") => Preset::Winding,
-                    _ => usage(),
-                })
+                preset = Some(
+                    args.next()
+                        .and_then(|n| Preset::from_name(&n))
+                        .unwrap_or_else(|| usage()),
+                )
             }
             "--seed" => seed = args.next().and_then(|s| s.parse::<u64>().ok()),
             "--png" => png = args.next(),
@@ -88,10 +88,7 @@ fn main() {
     let town = generate(preset, seed);
     eprintln!("generated in {:.2}s", start.elapsed().as_secs_f64());
     if let Some(path) = png {
-        let caption = match preset {
-            Preset::Grid => format!("Grid town, seed {seed}"),
-            Preset::Winding => format!("Winding town, seed {seed}"),
-        };
+        let caption = format!("{} town, seed {seed}", preset.label());
         let sub = format!(
             "{} additions, {} lots, {} cul-de-sacs, {} roads",
             town.additions.len(),

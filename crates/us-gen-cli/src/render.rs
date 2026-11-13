@@ -150,6 +150,33 @@ pub fn plan_png(town: &Town, caption: &str, sub: &str) -> Pixmap {
             }
         }
     }
+    // hillshading: light from the north-west, darker on steep ground
+    let cell = 7.0f32;
+    let mut cy = 0.0f32;
+    while cy < h_px {
+        let mut cx = 0.0f32;
+        while cx < PX {
+            let wp = us_gen::pt(
+                (cx + cell / 2.0) as f64 / sc as f64,
+                size as f64 - (cy + cell / 2.0) as f64 / sc as f64,
+            );
+            let g = town.terrain.gradient(wp);
+            let lit = (-g.x * 0.7 + g.y * 0.7) * 3.2;
+            let a = (lit.abs().min(0.5) * 130.0) as u8;
+            if a > 3 {
+                let col = if lit > 0.0 {
+                    Color::from_rgba8(255, 255, 235, a)
+                } else {
+                    Color::from_rgba8(20, 30, 60, a)
+                };
+                if let Some(r) = Rect::from_xywh(cx, TOP + cy, cell, cell) {
+                    pm.fill_rect(r, &paint(col), Transform::identity(), None);
+                }
+            }
+            cx += cell;
+        }
+        cy += cell;
+    }
     for w in &town.water {
         if let Some(path) = poly_path(w) {
             pm.fill_path(

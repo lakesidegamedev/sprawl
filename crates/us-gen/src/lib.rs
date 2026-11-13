@@ -1,4 +1,4 @@
-//! Urban Sprawl town generation: road skeleton, additions, street patterns and lots.
+//! Urban Sprawl town generation: terrain, road skeleton, additions, street patterns and lots.
 //!
 //! `generate(preset, seed)` is deterministic on every platform: seeded SplitMix64 RNG, `libm`
 //! for transcendental functions, no hash-order dependence in any output.
@@ -11,22 +11,199 @@ mod plan;
 mod polygonize;
 mod rng;
 mod skeleton;
+mod terrain;
 mod world;
 
 pub use geom::{Pt, pt};
+pub use terrain::Terrain;
 pub use world::{HALL, HWY_Y, S as MAP_SIZE};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preset {
+    /// Prairie railroad town: straight streets, a grid of old roads.
     Grid,
+    /// River and hills town: crooked streets that follow the land.
     Winding,
+    /// A one-mile arterial grid, each square filled with walled subdivision pods and commercial corners.
+    Sunbelt,
+    /// An old town where two highways cross: radial old roads and a compact grid.
+    Crossroads,
+    /// A shoreline that the streets and a lakeside drive follow.
+    LakeTown,
 }
 
 impl Preset {
+    pub const ALL: [Preset; 5] = [
+        Preset::Grid,
+        Preset::Winding,
+        Preset::Sunbelt,
+        Preset::Crossroads,
+        Preset::LakeTown,
+    ];
+
+    /// Short lower-case name, as used on command lines.
     pub fn name(self) -> &'static str {
         match self {
             Preset::Grid => "grid",
             Preset::Winding => "winding",
+            Preset::Sunbelt => "sunbelt",
+            Preset::Crossroads => "crossroads",
+            Preset::LakeTown => "lake",
+        }
+    }
+
+    /// Name for menus and captions.
+    pub fn label(self) -> &'static str {
+        match self {
+            Preset::Grid => "Grid",
+            Preset::Winding => "Winding",
+            Preset::Sunbelt => "Sunbelt",
+            Preset::Crossroads => "Crossroads",
+            Preset::LakeTown => "Lake town",
+        }
+    }
+
+    /// One line describing the town style.
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Preset::Grid => "Prairie railroad town: straight streets, a grid of old roads.",
+            Preset::Winding => "River and hills town: crooked streets that follow the land.",
+            Preset::Sunbelt => {
+                "Sunbelt suburb: a one-mile road grid filled with walled subdivisions and shopping corners."
+            }
+            Preset::Crossroads => {
+                "Crossroads town: two highways cross in a compact old grid with roads fanning out."
+            }
+            Preset::LakeTown => "Lake town: streets and a lakeside drive follow the shore.",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Preset> {
+        Preset::ALL.into_iter().find(|p| p.name() == s)
+    }
+
+    /// The tuned generator settings of this preset.
+    pub fn settings(self) -> Settings {
+        Settings::for_preset(self)
+    }
+}
+
+/// Knobs of the generator. `generate` uses the tuned values of each preset; the realism tuner
+/// searches over these.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Settings {
+    /// Distance between the big arterial roads in the grid-like presets, metres.
+    pub arterial_spacing: f64,
+    /// Multiplier on every grid block size outside the old core.
+    pub block_scale: f64,
+    /// Block depth and length of the old core grid, metres.
+    pub core_depth: f64,
+    pub core_len: f64,
+    /// Chance that an old core grid has alleys.
+    pub core_alley: f64,
+    /// Chance that a catalogue grid has alleys, where its catalogue entry allows them.
+    pub cat_alley: f64,
+    /// Chance a cross street jogs (T-junctions instead of a four-way crossing) and the jog, metres.
+    pub jog_prob: f64,
+    pub jog: f64,
+    /// Share of outer patches laid out as walled pods.
+    pub pod_share: f64,
+    /// Distance from the hall beyond which pods are built, metres.
+    pub pod_from: f64,
+    /// Joined edge streets at least this long become collectors, metres.
+    pub collector_len: f64,
+    /// Multiplier on the spacing of curving streets.
+    pub street_spacing: f64,
+    /// Share of curving outer patches with cul-de-sacs.
+    pub cul_share: f64,
+    /// Roughly how far the built-up town reaches from the hall, metres.
+    pub reach: f64,
+}
+
+impl Settings {
+    pub fn for_preset(p: Preset) -> Settings {
+        let base = Settings {
+            arterial_spacing: 805.0,
+            block_scale: 1.0,
+            core_depth: 80.0,
+            core_len: 100.0,
+            core_alley: 1.0,
+            cat_alley: 1.0,
+            jog_prob: 0.0,
+            jog: 20.0,
+            pod_share: 0.7,
+            pod_from: 1500.0,
+            collector_len: 800.0,
+            street_spacing: 1.0,
+            cul_share: 0.6,
+            reach: 1900.0,
+        };
+        // Tuned offline against road statistics of real towns (`us-metrics tune`).
+        match p {
+            Preset::Grid => Settings {
+                arterial_spacing: 1400.0,
+                block_scale: 1.84,
+                core_depth: 111.5,
+                core_len: 151.4,
+                core_alley: 0.15,
+                cat_alley: 0.18,
+                jog_prob: 0.08,
+                jog: 38.9,
+                pod_share: 1.0,
+                collector_len: 695.5,
+                street_spacing: 1.39,
+                cul_share: 0.88,
+                ..base
+            },
+            Preset::Winding => Settings {
+                block_scale: 1.75,
+                pod_share: 0.24,
+                collector_len: 554.7,
+                street_spacing: 1.6,
+                cul_share: 0.47,
+                ..base
+            },
+            Preset::Sunbelt => Settings {
+                arterial_spacing: 1609.0,
+                block_scale: 2.2,
+                pod_share: 0.39,
+                pod_from: 420.0,
+                collector_len: 916.0,
+                street_spacing: 1.05,
+                cul_share: 0.83,
+                reach: 2700.0,
+                ..base
+            },
+            Preset::Crossroads => Settings {
+                block_scale: 2.12,
+                core_depth: 123.3,
+                core_len: 126.3,
+                core_alley: 0.32,
+                cat_alley: 0.32,
+                jog_prob: 0.004,
+                jog: 24.3,
+                pod_share: 1.0,
+                collector_len: 752.5,
+                street_spacing: 1.0,
+                cul_share: 0.71,
+                reach: 1900.0,
+                ..base
+            },
+            Preset::LakeTown => Settings {
+                block_scale: 2.19,
+                core_depth: 139.6,
+                core_len: 164.4,
+                core_alley: 0.01,
+                cat_alley: 0.12,
+                jog_prob: 0.087,
+                jog: 39.5,
+                pod_share: 0.69,
+                collector_len: 900.7,
+                street_spacing: 0.99,
+                cul_share: 0.5,
+                reach: 1800.0,
+                ..base
+            },
         }
     }
 }
@@ -263,9 +440,21 @@ pub struct Town {
     pub water: Vec<Vec<Pt>>,
     pub hall: Pt,
     pub hall_radius: f64,
+    /// The ground: heights and slopes anywhere on the map.
+    pub terrain: Terrain,
 }
 
 impl Town {
+    /// Ground height in metres at a point.
+    pub fn height_at(&self, p: Pt) -> f64 {
+        self.terrain.height_at(p)
+    }
+
+    /// Steepness (rise over run) at a point.
+    pub fn slope_at(&self, p: Pt) -> f64 {
+        self.terrain.slope(p)
+    }
+
     /// Canonical byte form of the whole town: the same (preset, seed) gives the same bytes anywhere.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut b = Vec::new();
@@ -315,6 +504,9 @@ impl Town {
         }
         pts(&mut b, &[self.hall]);
         f(&mut b, self.hall_radius);
+        for v in self.terrain.heightfield(17) {
+            b.extend_from_slice(&v.to_bits().to_le_bytes());
+        }
         b
     }
 
@@ -331,5 +523,10 @@ impl Town {
 
 /// Generate a 4096 m town. Same `(preset, seed)` gives the same town on every platform.
 pub fn generate(preset: Preset, seed: u64) -> Town {
-    plan::generate(preset, seed)
+    plan::generate(preset, seed, &preset.settings())
+}
+
+/// Like `generate`, with explicit settings (used by the realism tuner).
+pub fn generate_with(preset: Preset, seed: u64, settings: &Settings) -> Town {
+    plan::generate(preset, seed, settings)
 }
