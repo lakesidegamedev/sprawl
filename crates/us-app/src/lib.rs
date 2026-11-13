@@ -60,8 +60,11 @@ fn log(msg: &str) {
 
 impl App {
     fn init_gfx(&mut self, el: &ActiveEventLoop) {
-        let attrs = Window::default_attributes()
-            .with_title(format!("Urban Sprawl {VERSION_LABEL}"))
+        let attrs =
+            Window::default_attributes().with_title(format!("Urban Sprawl {VERSION_LABEL}"));
+        // desktop windows open at a set size; a phone or tablet window is the whole screen
+        #[cfg(not(target_os = "ios"))]
+        let attrs = attrs
             .with_inner_size(winit::dpi::LogicalSize::new(1360.0, 820.0))
             .with_min_inner_size(winit::dpi::LogicalSize::new(900.0, 560.0));
         #[cfg(target_os = "ios")]
