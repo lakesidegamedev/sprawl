@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Create or update the pre-release (tag v1.0.0-preview.1) from this commit"
+        description: "Create or update the pre-release (tag v1.0.0-preview.2) from this commit"
         type: boolean
         default: false
 
@@ -48,7 +48,7 @@ jobs:
         id: pkg
         run: |
           set -euo pipefail
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then V="${GITHUB_REF_NAME#v}"; else V="1.0.0-preview.1"; fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then V="${GITHUB_REF_NAME#v}"; else V="1.0.0-preview.2"; fi
           NAME="urban-sprawl-$V-${{ matrix.name }}"
           mkdir -p dist "stage/$NAME"
           cp packaging/README.txt "stage/$NAME/README.txt"
@@ -104,11 +104,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then TAG="$GITHUB_REF_NAME"; else TAG="v1.0.0-preview.1"; fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then TAG="$GITHUB_REF_NAME"; else TAG="v1.0.0-preview.2"; fi
+          TITLE="Urban Sprawl $(echo "${TAG#v}" | sed 's/-preview\./ preview /')"
           ls -la assets
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" assets/* --clobber
           else
             gh release create "$TAG" assets/* --target "$GITHUB_SHA" --prerelease \
-              --title "Urban Sprawl 1.0.0 preview 1" --notes-file .github/release-notes.md
+              --title "$TITLE" --notes-file .github/release-notes.md
           fi

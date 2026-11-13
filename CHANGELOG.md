@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Preview 2: a visible goal and first-run tips (population goals, three short hints you can dismiss), event messages (new neighbourhood, first shop, school, church and fire station, treasury running low or below zero), a readable controls strip, clearer hall placement text, the signed-in name in the top bar and pause menu, signed-out and launcher sign-in lines on the main menu. Fix: Back in Settings opened from the pause menu threw away the running town; it now returns to the pause menu. Shown version is 1.0.0 preview 2 and the release title follows the tag.
 - Interface uses the studio's dark navy panels with gold for the main action, no cream panels.
 - Fix: text and texture updates the UI produces in a frame the window skips are kept and uploaded on the next frame instead of being lost (the debug build stopped on this).
 - Lakeside account in the app: "Signed in as" on the main menu when the launcher hands over a sign-in, and Sign in, Sign out and Check for updates in Settings (updates say the launcher keeps the copy current when it started the game).
