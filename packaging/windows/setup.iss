@@ -36,9 +36,9 @@ DefaultDirName={autopf}\{#AppName}
 UsePreviousAppDir=yes
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
-; Per user by default (no administrator prompt); the player can choose all users.
+; Always per user: no administrator prompt, uninstall entry under HKCU. The Lakeside launcher installs
+; silently with /DIR= under the per-user Programs folder; a machine-wide install would stop it with UAC.
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#ExeName}
