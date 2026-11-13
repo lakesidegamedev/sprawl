@@ -83,8 +83,7 @@ jobs:
         working-directory: out
         run: sha256sum *.AppImage | tee SHA256SUMS-linux.txt
       - uses: actions/upload-artifact@v4
-        # Public repo: pull request runs only prove the build; they never publish game files.
-        if: github.event_name != 'pull_request'
+        # On pull requests this copy lives only until the launch check below has used it.
         with:
           name: installers-ubuntu-latest
           path: out/*
