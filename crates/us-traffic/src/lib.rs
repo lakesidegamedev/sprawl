@@ -11,4 +11,4 @@ mod network;
 
 pub use assign::{AssignParams, Assignment, Skim, assign, skim};
 pub use demand::{Demand, DemandParams, Zone, attraction_jobs, production_homes};
-pub use network::{Arc, Network, class_capacity, class_node_delay, class_speed};
+pub use network::{Arc, Network, NodeGrid, class_capacity, class_node_delay, class_speed};

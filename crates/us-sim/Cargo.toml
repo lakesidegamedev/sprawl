@@ -9,4 +9,6 @@ description = "Urban Sprawl simulation: game clock, town growth reveal, construc
 
 [dependencies]
 us-gen = { path = "../us-gen" }
+us-metrics = { path = "../us-metrics" }
+us-traffic = { path = "../us-traffic" }
 libm = "=0.2.16"
