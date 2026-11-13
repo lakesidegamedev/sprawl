@@ -1071,6 +1071,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "us-sim"
+version = "0.1.0"
+dependencies = [
+ "us-gen",
+]
+
+[[package]]
 name = "wasm-bindgen"
 version = "0.2.130"
 source = "registry+https://github.com/rust-lang/crates.io-index"
