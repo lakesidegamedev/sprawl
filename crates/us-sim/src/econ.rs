@@ -228,7 +228,9 @@ impl Sim {
 
     /// Open the books for the month that just ended.
     pub(crate) fn run_month(&mut self) {
+        self.step_rival();
         self.recompute_values();
+        self.evolve_buildings();
         let lg = self.compute_ledger();
         let (income, expense) = (lg.income_total(), lg.expense_total());
         self.treasury += income - expense;

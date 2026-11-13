@@ -19,3 +19,12 @@ opt-level = 2
 
 [profile.dev.package.us-render]
 opt-level = 2
+
+[profile.dev.package.us-traffic]
+opt-level = 2
+
+[profile.dev.package.us-metrics]
+opt-level = 2
+
+[profile.dev.package.us-grow]
+opt-level = 2

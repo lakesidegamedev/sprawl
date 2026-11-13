@@ -14,12 +14,17 @@
 //! `(seed, lot, day)`, so the same inputs give the same state on every platform.
 
 mod civic;
+mod dynamic;
 mod econ;
+mod growth;
 mod model;
 mod roadnet;
+mod traffic;
 mod value;
 
+pub use dynamic::Rival;
 pub use model::*;
+pub use traffic::RoadTraffic;
 
 use us_gen::{LotKind, Pt, RoadClass, Town, Zone, pt};
 
@@ -75,8 +80,15 @@ pub struct LotState {
     pub exempt: bool,
     /// Set for buildings the mayor placed; `kind` is then the look it borrows.
     pub civic: Option<CivicKind>,
-    /// Building level 1 to 5 (always 1 for civic buildings and farms).
+    /// Building level 1 to 5 (always 1 for civic buildings and farms). A level 2 house is row
+    /// houses, level 3 and up apartments; shops grow into bigger shops and offices. The kind
+    /// never changes, so the renderer picks the model from kind and level together.
     pub level: u8,
+    /// While the lot is being rebuilt bigger (`Phase::Building` on a lot that had a level), the
+    /// level it will have when done; 0 otherwise.
+    pub next_level: u8,
+    /// Day a fire started here. It burns for a few days, then the lot is rebuilt from level 1.
+    pub fire: Option<i32>,
 }
 
 #[derive(Clone, Debug)]
@@ -178,6 +190,17 @@ fn dist_pt_ring_edge(p: Pt, ring: &[Pt]) -> f64 {
 /// above. Never zero, so a heavily taxed town still creeps along.
 pub fn growth_mult(tax_pct: f64) -> f64 {
     (1.45 - 0.065 * tax_pct).clamp(0.05, 1.6)
+}
+
+/// Upkeep per metre per month (before the budget) by road class.
+fn road_cost_per_m(c: RoadClass) -> f64 {
+    match c {
+        RoadClass::Highway | RoadClass::Rail => 0.0,
+        RoadClass::Arterial => 1.2,
+        RoadClass::Collector => 0.9,
+        RoadClass::Local => 0.6,
+        RoadClass::Alley => 0.25,
+    }
 }
 
 fn kind_value(k: LotKind) -> i64 {
@@ -293,6 +316,15 @@ pub struct Sim {
     pub(crate) last_ledger: econ::Ledger,
     pub(crate) next_milestone: usize,
     pub(crate) warn_level: u8,
+    pub(crate) run_traffic: Vec<RoadTraffic>,
+    pub(crate) traffic_cells: Vec<f32>,
+    pub(crate) avg_cong: f32,
+    pub(crate) pending: Option<traffic::Pending>,
+    pub(crate) roads_version: u32,
+    pub(crate) rival: Rival,
+    pub departures: u32,
+    pub fires_total: u32,
+    pub(crate) month_index: u32,
     pub(crate) values_stale: bool,
 }
 
@@ -354,6 +386,15 @@ impl Sim {
             last_ledger: econ::Ledger::default(),
             next_milestone: 0,
             warn_level: 0,
+            run_traffic: Vec::new(),
+            traffic_cells: Vec::new(),
+            avg_cong: 0.0,
+            pending: None,
+            roads_version: 0,
+            rival: Rival::new(seed),
+            departures: 0,
+            fires_total: 0,
+            month_index: 0,
             values_stale: false,
         };
         // reveal order: nearest to the hall first
@@ -399,6 +440,8 @@ impl Sim {
                 exempt: pre,
                 civic: None,
                 level: 1,
+                next_level: 0,
+                fire: None,
             });
         }
         sim.build_runs(town, &farm);
@@ -406,6 +449,7 @@ impl Sim {
         for _ in 0..initial_reveals {
             sim.reveal_next();
         }
+        sim.run_traffic = vec![RoadTraffic::default(); sim.runs.len()];
         sim.recompute_values();
         sim
     }
@@ -494,13 +538,7 @@ impl Sim {
         let n_add = self.revealed.len();
         for run in &runs {
             let len: f64 = run.points.windows(2).map(|w| w[0].dist(w[1])).sum();
-            let per_m = match run.class {
-                RoadClass::Highway | RoadClass::Rail => 0.0,
-                RoadClass::Arterial => 1.2,
-                RoadClass::Collector => 0.9,
-                RoadClass::Local => 0.6,
-                RoadClass::Alley => 0.25,
-            };
+            let per_m = road_cost_per_m(run.class);
             let slot = run.addition.unwrap_or(n_add);
             self.road_cost_per_month[slot] += (len * per_m * 3.0) as i64;
         }
@@ -547,7 +585,7 @@ impl Sim {
         self.lots
             .iter()
             .filter(|l| matches!(l.phase, Phase::Built { .. }) && !l.exempt)
-            .map(|l| kind_pop(l.kind))
+            .map(|l| kind_pop(l.kind) * econ::level_value_pct(l.level) / 100)
             .sum()
     }
 
@@ -584,6 +622,14 @@ impl Sim {
         f(self.debt() as u64);
         for c in Class::ALL {
             f(self.tax.get(c) as u64);
+        }
+        f(self.runs.len() as u64);
+        for r in &self.runs {
+            f(r.class as u64);
+            f(r.points.len() as u64);
+        }
+        for l in &self.lots {
+            f(l.level as u64 | (l.fire.is_some() as u64) << 8);
         }
         for l in &self.lots {
             match l.phase {
@@ -682,6 +728,10 @@ impl Sim {
             if let Phase::Building { end, .. } = self.lots[i].phase
                 && day >= end
             {
+                if self.lots[i].next_level > self.lots[i].level {
+                    self.lots[i].level = self.lots[i].next_level;
+                }
+                self.lots[i].next_level = 0;
                 let rate = self.lot_rate_x10(i);
                 self.lots[i].phase = Phase::Built {
                     since: day,
@@ -703,6 +753,8 @@ impl Sim {
             }
         }
 
+        self.step_fires();
+        self.step_traffic();
         if self.values_stale {
             self.recompute_values();
         }
@@ -1063,3 +1115,6 @@ mod tests {
 
 #[cfg(test)]
 mod tests_levers;
+
+#[cfg(test)]
+mod tests_world;

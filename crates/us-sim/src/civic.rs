@@ -93,6 +93,8 @@ impl Sim {
             exempt: false,
             civic: Some(kind),
             level: 1,
+            next_level: 0,
+            fire: None,
         });
         self.changed_lots.push(idx);
         self.log(
