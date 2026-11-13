@@ -102,7 +102,7 @@ fn lit(world: vec3<f32>, n: vec3<f32>) -> f32 {
 
 struct FOut {
     @location(0) colour: vec4<f32>,
-    @location(1) aux: vec4<f32>,
+    @location(1) aux: vec4<u32>,
 };
 
 fn hash_u(x: u32) -> u32 {
@@ -204,14 +204,14 @@ fn fs_main(v: VOut) -> FOut {
     }
     var o: FOut;
     o.colour = vec4<f32>(col, 1.0);
-    o.aux = vec4<f32>(v.dist, f32(v.id), 0.0, 1.0);
+    o.aux = vec4<u32>(bitcast<u32>(v.dist), v.id, 0u, 1u);
     return o;
 }
 
 // ---- edge pass ----
 
 @group(1) @binding(0) var colour_tex: texture_2d<f32>;
-@group(1) @binding(1) var aux_tex: texture_2d<f32>;
+@group(1) @binding(1) var aux_tex: texture_2d<u32>;
 
 struct EOut {
     @builtin(position) clip: vec4<f32>,
@@ -230,7 +230,8 @@ const EXEMPT: u32 = 16777215u;
 fn aux_at(p: vec2<i32>) -> vec2<f32> {
     let size = vec2<i32>(i32(g.screen.x), i32(g.screen.y));
     let q = clamp(p, vec2<i32>(0, 0), size - vec2<i32>(1, 1));
-    return textureLoad(aux_tex, q, 0).xy;
+    let t = textureLoad(aux_tex, q, 0);
+    return vec2<f32>(bitcast<f32>(t.x), f32(t.y));
 }
 
 // True when this pixel is on the near side of a face change: one pixel wide ink line.

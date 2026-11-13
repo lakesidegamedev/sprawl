@@ -11,7 +11,11 @@ use wgpu::util::DeviceExt;
 
 const SHADER: &str = include_str!("shader.wgsl");
 const COLOUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+// distance (as f32 bits) and face id, in an integer format: every back end can draw to it,
+// OpenGL ES included (it cannot draw to Rgba32Float without an extension)
+const AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
+// the bits of 1.0e9_f32, the far distance that an empty pixel holds
+const AUX_FAR_BITS: f64 = 1_315_859_240.0;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 #[derive(Clone, Debug)]
@@ -406,11 +410,16 @@ impl Renderer {
             view_dimension: wgpu::TextureViewDimension::D2,
             multisampled: false,
         };
+        let tex_uint = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Uint,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        };
         let layout1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("edge inputs"),
             entries: &[
                 entry(0, wgpu::ShaderStages::FRAGMENT, tex_unfilterable),
-                entry(1, wgpu::ShaderStages::FRAGMENT, tex_unfilterable),
+                entry(1, wgpu::ShaderStages::FRAGMENT, tex_uint),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1234,7 +1243,7 @@ impl Renderer {
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 1.0e9,
+                                r: AUX_FAR_BITS,
                                 g: 0.0,
                                 b: 0.0,
                                 a: 1.0,
