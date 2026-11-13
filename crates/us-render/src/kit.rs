@@ -746,3 +746,10 @@ pub const ALL_KINDS: [LotKind; 19] = [
     LotKind::FastFood,
     LotKind::Farm,
 ];
+
+/// A tree colour with one of four tiny blue-channel steps picked from where the tree stands, so
+/// autumn can give each tree its own leaf colour. Differences are invisible in summer.
+pub fn tree_variant(col: Rgb, x: f32, y: f32) -> Rgb {
+    let h = ((x * 7.0) as i32).wrapping_mul(31) ^ ((y * 13.0) as i32).wrapping_mul(17);
+    [col[0], col[1], col[2] + (h & 3) as u8]
+}
