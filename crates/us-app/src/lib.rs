@@ -38,6 +38,7 @@ struct App {
     last: Instant,
     fatal: Option<String>,
     applied_scale: f32,
+    logged_frames: u32,
     applied_fullscreen: bool,
 }
 
@@ -153,7 +154,29 @@ impl App {
         self.st.touch_tick();
         self.st.update(dt, w, h);
 
-        let raw = gfx.egui_state.take_egui_input(&gfx.window);
+        let mut raw = gfx.egui_state.take_egui_input(&gfx.window);
+        // keep the interface out from under the notch, rounded corners and home indicator
+        let [top, left, bottom, right] = platform::safe_insets(&gfx.window);
+        if top + left + bottom + right > 0.0 {
+            let k = 1.0 / self.st.settings.ui_scale.max(0.1);
+            raw.safe_area_insets = Some(egui::SafeAreaInsets(egui::epaint::MarginF32 {
+                top: top * k,
+                left: left * k,
+                bottom: bottom * k,
+                right: right * k,
+            }));
+        }
+        if self.logged_frames < 3 {
+            self.logged_frames += 1;
+            log(&format!(
+                "frame: window {}x{} px, scale {}, egui screen {:?}, ppp {}",
+                w,
+                h,
+                gfx.window.scale_factor(),
+                raw.screen_rect,
+                gfx.egui_ctx.pixels_per_point()
+            ));
+        }
         let st = &mut self.st;
         let out = gfx.egui_ctx.run_ui(raw, |ui| st.ui(ui, w, h));
         gfx.egui_state
@@ -349,6 +372,7 @@ pub fn run() {
         last: Instant::now(),
         fatal: None,
         applied_scale: 1.0,
+        logged_frames: 0,
         applied_fullscreen: false,
     };
     if let Err(e) = el.run_app(&mut app) {

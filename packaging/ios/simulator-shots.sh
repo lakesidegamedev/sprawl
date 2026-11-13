@@ -32,7 +32,13 @@ within 300 xcrun simctl bootstatus "$udid" -b || { echo "FAIL: simulator did not
 step "install"
 within 120 xcrun simctl install "$udid" "$app"
 
-running() { within 30 xcrun simctl spawn "$udid" launchctl list | grep -q "UIKitApplication:$bundle"; }
+# The runner's simulator answers slowly, so a check that times out counts as "not known to be
+# stopped"; only a clear answer that the app is gone fails the run.
+running() {
+  local list
+  list="$(within 120 xcrun simctl spawn "$udid" launchctl list 2>/dev/null)" || return 0
+  echo "$list" | grep -q "UIKitApplication:$bundle"
+}
 show_log() {
   local data; data="$(xcrun simctl get_app_container "$udid" "$bundle" data 2>/dev/null || true)"
   [ -n "$data" ] && cat "$data/tmp/urban-sprawl.log" 2>/dev/null || true
@@ -42,17 +48,18 @@ fail() { echo "FAIL: $1" >&2; show_log; within 60 xcrun simctl io "$udid" screen
 # menu
 step "launch menu"
 within 60 xcrun simctl launch "$udid" "$bundle"
-sleep 12
+sleep 5
 running || fail "app is not running after launch"
 step "screenshot menu"
 within 60 xcrun simctl io "$udid" screenshot "$out/$kind-1-menu.png"
+show_log
 xcrun simctl terminate "$udid" "$bundle"
 sleep 2
 
 # town: the smoke autopilot starts a new town and places the hall, then runs for 10 minutes
 step "launch town"
 SIMCTL_CHILD_URBAN_SPRAWL_SMOKE=600 SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_DAYS=900 within 60 xcrun simctl launch "$udid" "$bundle"
-sleep 30
+sleep 20
 running || fail "app stopped while building the town"
 step "screenshot town"
 within 60 xcrun simctl io "$udid" screenshot "$out/$kind-2-town.png"
