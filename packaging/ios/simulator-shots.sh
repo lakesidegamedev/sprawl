@@ -27,42 +27,42 @@ echo "using $kind simulator $udid"
 xcrun simctl list devices available | grep "$udid" || true
 
 step "boot"
-within 60 xcrun simctl boot "$udid" || true
-within 300 xcrun simctl bootstatus "$udid" -b || { echo "FAIL: simulator did not finish booting" >&2; exit 1; }
+within 240 xcrun simctl boot "$udid" || true
+within 600 xcrun simctl bootstatus "$udid" -b || { echo "FAIL: simulator did not finish booting" >&2; exit 1; }
 step "install"
-within 120 xcrun simctl install "$udid" "$app"
+within 400 xcrun simctl install "$udid" "$app"
 
 # The runner's simulator answers slowly, so a check that times out counts as "not known to be
 # stopped"; only a clear answer that the app is gone fails the run.
 running() {
   local list
-  list="$(within 120 xcrun simctl spawn "$udid" launchctl list 2>/dev/null)" || return 0
+  list="$(within 240 xcrun simctl spawn "$udid" launchctl list 2>/dev/null)" || return 0
   echo "$list" | grep -q "UIKitApplication:$bundle"
 }
 show_log() {
   local data; data="$(xcrun simctl get_app_container "$udid" "$bundle" data 2>/dev/null || true)"
   [ -n "$data" ] && cat "$data/tmp/urban-sprawl.log" 2>/dev/null || true
 }
-fail() { echo "FAIL: $1" >&2; show_log; within 60 xcrun simctl io "$udid" screenshot "$out/$kind-failed.png" || true; exit 1; }
+fail() { echo "FAIL: $1" >&2; show_log; within 240 xcrun simctl io "$udid" screenshot "$out/$kind-failed.png" || true; exit 1; }
 
 # menu
 step "launch menu"
-within 60 xcrun simctl launch "$udid" "$bundle"
+within 240 xcrun simctl launch "$udid" "$bundle"
 sleep 5
 running || fail "app is not running after launch"
 step "screenshot menu"
-within 60 xcrun simctl io "$udid" screenshot "$out/$kind-1-menu.png"
+within 240 xcrun simctl io "$udid" screenshot "$out/$kind-1-menu.png"
 show_log
 xcrun simctl terminate "$udid" "$bundle"
 sleep 2
 
 # town: the smoke autopilot starts a new town and places the hall, then runs for 10 minutes
 step "launch town"
-SIMCTL_CHILD_URBAN_SPRAWL_SMOKE=600 SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_DAYS=900 within 60 xcrun simctl launch "$udid" "$bundle"
+SIMCTL_CHILD_URBAN_SPRAWL_SMOKE=600 SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_DAYS=900 within 240 xcrun simctl launch "$udid" "$bundle"
 sleep 20
 running || fail "app stopped while building the town"
 step "screenshot town"
-within 60 xcrun simctl io "$udid" screenshot "$out/$kind-2-town.png"
+within 240 xcrun simctl io "$udid" screenshot "$out/$kind-2-town.png"
 show_log
 xcrun simctl terminate "$udid" "$bundle" || true
 xcrun simctl shutdown "$udid" || true

@@ -34,7 +34,7 @@ concurrency:
 jobs:
   simulator:
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96.0
@@ -60,10 +60,10 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
       - name: iPhone screenshots
-        timeout-minutes: 12
+        timeout-minutes: 25
         run: bash packaging/ios/simulator-shots.sh iphone "build/ios/Build/Products/Release-iphonesimulator/Urban Sprawl.app" shots
       - name: iPad screenshots
-        timeout-minutes: 12
+        timeout-minutes: 25
         run: bash packaging/ios/simulator-shots.sh ipad "build/ios/Build/Products/Release-iphonesimulator/Urban Sprawl.app" shots
       - uses: actions/upload-artifact@v4
         if: always()
