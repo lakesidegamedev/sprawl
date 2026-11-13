@@ -932,7 +932,7 @@ impl State {
         // top bar
         egui::Panel::top("hud").frame(theme::bar()).show(ui, |ui| {
             // phones in portrait: two rows instead of one
-            let narrow = ui.ctx().content_rect().width() < 760.0;
+            let narrow = ui.ctx().content_rect().width() < 1100.0;
             let left = |ui: &mut egui::Ui, g: &Game| {
                 let light = INK;
                 let t = |s: String| {
