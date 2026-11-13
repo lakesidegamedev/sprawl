@@ -834,16 +834,12 @@ impl State {
                 painter.rect_filled(
                     egui::Rect::from_center_size(*p, vec2(r * 2.0 + 4.0, r * 2.0 + 4.0)),
                     egui::CornerRadius::ZERO,
-                    INK,
+                    theme::LINE,
                 );
                 painter.rect_filled(
                     egui::Rect::from_center_size(*p, vec2(r * 2.0, r * 2.0)),
                     egui::CornerRadius::ZERO,
-                    if hot {
-                        ACCENT
-                    } else {
-                        Color32::from_rgb(250, 246, 234)
-                    },
+                    if hot { ACCENT } else { INK },
                 );
             }
         } else if let Some(sel) = g.sel {
@@ -861,7 +857,7 @@ impl State {
             ) {
                 let (a, b) = (to_screen(a, w, h, ppp), to_screen(b, w, h, ppp));
                 let rad = (a.distance(b)).max(10.0) * 1.15;
-                painter.circle_stroke(a, rad + 2.0, Stroke::new(5.0, INK));
+                painter.circle_stroke(a, rad + 2.0, Stroke::new(5.0, theme::LINE));
                 painter.circle_stroke(a, rad, Stroke::new(3.0, ACCENT));
             }
         }
@@ -869,7 +865,7 @@ impl State {
         // top bar
         egui::Panel::top("hud").frame(theme::bar()).show(ui, |ui| {
             ui.horizontal(|ui| {
-                let light = Color32::from_rgb(250, 246, 234);
+                let light = INK;
                 let t = |s: String| RichText::new(s).font(pixel(16.0)).color(light);
                 ui.label(
                     RichText::new("URBAN SPRAWL")
@@ -927,13 +923,11 @@ impl State {
                         for i in (0..4).rev() {
                             let on = g.speed == i;
                             let b = egui::Button::new(
-                                RichText::new(SPEED_LABELS[i]).font(pixel(14.0)).color(INK),
+                                RichText::new(SPEED_LABELS[i])
+                                    .font(pixel(14.0))
+                                    .color(if on { theme::LINE } else { INK }),
                             )
-                            .fill(if on {
-                                ACCENT
-                            } else {
-                                Color32::from_rgb(250, 246, 234)
-                            })
+                            .fill(if on { ACCENT } else { theme::RAISED })
                             .min_size(vec2(38.0, 26.0));
                             if ui.add(b).clicked() {
                                 g.speed = i;
@@ -997,13 +991,9 @@ impl State {
                         let (rect, _) =
                             ui.allocate_exact_size(vec2(276.0, 20.0), egui::Sense::hover());
                         let p = ui.painter();
-                        p.rect_filled(rect, egui::CornerRadius::ZERO, INK);
+                        p.rect_filled(rect, egui::CornerRadius::ZERO, theme::EDGE);
                         let inner = rect.shrink(3.0);
-                        p.rect_filled(
-                            inner,
-                            egui::CornerRadius::ZERO,
-                            Color32::from_rgb(250, 246, 234),
-                        );
+                        p.rect_filled(inner, egui::CornerRadius::ZERO, theme::PANEL_DARK);
                         let mut f = inner;
                         f.set_width(inner.width() * g.stats.demand as f32);
                         let dc = if g.stats.demand < 0.3 {

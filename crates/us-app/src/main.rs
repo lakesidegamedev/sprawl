@@ -24,6 +24,9 @@ struct Gfx {
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_rend: egui_wgpu::Renderer,
+    /// egui texture changes (the font atlas among them) not yet uploaded. A frame the surface
+    /// skips keeps them here for the next one, so no glyph update is ever lost.
+    pending_tex: egui::TexturesDelta,
 }
 
 struct App {
@@ -101,6 +104,7 @@ impl App {
             egui_ctx,
             egui_state,
             egui_rend,
+            pending_tex: egui::TexturesDelta::default(),
         });
     }
 
@@ -146,8 +150,10 @@ impl App {
             pixels_per_point: ppp,
         };
         let (scene, camera, style) = self.st.scene_camera();
+        gfx.pending_tex.append(out.textures_delta);
         let egui_rend = &mut gfx.egui_rend;
-        let textures = out.textures_delta;
+        let textures = &gfx.pending_tex;
+        let mut uploaded = false;
         let stats = gfx.renderer.render_to_surface_with(
             scene,
             &camera,
@@ -160,6 +166,7 @@ impl App {
                         egui_rend.update_texture(device, queue, *id, delta);
                     }
                 }
+                uploaded = true;
                 let extra = egui_rend.update_buffers(device, queue, enc, &prims, &screen);
                 if !extra.is_empty() {
                     queue.submit(extra);
@@ -185,8 +192,11 @@ impl App {
                 egui_rend.render(&mut pass, &prims, &screen);
             },
         );
-        for id in &textures.free {
-            gfx.egui_rend.free_texture(id);
+        if uploaded {
+            for id in &gfx.pending_tex.free {
+                gfx.egui_rend.free_texture(id);
+            }
+            gfx.pending_tex.clear();
         }
         self.st.frame_done(dt, stats.is_some());
         if self.st.quit {
