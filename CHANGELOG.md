@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Twice the density: towns now hold about twice as many buildings per square kilometre in every style. Houses, shops, rows and apartments sit closer together (old town lots about 9 to 15 m wide, suburbs 15 to 20 m), shops, rows and apartments in the core and inner ring are built shoulder to shoulder, corner lots are used, and blocks get back lots (up to three rows downtown, two in the inner ring, an occasional back house in outer suburbs, small courtyards between apartment blocks). Builders start twice as many buildings a day and keep twice as many lots ready, so a town fills at the same pace; population and jobs follow, and traffic stays light. `shots` now renders every town style.
 - Town generation: a seeded heightfield (flat ground round the hall and highway, a flat river valley, hills further out) with old roads and curving suburbs bending along the contours, steep ground left wooded and unbuilt, and heights and slopes exposed for the renderer; three new town styles (Sunbelt, Crossroads, Lake town) in the new-town menu; grid and winding layouts tuned against road statistics of real towns (bigger blocks, far fewer alleys, fewer arterials, more collectors), with the tuner (`us-metrics tune`) included.
 - Shown version is 1.0.0 preview 3.
 - Fix: placing a school, police station, fire station, clinic, park or water tower closed the game, because the town view did not know about the new lot. The view now follows lots the mayor adds.
