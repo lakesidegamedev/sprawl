@@ -10,7 +10,7 @@ pub mod geom;
 mod propose;
 mod score;
 
-pub use driver::{Evaluation, RoundLog, evaluate, grow};
+pub use driver::{Evaluation, RoundLog, RoundPlan, evaluate, grow, plan_round};
 pub use propose::RuleProposer;
 pub use score::TrafficScorer;
 
