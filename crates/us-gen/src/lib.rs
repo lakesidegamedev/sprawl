@@ -336,10 +336,10 @@ impl LotKind {
     /// Footprint radius in metres before any downtown squeeze.
     pub fn nominal_radius(self) -> f64 {
         match self {
-            LotKind::House => 8.0,
-            LotKind::Row => 9.5,
-            LotKind::Shop => 8.5,
-            LotKind::Apartments => 11.5,
+            LotKind::House => 6.5,
+            LotKind::Row => 8.0,
+            LotKind::Shop => 6.8,
+            LotKind::Apartments => 9.8,
             LotKind::Office => 11.5,
             LotKind::Gas => 13.5,
             LotKind::Workshop => 16.0,
