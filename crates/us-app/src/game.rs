@@ -100,6 +100,8 @@ pub struct State {
     demo: Option<Demo>,
     gen_wait: u8,
     pub quit: bool,
+    /// Settings were opened from the pause menu, so Back returns to the game.
+    settings_from_game: bool,
     keys: HashSet<KeyCode>,
     cursor: (f32, f32),
     left: Option<Press>,
@@ -188,6 +190,7 @@ impl State {
             demo: None,
             gen_wait: 0,
             quit: false,
+            settings_from_game: false,
             keys: HashSet::new(),
             cursor: (0.0, 0.0),
             left: None,
@@ -408,7 +411,7 @@ impl State {
     }
 
     pub fn scene_camera(&self) -> (&Scene, Camera, Style) {
-        if self.screen == Screen::Game
+        if (self.screen == Screen::Game || self.settings_from_game)
             && let Some(g) = &self.game
         {
             return (&g.live.scene, g.cam.camera(), self.style.clone());
@@ -683,6 +686,7 @@ impl State {
         let fps = self.fps;
         let mut to_menu = false;
         let mut quit = false;
+        let mut open_settings = false;
         let g = self.game.as_mut().unwrap();
         let view = g.cam.camera().view(w as f32 / h as f32);
         let painter = ctx.layer_painter(egui::LayerId::new(
@@ -995,12 +999,8 @@ impl State {
                             if theme::button(ui, "RESUME").clicked() {
                                 g.menu_open = false;
                             }
-                            let mut fs = self.settings.fullscreen;
-                            if theme::button(ui, if fs { "WINDOWED" } else { "FULLSCREEN" })
-                                .clicked()
-                            {
-                                fs = !fs;
-                                self.settings.fullscreen = fs;
+                            if theme::button(ui, "SETTINGS").clicked() {
+                                open_settings = true;
                             }
                             if theme::button(ui, "QUIT TO MENU").clicked() {
                                 to_menu = true;
@@ -1010,6 +1010,11 @@ impl State {
                             }
                         });
                 });
+        }
+        if open_settings {
+            g_menu_close(self);
+            self.settings_from_game = true;
+            self.screen = Screen::Settings;
         }
         if to_menu {
             self.game = None;
@@ -1068,5 +1073,11 @@ impl Game {
             expense,
             demand: self.sim.demand(),
         };
+    }
+}
+
+fn g_menu_close(st: &mut State) {
+    if let Some(g) = st.game.as_mut() {
+        g.menu_open = false;
     }
 }

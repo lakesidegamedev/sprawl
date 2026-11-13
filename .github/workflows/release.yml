@@ -56,7 +56,7 @@ jobs:
           case "${{ matrix.name }}" in
             windows-x64)
               cp target/release/urban-sprawl.exe "stage/$NAME/"
-              (cd stage && powershell -NoProfile -Command "Compress-Archive -Path '$NAME' -DestinationPath '../dist/$NAME.zip'")
+              (cd stage && 7z a -tzip "../dist/$NAME.zip" "$NAME" > /dev/null)
               echo "file=dist/$NAME.zip" >> "$GITHUB_OUTPUT"
               ;;
             macos-arm64)
