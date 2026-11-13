@@ -11,7 +11,11 @@ use wgpu::util::DeviceExt;
 
 const SHADER: &str = include_str!("shader.wgsl");
 const COLOUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+// distance (as f32 bits) and face id, in an integer format: every back end can draw to it,
+// OpenGL ES included (it cannot draw to Rgba32Float without an extension)
+const AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
+// the bits of 1.0e9_f32, the far distance that an empty pixel holds
+const AUX_FAR_BITS: f64 = 1_315_859_240.0;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 #[derive(Clone, Debug)]
@@ -28,7 +32,15 @@ pub struct Style {
     pub ink: [u8; 3],
     /// Brightness multiplier of a shadowed face.
     pub shadow_tone: f32,
+    /// Draw chunks that are small on screen in their simpler far form (no ink, no small parts).
+    pub lod: bool,
 }
+
+/// A chunk uses its far form when one metre of it spans less than this share of the frame height
+/// (a 14 m building is then under about 1.5 percent of the frame, 16 pixels at 1080p).
+const LOD_FAR_SHARE: f32 = 0.0011;
+/// Street lamps beyond this many metres from the eye are not drawn.
+const LAMP_FAR: f32 = 1600.0;
 
 impl Default for Style {
     fn default() -> Style {
@@ -41,7 +53,25 @@ impl Default for Style {
             ink_width: 2,
             ink: [28, 30, 38],
             shadow_tone: 0.72,
+            lod: true,
         }
+    }
+}
+
+/// The ground greens as the season tints them; the same sums as `season_ground` in the shader.
+fn season_ground(c: [f64; 3], season: f32) -> [f64; 3] {
+    match season as u32 {
+        1 => [c[0] * 1.25 + 0.04, c[1] * 0.82, c[2] * 0.7],
+        2 => [c[0] * 1.06 + 0.02, c[1] * 1.04 + 0.02, c[2] * 1.05 + 0.03],
+        3 => [c[0] * 0.9, c[1] * 0.96, c[2] * 0.88],
+        _ => c,
+    }
+}
+
+fn pick(c: &GpuChunk, far: bool) -> &GpuMesh {
+    match (&c.far, far) {
+        (Some(f), true) => f,
+        _ => &c.mesh,
     }
 }
 
@@ -128,6 +158,8 @@ pub struct FrameStats {
     pub draw_calls: usize,
     pub chunks_drawn: usize,
     pub chunks_total: usize,
+    /// Chunks drawn in their far form.
+    pub chunks_far: usize,
     pub triangles: usize,
     /// Scene upload (first frame of a scene only).
     pub upload: Duration,
@@ -168,6 +200,7 @@ struct GpuMesh {
 struct GpuChunk {
     rev: u64,
     mesh: GpuMesh,
+    far: Option<GpuMesh>,
     lo: Vec3,
     hi: Vec3,
 }
@@ -406,11 +439,16 @@ impl Renderer {
             view_dimension: wgpu::TextureViewDimension::D2,
             multisampled: false,
         };
+        let tex_uint = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Uint,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        };
         let layout1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("edge inputs"),
             entries: &[
                 entry(0, wgpu::ShaderStages::FRAGMENT, tex_unfilterable),
-                entry(1, wgpu::ShaderStages::FRAGMENT, tex_unfilterable),
+                entry(1, wgpu::ShaderStages::FRAGMENT, tex_uint),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -603,13 +641,14 @@ impl Renderer {
             inst_pipeline,
             shadow_inst_pipeline,
             templates: Vec::new(),
-            inst_bufs: vec![None, None, None],
+            inst_bufs: vec![None, None, None, None],
             overlay_gpu: None,
         };
         r.templates = vec![
             r.upload_mesh(&crate::instances::car_mesh(), "car"),
             r.upload_mesh(&crate::instances::puff_mesh(), "puff"),
             r.upload_mesh(&crate::instances::person_mesh(), "person"),
+            r.upload_mesh(&crate::instances::lamp_mesh(), "lamp"),
         ];
         Ok(r)
     }
@@ -705,6 +744,7 @@ impl Renderer {
                 .map(|c| GpuChunk {
                     rev: c.rev,
                     mesh: self.upload_mesh(&c.mesh, "chunk"),
+                    far: c.far.as_ref().map(|f| self.upload_mesh(f, "chunk far")),
                     lo: c.lo,
                     hi: c.hi,
                 })
@@ -731,6 +771,7 @@ impl Renderer {
             let g = GpuChunk {
                 rev: c.rev,
                 mesh: self.upload_mesh(&c.mesh, "chunk"),
+                far: c.far.as_ref().map(|f| self.upload_mesh(f, "chunk far")),
                 lo: c.lo,
                 hi: c.hi,
             };
@@ -1036,7 +1077,13 @@ impl Renderer {
         let tone = cal.map_or([1.0; 3], |c| c.tone());
         let lit_windows = cal.map_or(0.0, |c| c.lit_windows());
         let map_view = scene.overlay_active();
-        let autumn = cal.is_some_and(|c| c.season() == Season::Autumn);
+        // 0 plain, 1 autumn, 2 spring, 3 summer (winter is the snow flag)
+        let season_code = cal.map_or(0.0, |c| match c.season() {
+            Season::Autumn => 1.0,
+            Season::Spring => 2.0,
+            Season::Summer => 3.0,
+            Season::Winter => 0.0,
+        });
         let snow = cal.is_some_and(|c| c.season() == Season::Winter);
         let lamps = cal.is_some_and(|c| c.phase() != DayPhase::Day);
         let (light_vp, texel, range) = light_matrix(scene, &view, sun, style.shadow_size);
@@ -1056,7 +1103,7 @@ impl Renderer {
             screen: [rw as f32, rh as f32, 0.0, 0.0],
             tone: [tone[0], tone[1], tone[2], lit_windows],
             look: [
-                autumn as u8 as f32,
+                season_code,
                 snow as u8 as f32,
                 map_view as u8 as f32,
                 lamps as u8 as f32,
@@ -1079,8 +1126,14 @@ impl Renderer {
             None => self.overlay_gpu = None,
         }
         // moving things for this frame
-        let fi = scene.instances();
-        let sets: [&[crate::instances::Instance]; 3] = [&fi.cars, &fi.puffs, &fi.people];
+        let mut fi = scene.instances();
+        if style.lod {
+            // lamps farther than this are a few pixels tall: not worth drawing
+            let eye = view.eye;
+            fi.lamps
+                .retain(|l| Vec3::from(l.pos).distance_squared(eye) < LAMP_FAR * LAMP_FAR);
+        }
+        let sets: [&[crate::instances::Instance]; 4] = [&fi.cars, &fi.puffs, &fi.people, &fi.lamps];
         for (k, set) in sets.iter().enumerate() {
             if set.is_empty() {
                 continue;
@@ -1142,18 +1195,48 @@ impl Renderer {
         });
         let gpu = self.scene.as_ref().unwrap();
         let tg = self.targets.as_ref().unwrap();
-        let visible_main: Vec<&GpuChunk> = gpu
+        // per chunk: the far form when it is small on screen
+        let is_far = |c: &GpuChunk| -> bool {
+            if !style.lod || c.far.is_none() {
+                return false;
+            }
+            let vp = &view.view_proj;
+            let mid = (c.lo + c.hi) * 0.5;
+            let p0 = *vp * mid.extend(1.0);
+            if p0.w <= 1e-4 {
+                return true;
+            }
+            let mut best = 0.0f32;
+            for d in [Vec3::new(16.0, 0.0, 0.0), Vec3::new(0.0, 16.0, 0.0)] {
+                let p1 = *vp * (mid + d).extend(1.0);
+                if p1.w <= 1e-4 {
+                    continue;
+                }
+                let dx = (p1.x / p1.w - p0.x / p0.w) * aspect;
+                let dy = p1.y / p1.w - p0.y / p0.w;
+                best = best.max((dx * dx + dy * dy).sqrt());
+            }
+            // best is the NDC length of 16 m (frame height is 2)
+            best / 32.0 < LOD_FAR_SHARE
+        };
+        let visible_main: Vec<(&GpuMesh, bool)> = gpu
             .chunks
             .iter()
             .filter(|c| in_view(&view.view_proj, c.lo, c.hi))
+            .map(|c| {
+                let far = is_far(c);
+                (pick(c, far), far)
+            })
             .collect();
-        let visible_light: Vec<&GpuChunk> = gpu
+        let visible_light: Vec<&GpuMesh> = gpu
             .chunks
             .iter()
             .filter(|c| in_view(&light_vp, c.lo, c.hi))
+            .map(|c| pick(c, is_far(c)))
             .collect();
         stats.chunks_total = gpu.chunks.len();
         stats.chunks_drawn = visible_main.len();
+        stats.chunks_far = visible_main.iter().filter(|m| m.1).count();
 
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1173,11 +1256,11 @@ impl Renderer {
             });
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, Some(&group0_shadow), &[]);
-            for c in &visible_light {
-                if let Some(ib) = &c.mesh.cast {
-                    pass.set_vertex_buffer(0, c.mesh.vb.slice(..));
+            for m in &visible_light {
+                if let Some(ib) = &m.cast {
+                    pass.set_vertex_buffer(0, m.vb.slice(..));
                     pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..c.mesh.n_cast, 0, 0..1);
+                    pass.draw_indexed(0..m.n_cast, 0, 0..1);
                 }
             }
             pass.set_pipeline(&self.shadow_inst_pipeline);
@@ -1209,6 +1292,8 @@ impl Renderer {
                 }
             } else if snow {
                 base = [236.0 / 255.0, 241.0 / 255.0, 247.0 / 255.0];
+            } else {
+                base = season_ground(base, season_code);
             }
             let clear = wgpu::Color {
                 r: base[0] * tone[0] as f64,
@@ -1234,7 +1319,7 @@ impl Renderer {
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 1.0e9,
+                                r: AUX_FAR_BITS,
                                 g: 0.0,
                                 b: 0.0,
                                 a: 1.0,
@@ -1269,8 +1354,8 @@ impl Renderer {
                 }
             };
             draw(&gpu.ground, stats);
-            for c in &visible_main {
-                draw(&c.mesh, stats);
+            for (m, _) in &visible_main {
+                draw(m, stats);
             }
             if let Some((_, _, om)) = &self.overlay_gpu {
                 draw(om, stats);

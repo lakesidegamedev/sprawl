@@ -50,6 +50,9 @@ pub struct Chunk {
     /// Bump when `mesh` changes so the renderer re-uploads just this chunk.
     pub rev: u64,
     pub mesh: Mesh,
+    /// A simpler form of `mesh` for when the chunk is small on screen (big faces only, no ink).
+    /// `None` always draws `mesh`.
+    pub far: Option<Mesh>,
     pub lo: Vec3,
     pub hi: Vec3,
 }
@@ -112,6 +115,7 @@ struct Extras {
     cars: Vec<Car>,
     chimneys: Vec<[f32; 3]>,
     walkers: Vec<Walker>,
+    lamps: Vec<Instance>,
     centre: [f32; 2],
     overlay: Option<OverlayState>,
     overlay_rev: u64,
@@ -124,6 +128,7 @@ pub struct FrameInstances {
     pub cars: Vec<Instance>,
     pub puffs: Vec<Instance>,
     pub people: Vec<Instance>,
+    pub lamps: Vec<Instance>,
 }
 
 pub struct Scene {
@@ -220,6 +225,7 @@ impl Scene {
         self.x.lots = lots;
         self.x.roads = roads;
         self.x.centre = [self.hall.x, self.hall.y];
+        self.x.lamps = instances::lamp_instances(&self.x.paths);
         self.x.walkers = instances::make_walkers(&self.x.paths, self.x.centre, 260.0);
         self.x.cars = instances::make_cars(&self.x.paths, &self.x.volumes);
         self.refresh_chimneys();
@@ -331,6 +337,7 @@ impl Scene {
             cars: instances::car_instances(&self.x.paths, &self.x.cars, self.time),
             puffs: instances::puff_instances(&self.x.chimneys, self.time),
             people: instances::walker_instances(&self.x.paths, &self.x.walkers, self.time),
+            lamps: self.x.lamps.clone(),
         }
     }
 
@@ -377,9 +384,10 @@ impl Scene {
             self.x.lot_active[i] = state == LotState::Normal;
         }
         for ch in dirty {
-            let (mesh, lo, hi) = emit_chunk(&td.placements, &td.chunk_members[ch], ch);
+            let (mesh, far, lo, hi) = emit_chunk(&td.placements, &td.chunk_members[ch], ch);
             let c = &mut self.chunks[ch];
             c.mesh = mesh;
+            c.far = Some(far);
             c.lo = lo;
             c.hi = hi;
             c.rev += 1;
@@ -565,19 +573,25 @@ fn chunk_key(x: f32, y: f32) -> (i32, i32) {
 }
 
 /// One chunk's mesh and bounds from the placements it holds.
-fn emit_chunk(placements: &[Placement], members: &[usize], ordinal: usize) -> (Mesh, Vec3, Vec3) {
+fn emit_chunk(
+    placements: &[Placement],
+    members: &[usize],
+    ordinal: usize,
+) -> (Mesh, Mesh, Vec3, Vec3) {
     let mut mesh = Mesh::default();
+    let mut far = Mesh::default();
     let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
     let mut next_id = ordinal as u32 * IDS_PER_CHUNK + 1;
     for &pi in members {
         let p = &placements[pi];
         p.obj.emit(&mut mesh, &mut next_id, p.x, p.y, p.theta, 1.0);
+        p.obj.emit_far(&mut far, p.x, p.y, p.theta);
         let b = p.obj.footprint();
         let reach = b[0].abs().max(b[1].abs()).max(b[2].abs()).max(b[3].abs()) * 1.5 + 1.0;
         lo = lo.min(Vec3::new(p.x - reach, p.y - reach, 0.0));
         hi = hi.max(Vec3::new(p.x + reach, p.y + reach, 90.0));
     }
-    (mesh, lo, hi)
+    (mesh, far, lo, hi)
 }
 
 fn build_chunks(t: &Town) -> (TownData, Vec<Chunk>) {
@@ -713,10 +727,11 @@ fn build_chunks(t: &Town) -> (TownData, Vec<Chunk>) {
         .iter()
         .enumerate()
         .map(|(ci, m)| {
-            let (mesh, lo, hi) = emit_chunk(&placements, m, ci);
+            let (mesh, far, lo, hi) = emit_chunk(&placements, m, ci);
             Chunk {
                 rev: 0,
                 mesh,
+                far: Some(far),
                 lo,
                 hi,
             }

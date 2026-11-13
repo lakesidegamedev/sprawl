@@ -442,6 +442,30 @@ impl Obj {
         b
     }
 
+    /// Emit the far (level of detail) form: only the big shaded faces, no windows, doors, signs
+    /// or small fittings, and no ink outline. For buildings that are a few pixels on screen.
+    pub fn emit_far(&self, mesh: &mut Mesh, x: f32, y: f32, theta: f32) {
+        let (s, c) = (libm::sinf(theta), libm::cosf(theta));
+        let mut pts: Vec<V3> = Vec::with_capacity(8);
+        for p in &self.polys {
+            if p.flat {
+                continue;
+            }
+            let n = newell_raw(&p.pts);
+            let area = 0.5 * (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if area < FAR_MIN_AREA {
+                continue;
+            }
+            pts.clear();
+            pts.extend(
+                p.pts
+                    .iter()
+                    .map(|v| [x + c * v[0] - s * v[1], y + s * v[0] + c * v[1], v[2]]),
+            );
+            mesh.push_poly(&pts, p.color, false, p.shadow, ID_NONE);
+        }
+    }
+
     /// Emit into a mesh, moved to (x, y), turned by `theta` and scaled. `next_id` hands out the
     /// outline ids: one per outlined polygon.
     pub fn emit(&self, mesh: &mut Mesh, next_id: &mut u32, x: f32, y: f32, theta: f32, scale: f32) {
@@ -466,6 +490,21 @@ impl Obj {
             mesh.push_poly(&pts, p.color, p.flat, p.shadow, id);
         }
     }
+}
+
+/// Faces smaller than this many square metres are left out of the far form.
+const FAR_MIN_AREA: f32 = 6.0;
+
+/// Newell sum of a planar polygon: its length is twice the area.
+fn newell_raw(pts: &[V3]) -> V3 {
+    let (mut nx, mut ny, mut nz) = (0.0f32, 0.0f32, 0.0f32);
+    for i in 0..pts.len() {
+        let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+        nx += (a[1] - b[1]) * (a[2] + b[2]);
+        ny += (a[2] - b[2]) * (a[0] + b[0]);
+        nz += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    [nx, ny, nz]
 }
 
 /// Newell normal of a planar polygon, unit length (zero for a degenerate polygon).

@@ -43,7 +43,30 @@ pub fn tree(r: f32, h: f32, col: Rgb) -> Obj {
     o.bx(-0.25, -0.25, 0.0, 0.25, 0.25, h * 0.35, [110, 80, 56]);
     o.prism(0.0, 0.0, h * 0.3, h * 0.75, r, col, 6, None);
     o.pyramid(0.0, 0.0, h * 0.75, r, h * 0.3, col, 6, 0.0);
+    // fallen leaves: a flat triangle on the ground that only shows in autumn (the shader reads
+    // the blue channel as the tree's colour step)
+    let step = col[2]
+        .wrapping_sub(TREE[2])
+        .min(col[2].wrapping_sub(TREE_D[2]))
+        .min(3);
+    let a = 0.9 * r + col[2] as f32 * 1.7;
+    let pt = |k: f32| {
+        let ang = a + k * 2.094;
+        [r * 1.6 * libm::cosf(ang), r * 1.6 * libm::sinf(ang), 0.05]
+    };
+    o.poly(
+        &[pt(0.0), pt(1.0), pt(2.0)],
+        leaf_patch_colour(step),
+        false,
+        false,
+        true,
+    );
     o
+}
+
+/// The colour of a fallen leaf patch for tree colour step 0 to 3.
+fn leaf_patch_colour(step: u8) -> Rgb {
+    [250, 126, 16 + step]
 }
 
 pub fn house(rng: &mut Rng) -> Obj {

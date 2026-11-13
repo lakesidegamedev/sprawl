@@ -8,7 +8,7 @@ struct Globals {
     shade: vec4<f32>,  // x multiplier for a shadowed face, y shadow depth bias
     screen: vec4<f32>, // width, height of the main targets
     tone: vec4<f32>,   // rgb flat tint of the whole picture, a share of lit windows
-    look: vec4<f32>,   // x autumn, y snow, z map view (desaturate), w lamps on (night)
+    look: vec4<f32>,   // x season (1 autumn, 2 spring, 3 summer), y snow, z map view (desaturate), w lamps on
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -102,7 +102,7 @@ fn lit(world: vec3<f32>, n: vec3<f32>) -> f32 {
 
 struct FOut {
     @location(0) colour: vec4<f32>,
-    @location(1) aux: vec4<f32>,
+    @location(1) aux: vec4<u32>,
 };
 
 fn hash_u(x: u32) -> u32 {
@@ -134,6 +134,38 @@ fn autumn_leaf(step: i32, dark: bool) -> vec3<f32> {
     return c / 255.0;
 }
 
+// Marker colours that only show in their season: fallen leaves (autumn), a lamp's pool of light
+// (night), snow banked along the road edge (winter). The blue channel of a leaf patch carries
+// the tree's colour step.
+fn patch_step(c: vec3<f32>) -> i32 {
+    return leaf_step(c, 250.0, 126.0, 16.0);
+}
+
+fn is_green(c: vec3<f32>) -> bool {
+    return c.g > c.b + 0.08 && c.g > c.r - 0.06;
+}
+
+fn season_ground(c: vec3<f32>, season: i32) -> vec3<f32> {
+    if (season == 1) { return vec3<f32>(c.r * 1.25 + 0.04, c.g * 0.82, c.b * 0.7); }
+    if (season == 2) { return vec3<f32>(c.r * 1.06 + 0.02, c.g * 1.04 + 0.02, c.b * 1.05 + 0.03); }
+    if (season == 3) { return vec3<f32>(c.r * 0.9, c.g * 0.96, c.b * 0.88); }
+    return c;
+}
+
+// Leaf colour for spring (some trees in blossom) and summer (deeper green).
+fn season_leaf(step: i32, dark: bool, season: i32) -> vec3<f32> {
+    if (season == 2) {
+        if (step == 3) {
+            if (dark) { return vec3<f32>(226.0, 142.0, 176.0) / 255.0; }
+            return vec3<f32>(244.0, 176.0, 198.0) / 255.0;
+        }
+        if (dark) { return vec3<f32>(92.0, 158.0, 74.0) / 255.0; }
+        return vec3<f32>(116.0, 180.0, 86.0) / 255.0;
+    }
+    if (dark) { return vec3<f32>(50.0, 112.0, 52.0) / 255.0; }
+    return vec3<f32>(64.0, 134.0, 58.0) / 255.0;
+}
+
 @fragment
 fn fs_main(v: VOut) -> FOut {
     let n = normalize(v.normal);
@@ -150,13 +182,40 @@ fn fs_main(v: VOut) -> FOut {
         }
     }
     var emissive = false;
+    let season = i32(g.look.x + 0.5);
+    let pstep = patch_step(col);
+    if (pstep >= 0) {
+        if (season == 1 && g.look.z < 0.5 && g.look.y < 0.5) {
+            col = autumn_leaf(pstep, pstep >= 2) * 0.94;
+        } else {
+            discard;
+        }
+    }
+    if (ground && near(col, 247.0, 248.0, 253.0) && (g.look.y < 0.5 || g.look.z > 0.5)) {
+        discard;
+    }
+    if (!cel && near(col, 250.0, 232.0, 150.0)) {
+        if (g.tone.w < 0.6 || g.look.z > 0.5) {
+            discard;
+        }
+        col = vec3<f32>(214.0, 194.0, 120.0) / 255.0;
+        emissive = true;
+    }
     if (g.look.z < 0.5) {
-        // autumn leaves
-        if (g.look.x > 0.5 && cel) {
+        // seasonal ground and leaves
+        if (ground && season > 0 && is_green(col)) {
+            col = season_ground(col, season);
+        }
+        if (season > 0 && cel) {
             let s1 = leaf_step(col, 88.0, 150.0, 76.0);
-            if (s1 >= 0) { col = autumn_leaf(s1, false); }
             let s2 = leaf_step(col, 70.0, 128.0, 66.0);
-            if (s2 >= 0) { col = autumn_leaf(s2, true); }
+            if (season == 1) {
+                if (s1 >= 0) { col = autumn_leaf(s1, false); }
+                if (s2 >= 0) { col = autumn_leaf(s2, true); }
+            } else {
+                if (s1 >= 0) { col = season_leaf(s1, false, season); }
+                if (s2 >= 0) { col = season_leaf(s2, true, season); }
+            }
         }
         // lit windows and headlights
         if (!cel && g.tone.w > 0.0 && (near(col, 98.0, 156.0, 204.0) || near(col, 64.0, 88.0, 118.0))) {
@@ -204,14 +263,14 @@ fn fs_main(v: VOut) -> FOut {
     }
     var o: FOut;
     o.colour = vec4<f32>(col, 1.0);
-    o.aux = vec4<f32>(v.dist, f32(v.id), 0.0, 1.0);
+    o.aux = vec4<u32>(bitcast<u32>(v.dist), v.id, 0u, 1u);
     return o;
 }
 
 // ---- edge pass ----
 
 @group(1) @binding(0) var colour_tex: texture_2d<f32>;
-@group(1) @binding(1) var aux_tex: texture_2d<f32>;
+@group(1) @binding(1) var aux_tex: texture_2d<u32>;
 
 struct EOut {
     @builtin(position) clip: vec4<f32>,
@@ -230,7 +289,8 @@ const EXEMPT: u32 = 16777215u;
 fn aux_at(p: vec2<i32>) -> vec2<f32> {
     let size = vec2<i32>(i32(g.screen.x), i32(g.screen.y));
     let q = clamp(p, vec2<i32>(0, 0), size - vec2<i32>(1, 1));
-    return textureLoad(aux_tex, q, 0).xy;
+    let t = textureLoad(aux_tex, q, 0);
+    return vec2<f32>(bitcast<f32>(t.x), f32(t.y));
 }
 
 // True when this pixel is on the near side of a face change: one pixel wide ink line.

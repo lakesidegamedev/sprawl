@@ -16,6 +16,7 @@ pub const HEADLIGHT: Rgb = [255, 236, 150];
 pub const CAR_ID_BASE: u32 = 8_000_000;
 pub const PUFF_ID_BASE: u32 = 9_500_000;
 pub const PERSON_ID_BASE: u32 = 10_200_000;
+pub const LAMP_ID_BASE: u32 = 10_600_000;
 /// Outline ids reserved per instance.
 pub const ID_STRIDE: u32 = 16;
 
@@ -85,6 +86,74 @@ pub fn person_mesh() -> Mesh {
     o.bx(-0.22, -0.16, 0.0, 0.22, 0.16, 1.15, MARKER);
     o.bx(-0.14, -0.14, 1.15, 0.14, 0.14, 1.5, [226, 186, 150]);
     emit(&o)
+}
+
+/// Colour of a street lamp's lit quad (it glows at dusk, night and dawn).
+pub const LAMP_LENS: Rgb = HEADLIGHT;
+/// Marker colour of the pool of light a lamp throws on the street. The shader draws it only at
+/// night, as a hard edged flat patch, and discards it by day.
+pub const LAMP_POOL: Rgb = [250, 232, 150];
+
+/// A street lamp: a pole, a short arm toward +x and a lit quad on the arm, with a flat octagon of
+/// light on the ground under it. The arm points at the road.
+pub fn lamp_mesh() -> Mesh {
+    let mut o = Obj::new();
+    let steel = [74, 78, 88];
+    o.bx(-0.09, -0.09, 0.0, 0.09, 0.09, 5.6, steel);
+    o.bx(-0.09, -0.12, 5.6, 1.7, 0.12, 5.8, steel);
+    o.poly(
+        &[
+            [0.9, -0.3, 5.83],
+            [1.9, -0.3, 5.83],
+            [1.9, 0.3, 5.83],
+            [0.9, 0.3, 5.83],
+        ],
+        LAMP_LENS,
+        false,
+        false,
+        true,
+    );
+    let pool: Vec<[f32; 3]> = (0..8)
+        .map(|i| {
+            let a = (i as f32 + 0.5) * std::f32::consts::TAU / 8.0;
+            [1.2 + 3.8 * libm::cosf(a), 3.8 * libm::sinf(a), 0.4]
+        })
+        .collect();
+    o.poly(&pool, LAMP_POOL, false, false, true);
+    emit(&o)
+}
+
+/// Where the street lamps stand: both sides in turn along every street, a lamp each `spacing`
+/// metres, set just outside the road edge with the arm over the road.
+pub fn lamp_instances(paths: &[Path]) -> Vec<Instance> {
+    let mut out = Vec::new();
+    for p in paths {
+        let spacing = match p.class {
+            RoadClass::Local => 44.0,
+            RoadClass::Collector => 40.0,
+            RoadClass::Arterial => 36.0,
+            _ => continue,
+        };
+        let l = p.length();
+        let off = p.class.half_width() as f32 + 1.3;
+        let mut s = 14.0;
+        let mut k = 0usize;
+        while s < l - 6.0 {
+            let (pt, d) = p.at(s);
+            let side = if k.is_multiple_of(2) { 1.0 } else { -1.0 };
+            let (nx, ny) = (-d[1] * side, d[0] * side);
+            out.push(Instance {
+                pos: [pt[0] + nx * off, pt[1] + ny * off, 0.0],
+                theta: libm::atan2f(-ny, -nx),
+                scale: 1.0,
+                tint: 0,
+                id: LAMP_ID_BASE + out.len() as u32 * ID_STRIDE,
+            });
+            s += spacing;
+            k += 1;
+        }
+    }
+    out
 }
 
 /// A road as the traffic needs it: its line with running lengths.
