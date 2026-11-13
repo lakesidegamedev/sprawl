@@ -859,7 +859,55 @@ pub fn hall_sites(town: &Town) -> Vec<Pt> {
         }
     }
     out.truncate(24);
-    out
+    // the hall must stand beside the crossroads, not on the pavement
+    let first = out[0];
+    let mut placed = vec![first];
+    for &p in &out[1..] {
+        let q = clear_spot_near(town, p);
+        if placed.iter().all(|r| r.dist(q) > 100.0) {
+            placed.push(q);
+        }
+    }
+    placed
+}
+
+/// Nearest point within 90 m of `p` that is clear of every road and the river.
+fn clear_spot_near(town: &Town, p: Pt) -> Pt {
+    let clearance = |q: Pt| -> f64 {
+        let mut best = f64::MAX;
+        for r in &town.roads {
+            let hw = r.class.half_width();
+            for w in r.points.windows(2) {
+                if (w[0].x.min(w[1].x) - q.x).max(q.x - w[0].x.max(w[1].x)) > best + hw + 60.0 {
+                    continue;
+                }
+                best = best.min(dist_pt_seg(q, w[0], w[1]) - hw);
+            }
+        }
+        for ring in &town.water {
+            if point_in_ring(q, ring) {
+                return -1.0;
+            }
+            best = best.min(dist_pt_ring_edge(q, ring) - 20.0);
+        }
+        best
+    };
+    let need = town.hall_radius + 14.0;
+    let mut best: Option<(f64, Pt)> = None;
+    for k in 0..6 {
+        let r = 28.0 + 14.0 * k as f64;
+        for a in 0..24 {
+            let ang = a as f64 * std::f64::consts::TAU / 24.0;
+            let q = pt(p.x + r * libm::cos(ang), p.y + r * libm::sin(ang));
+            if clearance(q) >= need && best.is_none_or(|b| r < b.0) {
+                best = Some((r, q));
+            }
+        }
+        if best.is_some() {
+            break;
+        }
+    }
+    best.map_or(p, |b| b.1)
 }
 
 fn seg_cross(a: Pt, b: Pt, c: Pt, d: Pt) -> Option<Pt> {

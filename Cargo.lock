@@ -2529,6 +2529,7 @@ dependencies = [
 name = "us-sim"
 version = "1.0.0"
 dependencies = [
+ "libm",
  "us-gen",
 ]
 

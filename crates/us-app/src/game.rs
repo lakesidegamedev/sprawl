@@ -440,11 +440,17 @@ impl State {
         match s.stage {
             0 if t > 1.5 => {
                 self.seed_text = "1".into();
+                if std::env::var("URBAN_SPRAWL_SMOKE_PRESET").is_ok_and(|v| v == "winding") {
+                    self.preset = Preset::Winding;
+                }
                 self.screen = Screen::Generating;
                 self.gen_wait = 0;
                 s.stage = 1;
             }
-            1 if self.screen == Screen::Game && t > 3.0 => {
+            1 if self.screen == Screen::Game
+                && t > 3.0
+                && std::env::var("URBAN_SPRAWL_SMOKE_NOPLACE").is_err() =>
+            {
                 if let Some(g) = self.game.as_mut() {
                     let site = g.sites[0];
                     g.place(site);
@@ -666,7 +672,9 @@ impl State {
 
         // placement markers
         if !g.placed {
-            let cursor = ctx.pointer_hover_pos().unwrap_or(Pos2::ZERO);
+            let cursor = ctx
+                .pointer_hover_pos()
+                .unwrap_or(Pos2::new(-9999.0, -9999.0));
             let mut nearest: Option<(f32, usize)> = None;
             let pts: Vec<Option<Pos2>> = g
                 .sites
@@ -679,7 +687,7 @@ impl State {
             for (i, p) in pts.iter().enumerate() {
                 if let Some(p) = p {
                     let d = p.distance(cursor);
-                    if nearest.is_none_or(|n| d < n.0) {
+                    if d < 900.0 && nearest.is_none_or(|n| d < n.0) {
                         nearest = Some((d, i));
                     }
                 }
