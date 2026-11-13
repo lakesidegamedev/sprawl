@@ -7,6 +7,14 @@ use crate::*;
 pub const FIRE_DAYS: i32 = 6;
 const RIVAL_NAMES: [&str; 4] = ["Ashford", "Bellmont", "Corvale", "Dunmore"];
 
+pub(crate) fn rival_code(name: &str) -> u8 {
+    RIVAL_NAMES.iter().position(|&n| n == name).unwrap_or(0) as u8
+}
+
+pub(crate) fn rival_name(code: u8) -> Option<&'static str> {
+    RIVAL_NAMES.get(code as usize).copied()
+}
+
 #[derive(Clone, Debug)]
 pub struct Rival {
     pub name: &'static str,

@@ -36,7 +36,7 @@ impl RoadTraffic {
     }
 }
 
-enum Op {
+pub(crate) enum Op {
     Upgrade {
         pts: Vec<Pt>,
         to: RoadClass,
@@ -50,17 +50,24 @@ enum Op {
     },
 }
 
-struct Done {
-    run_traffic: Vec<RoadTraffic>,
-    avg_cong: f32,
-    ops: Vec<Op>,
+pub(crate) struct Done {
+    pub run_traffic: Vec<RoadTraffic>,
+    pub avg_cong: f32,
+    pub ops: Vec<Op>,
+}
+
+/// A traffic run: still on its thread, or finished and waiting for its day (a saved game holds
+/// it finished).
+pub(crate) enum Work {
+    Running(JoinHandle<Done>),
+    Ready(Done),
 }
 
 pub(crate) struct Pending {
-    handle: JoinHandle<Done>,
-    join_day: i32,
+    pub work: Work,
+    pub join_day: i32,
     /// Snapshot lot index to `Sim::lots` index.
-    lot_map: Vec<usize>,
+    pub lot_map: Vec<usize>,
 }
 
 /// The kind a building counts as for trips, by level.
@@ -101,7 +108,11 @@ impl Sim {
             && self.day >= p.join_day
         {
             let p = self.pending.take().unwrap();
-            if let Ok(done) = p.handle.join() {
+            let done = match p.work {
+                Work::Running(handle) => handle.join().ok(),
+                Work::Ready(done) => Some(done),
+            };
+            if let Some(done) = done {
                 self.apply_traffic(done, &p.lot_map);
             }
             return;
@@ -111,6 +122,25 @@ impl Sim {
             && self.built_count() >= MIN_BUILT_FOR_TRAFFIC
         {
             self.start_traffic();
+        }
+    }
+
+    /// Wait for a traffic run in flight, so its result can be saved. The game goes on exactly as
+    /// if it had been left to finish by itself.
+    pub(crate) fn settle_traffic(&mut self) {
+        if let Some(p) = self.pending.take() {
+            let work = match p.work {
+                Work::Running(handle) => match handle.join() {
+                    Ok(done) => Some(Work::Ready(done)),
+                    Err(_) => None,
+                },
+                ready => Some(ready),
+            };
+            self.pending = work.map(|work| Pending {
+                work,
+                join_day: p.join_day,
+                lot_map: p.lot_map,
+            });
         }
     }
 
@@ -153,7 +183,7 @@ impl Sim {
             .spawn(move || run_traffic(t, runs, visible))
             .expect("start traffic thread");
         self.pending = Some(Pending {
-            handle,
+            work: Work::Running(handle),
             join_day: self.day + TRAFFIC_LAG_DAYS,
             lot_map,
         });
