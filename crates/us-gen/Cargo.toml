@@ -8,3 +8,5 @@ publish.workspace = true
 description = "Urban Sprawl town generation: road skeleton, additions, street patterns and lots. Deterministic from a seed."
 
 [dependencies]
+geo = { version = "=0.33.1", default-features = false }
+libm = "=0.2.16"
