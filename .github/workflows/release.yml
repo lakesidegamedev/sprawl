@@ -1,11 +1,8 @@
 name: release
 
+# Backup zips on a GitHub pre-release. Private repo minutes are billed (Windows x2, macOS x10),
+# and the Lakeside launcher uses installers.yml, so this runs only when dispatched by hand.
 on:
-  # dry run: building the packages (not publishing) when packaging itself changes
-  pull_request:
-    paths: [".github/workflows/release.yml", "packaging/**", "crates/us-app/**"]
-  push:
-    tags: ["v1.0.0-preview.*"]
   workflow_dispatch:
     inputs:
       publish:
@@ -15,6 +12,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,7 +29,6 @@ jobs:
       matrix:
         include:
           - { name: windows-x64, os: windows-latest }
-          - { name: macos-arm64, os: macos-latest }
           - { name: linux-x64, os: ubuntu-22.04 } # oldest glibc we support (2.35)
     defaults:
       run:

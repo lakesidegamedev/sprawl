@@ -1,8 +1,15 @@
 name: verify
+# Linux only. One push, one short run: older runs for the same branch are cancelled.
 on:
   pull_request:
+    paths: ["crates/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".github/workflows/verify.yml"]
   push:
     branches: [main]
+    paths: ["crates/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".github/workflows/verify.yml"]
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   verify:
     runs-on: ubuntu-latest

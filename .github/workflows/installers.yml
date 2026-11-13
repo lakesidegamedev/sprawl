@@ -3,20 +3,26 @@ name: installers
 # (AppImage) and macOS (dmg, ad-hoc signed). Zips are built by release.yml, not here.
 # Artifact names match what the accounts publisher pulls: installers-windows-latest,
 # installers-ubuntu-latest, installers-mac, each with a SHA256SUMS file, plus launcher-manifest.
+# The repo is private, so every runner minute is billed against the org allowance (Windows x2,
+# macOS x10). Installers build on release tags only: Windows and Linux. macOS only when someone
+# dispatches this by hand with mac ticked. Never on pushes or pull requests.
 on:
   push:
     tags: ["v*"]
-  # Proves the packaging on any change to it. Builds only, publishes nothing.
-  pull_request:
-    paths:
-      - ".github/workflows/installers.yml"
-      - "packaging/**"
   workflow_dispatch:
     inputs:
       version:
         description: "Version shown to players, for example 1.0.0-preview.1"
         required: false
         default: "1.0.0-preview.1"
+      mac:
+        description: "Also build the macOS dmg (costs about 400 billed minutes)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: installers-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -113,6 +119,7 @@ jobs:
           echo "game stayed up for 20 seconds"
 
   mac:
+    if: github.event_name == 'workflow_dispatch' && inputs.mac
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -141,12 +148,16 @@ jobs:
 
   manifest:
     needs: [windows, linux, mac, launch-check]
+    # mac is skipped unless asked for; the manifest still runs when the others passed
+    if: ${{ !cancelled() && needs.windows.result == 'success' && needs.linux.result == 'success' && needs.launch-check.result == 'success' && needs.mac.result != 'failure' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: in
       - name: Write launcher-manifest.json
+        env:
+          WANT_MAC: ${{ github.event_name == 'workflow_dispatch' && inputs.mac }}
         run: |
           python3 - <<'PY'
           import glob, hashlib, json, os
@@ -167,7 +178,10 @@ jobs:
                           "sha256": hashlib.sha256(data).hexdigest(),
                           "installer": installer,
                       }
-          missing = {p for p, _ in kinds.values()} - set(files)
+          required = {"windows-x86_64", "linux-x86_64"}
+          if os.environ.get("WANT_MAC") == "true":
+              required.add("macos-universal")
+          missing = required - set(files)
           if missing:
               raise SystemExit(f"missing installers: {sorted(missing)}")
           os.makedirs("out", exist_ok=True)
