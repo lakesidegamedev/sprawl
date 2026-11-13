@@ -1,0 +1,149 @@
+name: installers
+# Installers for the Lakeside launcher and the paid download: Windows (Inno Setup), Linux
+# (AppImage) and macOS (dmg, ad-hoc signed). Zips are built by release.yml, not here.
+# Artifact names match what the accounts publisher pulls: installers-windows-latest,
+# installers-ubuntu-latest, installers-mac, each with a SHA256SUMS file, plus launcher-manifest.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version shown to players, for example 1.0.0-preview.1"
+        required: false
+        default: "1.0.0-preview.1"
+
+permissions:
+  contents: read
+
+env:
+  # Until crates/us-app exists on this branch, the command line generator stands in so the
+  # packaging is proven end to end. The packaged file is always named urban-sprawl.
+  VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          if [ -d crates/us-app ]; then pkg=us-app; bin=urban-sprawl; else pkg=us-gen-cli; bin=us-gen-cli; fi
+          cargo build --release --locked -p "$pkg"
+          mkdir -p stage out
+          cp "target/release/$bin.exe" stage/urban-sprawl.exe
+      - name: Inno Setup
+        run: |
+          v="${VERSION#v}"
+          if ! command -v iscc >/dev/null 2>&1 && [ ! -x "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" ]; then choco install innosetup -y --no-progress; fi
+          iscc="$(command -v iscc || echo "/c/Program Files (x86)/Inno Setup 6/ISCC.exe")"
+          "$iscc" "-DDisplayVersion=$v" "-DNumericVersion=${v%%-*}" "-DAppImage=$(cygpath -w "$PWD/stage")" "-DOutDir=$(cygpath -w "$PWD/out")" packaging/windows/setup.iss
+          ls -l out
+      - name: Checksums
+        working-directory: out
+        run: sha256sum *-setup.exe | tee SHA256SUMS-windows.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-windows-latest
+          path: out/*
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev
+      - name: Build
+        run: |
+          if [ -d crates/us-app ]; then pkg=us-app; bin=urban-sprawl; else pkg=us-gen-cli; bin=us-gen-cli; fi
+          cargo build --release --locked -p "$pkg"
+          mkdir -p out
+          python3 packaging/make-icon.py out/icon.png
+          bash packaging/linux/build-appimage.sh "target/release/$bin" out/icon.png "out/UrbanSprawl-${VERSION#v}-linux.AppImage"
+          rm out/icon.png
+      - name: Checksums
+        working-directory: out
+        run: sha256sum *.AppImage | tee SHA256SUMS-linux.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-ubuntu-latest
+          path: out/*
+          if-no-files-found: error
+
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build universal binary
+        run: |
+          if [ -d crates/us-app ]; then pkg=us-app; bin=urban-sprawl; else pkg=us-gen-cli; bin=us-gen-cli; fi
+          cargo build --release --locked -p "$pkg" --target aarch64-apple-darwin
+          cargo build --release --locked -p "$pkg" --target x86_64-apple-darwin
+          mkdir -p out
+          lipo -create -output urban-sprawl "target/aarch64-apple-darwin/release/$bin" "target/x86_64-apple-darwin/release/$bin"
+          lipo -info urban-sprawl
+      - name: Disk image (ad-hoc signed)
+        run: bash packaging/macos/make-dmg.sh urban-sprawl "${VERSION#v}" "out/UrbanSprawl-${VERSION#v}-mac.dmg"
+      - name: Checksums
+        working-directory: out
+        run: shasum -a 256 *.dmg | tee SHA256SUMS-mac.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-mac
+          path: out/*
+          if-no-files-found: error
+
+  manifest:
+    needs: [windows, linux, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: in
+      - name: Write launcher-manifest.json
+        run: |
+          python3 - <<'PY'
+          import glob, hashlib, json, os
+          version = os.environ["VERSION"].lstrip("v")
+          kinds = {
+              "-setup.exe": ("windows-x86_64", "inno"),
+              "-linux.AppImage": ("linux-x86_64", "appimage"),
+              "-mac.dmg": ("macos-universal", "dmg"),
+          }
+          files = {}
+          for path in sorted(glob.glob("in/*/*")):
+              for suffix, (platform, installer) in kinds.items():
+                  if path.endswith(suffix):
+                      data = open(path, "rb").read()
+                      files[platform] = {
+                          "filename": os.path.basename(path),
+                          "size": len(data),
+                          "sha256": hashlib.sha256(data).hexdigest(),
+                          "installer": installer,
+                      }
+          missing = {p for p, _ in kinds.values()} - set(files)
+          if missing:
+              raise SystemExit(f"missing installers: {sorted(missing)}")
+          os.makedirs("out", exist_ok=True)
+          json.dump({"version": version, "files": files}, open("out/launcher-manifest.json", "w"), indent=2)
+          print(json.dumps({"version": version, "files": files}, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher-manifest
+          path: out/launcher-manifest.json
+          if-no-files-found: error
