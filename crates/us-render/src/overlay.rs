@@ -179,20 +179,23 @@ pub fn build_mesh(
         let mut order: Vec<usize> = (0..roads.len())
             .filter(|&i| roads[i].0 != RoadClass::Rail)
             .collect();
-        order.sort_by_key(|&i| (roads[i].0.half_width() as i32, i));
-        // all dark edges first at one height, then each class of surface a step higher
+        // busier roads are drawn higher, so at a crossing the redder road wins cleanly
+        let val =
+            |i: usize| (ov.roads.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0) * 1000.0) as i32;
+        order.sort_by_key(|&i| (val(i), i));
+        // all dark edges first at one height, then each surface a step higher than the last
         for &i in &order {
             let (c, pts) = roads[i];
             g.ribbon(pts, c.half_width() as f32 + 0.45, 0.0, 0.44, [34, 36, 44]);
         }
-        for &i in &order {
+        for (rank, &i) in order.iter().enumerate() {
             let (c, pts) = roads[i];
             let col = ov.roads.get(i).map_or(NEUTRAL, |v| ov.kind.colour(*v));
             g.ribbon(
                 pts,
                 c.half_width() as f32,
                 0.0,
-                0.46 + 0.004 * c.half_width() as f32,
+                0.46 + 0.002 * rank as f32,
                 col,
             );
         }
@@ -243,7 +246,7 @@ pub fn build_mesh(
             0.40,
             m[2] + 0.5,
             m[3] + 0.5,
-            m[4] + 0.6,
+            m[4].min(9.6) + 0.6,
             [196, 194, 190],
             [232, 230, 226],
         );
