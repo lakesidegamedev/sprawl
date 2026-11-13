@@ -5,8 +5,21 @@
 //! built after a short construction phase, and the tax rate steers how fast all of that happens.
 //! A rate above [`ABANDON_ABOVE_X10`] empties buildings, then clears them.
 //!
+//! The mayor's levers are three tax rates (homes, shops, industry), six department budgets, bonds
+//! and civic buildings (see [`model`]). Each lot has a land value recomputed monthly from its
+//! surroundings and the town's services (see `Sim::lot_values`), a monthly [`Sample`] of the
+//! whole game is kept in `Sim::history`, and notable things are queued as [`Event`]s.
+//!
 //! Only integer arithmetic and IEEE `+ - * / sqrt` are used, and every random roll is a hash of
 //! `(seed, lot, day)`, so the same inputs give the same state on every platform.
+
+mod civic;
+mod econ;
+mod model;
+mod roadnet;
+mod value;
+
+pub use model::*;
 
 use us_gen::{LotKind, Pt, RoadClass, Town, Zone, pt};
 
@@ -60,6 +73,10 @@ pub struct LotState {
     pub src: usize,
     /// Pre-existing and exempt: farms stand from day 0 and never empty out.
     pub exempt: bool,
+    /// Set for buildings the mayor placed; `kind` is then the look it borrows.
+    pub civic: Option<CivicKind>,
+    /// Building level 1 to 5 (always 1 for civic buildings and farms).
+    pub level: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -242,8 +259,9 @@ fn abandonable(k: LotKind) -> bool {
 pub struct Sim {
     seed: u64,
     pub day: i32,
-    tax_x10: u32,
+    pub(crate) tax: ByClass<u32>,
     pub hall: Pt,
+    pub(crate) town: Town,
     lots: Vec<LotState>,
     /// Non-farm additions in reveal order, with whether each has been revealed.
     order: Vec<usize>,
@@ -261,6 +279,21 @@ pub struct Sim {
     changed_lots: Vec<usize>,
     newly_revealed: Vec<usize>,
     pub abandoned_total: u32,
+    pub(crate) budget: [u32; 6],
+    pub(crate) loans: Vec<Loan>,
+    pub(crate) history: Vec<Sample>,
+    pub(crate) events: Vec<Event>,
+    pub(crate) roadnet: Option<roadnet::RoadNet>,
+    pub(crate) net_dirty: bool,
+    /// Per lot: nearest junction and straight distance to it.
+    pub(crate) lot_node: Vec<Option<(u32, f64)>>,
+    pub(crate) lot_value: Vec<f32>,
+    pub(crate) coverage: [Vec<f32>; 6],
+    pub(crate) class_demand: ByClass<f32>,
+    pub(crate) last_ledger: econ::Ledger,
+    pub(crate) next_milestone: usize,
+    pub(crate) warn_level: u8,
+    pub(crate) values_stale: bool,
 }
 
 impl Sim {
@@ -290,8 +323,9 @@ impl Sim {
         let mut sim = Sim {
             seed,
             day: 0,
-            tax_x10: TAX_DEFAULT_X10,
+            tax: ByClass::all(TAX_DEFAULT_X10),
             hall,
+            town: town.clone(),
             lots: Vec::new(),
             order: Vec::new(),
             next_reveal: 0,
@@ -307,6 +341,20 @@ impl Sim {
             changed_lots: Vec::new(),
             newly_revealed: Vec::new(),
             abandoned_total: 0,
+            budget: [BUDGET_DEFAULT_PCT; 6],
+            loans: Vec::new(),
+            history: Vec::new(),
+            events: Vec::new(),
+            roadnet: None,
+            net_dirty: true,
+            lot_node: Vec::new(),
+            lot_value: Vec::new(),
+            coverage: Default::default(),
+            class_demand: ByClass::all(0.5),
+            last_ledger: econ::Ledger::default(),
+            next_milestone: 0,
+            warn_level: 0,
+            values_stale: false,
         };
         // reveal order: nearest to the hall first
         let mut ord: Vec<(i64, usize)> = (0..n_add)
@@ -349,6 +397,8 @@ impl Sim {
                 facing: l.facing,
                 src,
                 exempt: pre,
+                civic: None,
+                level: 1,
             });
         }
         sim.build_runs(town, &farm);
@@ -356,6 +406,7 @@ impl Sim {
         for _ in 0..initial_reveals {
             sim.reveal_next();
         }
+        sim.recompute_values();
         sim
     }
 
@@ -464,18 +515,6 @@ impl Sim {
 
     // ----- inputs and views -----
 
-    pub fn tax_x10(&self) -> u32 {
-        self.tax_x10
-    }
-
-    pub fn tax_pct(&self) -> f64 {
-        self.tax_x10 as f64 / 10.0
-    }
-
-    pub fn set_tax_x10(&mut self, v: u32) {
-        self.tax_x10 = v.clamp(TAX_MIN_X10, TAX_MAX_X10);
-    }
-
     pub fn lots(&self) -> &[LotState] {
         &self.lots
     }
@@ -533,42 +572,6 @@ impl Sim {
             .count()
     }
 
-    /// Dollars per month at today's state: (tax income, expenses).
-    pub fn monthly_flow(&self) -> (i64, i64) {
-        let mut income = 0i64;
-        let mut upkeep = 0i64;
-        for l in &self.lots {
-            if let Phase::Built { .. } = l.phase {
-                income += kind_value(l.kind) * self.tax_x10 as i64 / 1000 / 12;
-                upkeep += kind_upkeep(l.kind);
-                if abandonable(l.kind) {
-                    upkeep += 330;
-                }
-            }
-        }
-        let mut roads = 0;
-        for (i, &r) in self.revealed.iter().enumerate() {
-            if r {
-                roads += self.road_cost_per_month[i];
-            }
-        }
-        (income, upkeep + roads)
-    }
-
-    pub fn monthly_net(&self) -> i64 {
-        let (i, e) = self.monthly_flow();
-        i - e
-    }
-
-    /// 0 to 1: how strongly the town wants to grow at today's tax rate and vacancy.
-    pub fn demand(&self) -> f64 {
-        let built = self.built_count().max(1) as f64;
-        let empty_share = self.empty_count() as f64 / built;
-        let d = growth_mult(self.tax_pct()) / 1.6 * (1.0 - 0.7 * empty_share.min(1.0));
-        let land_left = !self.vacant.is_empty() || self.additions_left() > 0;
-        if land_left { d.clamp(0.0, 1.0) } else { 0.0 }
-    }
-
     /// Hash of the whole state, for determinism checks.
     pub fn fingerprint(&self) -> u64 {
         let mut h = 0xcbf2_9ce4_8422_2325u64;
@@ -578,6 +581,10 @@ impl Sim {
         };
         f(self.day as u64);
         f(self.treasury as u64);
+        f(self.debt() as u64);
+        for c in Class::ALL {
+            f(self.tax.get(c) as u64);
+        }
         for l in &self.lots {
             match l.phase {
                 Phase::Hidden => f(1),
@@ -614,6 +621,16 @@ impl Sim {
         self.next_reveal += 1;
         self.revealed[a] = true;
         self.newly_revealed.push(a);
+        self.net_dirty = true;
+        if self.day > 0 {
+            let c = self.addition_centre(a);
+            let n = self.order.iter().take(self.next_reveal).count();
+            self.log(
+                EventKind::Neighborhood,
+                format!("A new neighbourhood opened (number {n})."),
+                Some(c),
+            );
+        }
         for i in 0..self.lots.len() {
             if self.lots[i].addition == a && self.lots[i].phase == Phase::Hidden {
                 self.lots[i].phase = Phase::Vacant;
@@ -633,8 +650,10 @@ impl Sim {
         for (vi, &li) in self.vacant.iter().enumerate() {
             let l = &self.lots[li];
             let noise = roll(self.seed, li as u64, 77) * 140.0;
-            // civic lots and parks build a little later than homes and shops
-            let score = l.pos.dist(self.hall) + noise;
+            // builders prefer valuable land near the hall, in the class the town wants most
+            let lv = self.lot_value.get(li).copied().unwrap_or(0.5) as f64;
+            let want = class_of(l.kind).map_or(0.4, |c| self.class_demand.get(c) as f64);
+            let score = l.pos.dist(self.hall) + noise - 260.0 * lv - 180.0 * want;
             let _ = day;
             if best.is_none_or(|b| score < b.0) {
                 best = Some((score, vi));
@@ -663,21 +682,41 @@ impl Sim {
             if let Phase::Building { end, .. } = self.lots[i].phase
                 && day >= end
             {
+                let rate = self.lot_rate_x10(i);
                 self.lots[i].phase = Phase::Built {
                     since: day,
-                    tax_x10: self.tax_x10,
+                    tax_x10: rate,
                 };
                 self.changed_lots.push(i);
+                let l = &self.lots[i];
+                if l.civic.is_some() || service_of_kind(l.kind).is_some() {
+                    self.values_stale = true;
+                    if let Some(c) = l.civic {
+                        let at = l.pos;
+                        self.log(
+                            EventKind::Civic,
+                            format!("The {} opened.", c.label().to_lowercase()),
+                            Some(at),
+                        );
+                    }
+                }
             }
         }
 
-        // abandonment, recovery and clearing
-        let over = self.tax_x10 > ABANDON_ABOVE_X10;
+        if self.values_stale {
+            self.recompute_values();
+        }
+
+        // abandonment, recovery and clearing: each lot answers to its own class's rate; the
+        // poorest land goes first
         for i in 0..self.lots.len() {
             let l = &self.lots[i];
+            let rate = self.lot_rate_x10(i);
+            let over = rate > ABANDON_ABOVE_X10;
             match l.phase {
                 Phase::Built { .. } if over && abandonable(l.kind) && !l.exempt => {
-                    let p = (tax - 14.0) / 6.0 * 0.004;
+                    let lv = self.lot_value.get(i).copied().unwrap_or(0.5) as f64;
+                    let p = (rate as f64 / 10.0 - 14.0) / 6.0 * 0.004 * (1.5 - lv);
                     if roll(self.seed ^ 0xabad, i as u64, day as u64) < p {
                         self.lots[i].phase = Phase::Empty { since: day };
                         self.abandoned_total += 1;
@@ -689,7 +728,7 @@ impl Sim {
                         if roll(self.seed ^ 0xbeef, i as u64, day as u64) < 0.01 {
                             self.lots[i].phase = Phase::Built {
                                 since: day,
-                                tax_x10: self.tax_x10,
+                                tax_x10: rate,
                             };
                             self.changed_lots.push(i);
                         }
@@ -710,6 +749,8 @@ impl Sim {
         // growth
         let built = self.built_count() as f64;
         let rate = 0.8 * growth_mult(tax) * (1.0 + (built / 700.0).min(1.5));
+        // the mood of the market: all three classes together
+        let rate = rate * (0.6 + 0.8 * self.mean_demand());
         self.acc += rate;
         let mut reveals = 0;
         while self.vacant.len() < RESERVE && reveals < 2 && self.reveal_next() {
@@ -728,10 +769,7 @@ impl Sim {
 
         // monthly ledger on the first of the month
         if self.date().day == 1 {
-            let (income, expense) = self.monthly_flow();
-            self.treasury += income - expense;
-            self.last_income = income;
-            self.last_expense = expense;
+            self.run_month();
         }
     }
 
@@ -739,8 +777,11 @@ impl Sim {
 
     pub fn why(&self, lot: usize) -> Why {
         let l = &self.lots[lot];
-        let title = kind_label(l.kind).to_string();
-        let tax = self.tax_pct();
+        let title = l
+            .civic
+            .map_or_else(|| kind_label(l.kind), CivicKind::label)
+            .to_string();
+        let tax = self.lot_rate_x10(lot) as f64 / 10.0;
         let date = |d: i32| Date::from_days(d).text();
         match l.phase {
             Phase::Hidden => Why {
@@ -781,7 +822,7 @@ impl Sim {
                 } else {
                     format!("Built: demand held up despite {t:.1}% tax.")
                 };
-                let warn = if abandonable(l.kind) && self.tax_x10 > ABANDON_ABOVE_X10 {
+                let warn = if abandonable(l.kind) && self.lot_rate_x10(lot) > ABANDON_ABOVE_X10 {
                     format!(" At {tax:.1}% tax it may empty out soon.")
                 } else {
                     String::new()
@@ -797,7 +838,7 @@ impl Sim {
                 title,
                 status: "empty".into(),
                 built: Some(format!("empty since {}", date(since))),
-                reason: if self.tax_x10 > ABANDON_ABOVE_X10 {
+                reason: if self.lot_rate_x10(lot) > ABANDON_ABOVE_X10 {
                     format!(
                         "Empty: taxes too high ({tax:.1}%, limit {:.1}%). It will be cleared if they stay up.",
                         ABANDON_ABOVE_X10 as f64 / 10.0
@@ -1019,3 +1060,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tests_levers;
