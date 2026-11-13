@@ -45,7 +45,7 @@ pub fn build_civic(model: CivicModel, rng: &mut Rng) -> Obj {
     match model {
         CivicModel::Police => police_station(rng),
         CivicModel::Clinic => clinic(rng),
-        CivicModel::WaterTower => crate::kit::water_tower(rng),
+        CivicModel::WaterTower => crate::kit::water_tower(crate::kit::Region::Mixed, rng),
         CivicModel::Standpipe => standpipe(rng),
         CivicModel::Library => library(rng),
         CivicModel::Stadium => stadium(rng),

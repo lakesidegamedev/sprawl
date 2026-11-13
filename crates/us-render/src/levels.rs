@@ -2,7 +2,7 @@
 //! taller, denser and more detailed. Homes become row houses then small apartment blocks, shops
 //! become bigger shops then offices. Also the look of a building site and of a burned-out lot.
 
-use crate::kit::{self, CONC, DOOR, GLASS, TRIM, WALLS, WHITE};
+use crate::kit::{self, CONC, GLASS, Region, WHITE};
 use crate::obj::{Obj, Rgb};
 use crate::rng::Rng;
 use us_gen::LotKind;
@@ -36,40 +36,6 @@ pub fn top_of(obj: &Obj) -> f32 {
         .fold(0.0, f32::max)
 }
 
-fn two_storey_house(rng: &mut Rng) -> Obj {
-    let mut o = Obj::new();
-    let (w, d) = rng.pick(&[(8.0f32, 8.0f32), (9.0, 8.0)]);
-    let (wall, roof) = (rng.pick(&WALLS), rng.pick(&kit::ROOFS));
-    let (x0, x1, y0, y1) = (-w / 2.0, w / 2.0, -d / 2.0, d / 2.0);
-    o.bx(x0, y0, 0.0, x1, y1, 5.8, wall);
-    o.bx(x0 - 0.1, y0 - 0.1, 2.85, x1 + 0.1, y1 + 0.1, 3.05, TRIM);
-    o.gable(x0, y0, x1, y1, 5.8, 2.6, roof, wall, rng.chance(0.5), 0.4);
-    o.bx(x1 - 2.2, 0.5, 6.0, x1 - 1.4, 1.3, 8.6, [150, 90, 70]);
-    o.win_s(-0.6, 0.6, 0.0, 2.1, y0, DOOR);
-    for cx in [x0 + 1.8, x1 - 1.8] {
-        o.win_s(cx - 0.7, cx + 0.7, 0.9, 2.1, y0, GLASS);
-        o.win_s(cx - 0.7, cx + 0.7, 3.7, 5.0, y0, GLASS);
-    }
-    o.win_s(-0.6, 0.6, 3.7, 5.0, y0, GLASS);
-    o.win_w(-1.5, 0.0, 0.9, 2.1, x0, GLASS);
-    o.win_w(-1.5, 0.0, 3.7, 5.0, x0, GLASS);
-    o.win_e(-1.5, 0.0, 3.7, 5.0, x1, GLASS);
-    o.bx(-1.1, y0 - 1.2, 0.0, 1.1, y0, 0.25, CONC);
-    o.bx_top(
-        x1,
-        y0 + 1.0,
-        0.0,
-        x1 + 3.6,
-        y0 + 6.5,
-        2.6,
-        wall,
-        [150, 150, 150],
-    );
-    o.win_s(x1 + 0.4, x1 + 3.2, 0.0, 2.1, y0 + 1.0, [200, 200, 196]);
-    o
-}
-
-/// Rooftop plant, lamp posts and the like: small boxes on top of the model.
 fn rooftop_units(o: &mut Obj, n: usize, rng: &mut Rng) {
     let b = o.footprint();
     let top = top_of(o);
@@ -157,8 +123,8 @@ fn annex(o: &mut Obj, rng: &mut Rng, tall: f32) {
     }
 }
 
-fn generic(kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
-    let base = kit::build_lot(kind, rng);
+fn generic(region: Region, kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
+    let base = kit::build_lot_in(region, kind, rng);
     let ground_kind = matches!(
         kind,
         LotKind::Parking | LotKind::Park | LotKind::Sports | LotKind::Farm | LotKind::Water
@@ -249,57 +215,49 @@ pub fn chimneys(kind: LotKind, level: u8) -> Vec<[f32; 3]> {
     }
 }
 
-/// The model for one lot at a building level from 1 to 5, from its kind and a seeded RNG.
+/// The model for one lot at a building level from 1 to 5, from its kind and a seeded RNG, in no
+/// particular region.
 pub fn build_lot_level(kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
+    build_lot_level_in(Region::Mixed, kind, level, rng)
+}
+
+/// The model for one lot at a building level from 1 to 5 in a region.
+pub fn build_lot_level_in(region: Region, kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
     let level = level.clamp(1, MAX_LEVEL);
     match kind {
         LotKind::House => match level {
-            1 => scaled(&kit::house(rng), 0.8, 0.8, 0.88),
-            2 => kit::house(rng),
-            3 => two_storey_house(rng),
-            4 => kit::row_houses(2, rng),
+            1 => scaled(&kit::house(region, rng), 0.8, 0.8, 0.88),
+            2 => kit::house(region, rng),
+            3 => kit::two_storey_house(region, rng),
+            4 => {
+                let n = 2 + rng.below(2);
+                kit::row_houses(region, n, 0, rng)
+            }
             _ => {
-                let o = kit::apartments(4, rng);
+                let o = kit::apartments(region, 4, rng);
                 scaled(&o, 0.7, 0.75, 1.0)
             }
         },
         LotKind::Row => match level {
-            1 => scaled(&kit::row_houses(2, rng), 1.0, 1.0, 0.9),
+            1 => kit::row_houses(region, 2, 2, rng),
             2 => {
                 let n = 2 + rng.below(3);
-                kit::row_houses(n, rng)
+                kit::row_houses(region, n, 0, rng)
             }
-            3 => scaled(&kit::row_houses(3, rng), 1.0, 1.0, 1.35),
-            4 => scaled(&kit::apartments(4, rng), 0.75, 0.8, 1.0),
-            _ => scaled(&kit::apartments(6, rng), 0.8, 0.85, 1.0),
+            3 => kit::row_houses(region, 3, 3, rng),
+            4 => scaled(&kit::apartments(region, 4, rng), 0.75, 0.8, 1.0),
+            _ => scaled(&kit::apartments(region, 6, rng), 0.8, 0.85, 1.0),
         },
         LotKind::Shop => match level {
-            1 => scaled(&kit::shop(rng), 0.8, 0.8, 0.88),
-            2 => kit::shop(rng),
-            3 => {
-                let mut o = kit::shop(rng);
-                let (w, d) = (11.0f32, 9.0f32);
-                o.bx_top(
-                    -w / 2.0,
-                    -d / 2.0,
-                    7.8,
-                    w / 2.0,
-                    d / 2.0,
-                    11.0,
-                    [196, 190, 180],
-                    [118, 116, 112],
-                );
-                for cx in [-3.5f32, 0.0, 3.5] {
-                    o.win_s(cx - 0.8, cx + 0.8, 8.6, 10.2, -d / 2.0 - 0.0, GLASS);
-                }
-                o
-            }
-            4 => scaled(&kit::office(4, rng), 0.8, 0.8, 1.0),
-            _ => scaled(&kit::office(8, rng), 0.82, 0.82, 1.0),
+            1 => scaled(&kit::shop_floors(region, 1, rng), 0.8, 0.8, 0.9),
+            2 => kit::shop_floors(region, 2, rng),
+            3 => kit::shop_floors(region, 3, rng),
+            4 => scaled(&kit::office(region, 4, rng), 0.8, 0.8, 1.0),
+            _ => scaled(&kit::office(region, 8, rng), 0.82, 0.82, 1.0),
         },
         LotKind::Apartments => {
             let floors = [3usize, 4, 5, 7, 9][level as usize - 1];
-            let mut o = kit::apartments(floors, rng);
+            let mut o = kit::apartments(region, floors, rng);
             if level >= 4 {
                 let h = top_of(&o);
                 o.bx(-5.0, -3.0, h, 5.0, 3.0, h + 1.2, [120, 150, 110]);
@@ -308,14 +266,14 @@ pub fn build_lot_level(kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
         }
         LotKind::Office => {
             let floors = [3usize, 5, 7, 10, 14][level as usize - 1];
-            let mut o = kit::office(floors, rng);
+            let mut o = kit::office(region, floors, rng);
             if level >= 5 {
                 let h = top_of(&o);
                 o.pyramid(0.0, 0.0, h, 4.2, 5.0, [110, 120, 140], 4, 45.0);
             }
             o
         }
-        _ => generic(kind, level, rng),
+        _ => generic(region, kind, level, rng),
     }
 }
 
