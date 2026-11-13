@@ -2331,6 +2331,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "us-grow"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "us-gen",
+ "us-metrics",
+ "us-traffic",
+]
+
+[[package]]
+name = "us-grow-cli"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tiny-skia",
+ "us-gen",
+ "us-grow",
+ "us-metrics",
+ "us-traffic",
+]
+
+[[package]]
 name = "us-lakeside"
 version = "0.1.0"
 dependencies = [
@@ -2340,6 +2362,16 @@ dependencies = [
  "serde_json",
  "sha2",
  "ureq",
+]
+
+[[package]]
+name = "us-metrics"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "libm",
+ "serde_json",
+ "us-gen",
 ]
 
 [[package]]
@@ -2354,6 +2386,15 @@ dependencies = [
  "raw-window-handle",
  "us-gen",
  "wgpu",
+]
+
+[[package]]
+name = "us-traffic"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "us-gen",
+ "us-metrics",
 ]
 
 [[package]]
