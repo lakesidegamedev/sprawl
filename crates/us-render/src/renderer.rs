@@ -164,6 +164,7 @@ struct GpuMesh {
 }
 
 struct GpuChunk {
+    rev: u64,
     mesh: GpuMesh,
     lo: Vec3,
     hi: Vec3,
@@ -171,6 +172,7 @@ struct GpuChunk {
 
 struct GpuScene {
     uid: u64,
+    ground_rev: u64,
     ground: GpuMesh,
     chunks: Vec<GpuChunk>,
 }
@@ -248,6 +250,18 @@ impl Renderer {
         Renderer::create(Some(target))
     }
 
+    /// A renderer that presents into a window from a safe handle (for example an
+    /// `Arc<winit::window::Window>`). Works on every platform winit does, including Wayland.
+    pub fn for_window_handle(
+        window: impl Into<wgpu::SurfaceTarget<'static>>,
+    ) -> Result<Renderer, NoAdapter> {
+        let instance = wgpu::Instance::default();
+        let surface = instance
+            .create_surface(window)
+            .map_err(|e| NoAdapter(e.to_string()))?;
+        Renderer::create_with(instance, Some(surface))
+    }
+
     fn create(target: Option<SurfaceTarget>) -> Result<Renderer, NoAdapter> {
         let instance = wgpu::Instance::default();
         let surface: Option<wgpu::Surface<'static>> = match target {
@@ -257,6 +271,13 @@ impl Renderer {
                     .map_err(|e| NoAdapter(e.to_string()))?,
             ),
         };
+        Renderer::create_with(instance, surface)
+    }
+
+    fn create_with(
+        instance: wgpu::Instance,
+        surface: Option<wgpu::Surface<'static>>,
+    ) -> Result<Renderer, NoAdapter> {
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
@@ -492,6 +513,19 @@ impl Renderer {
         &self.info
     }
 
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
+    /// Format of the window surface, if this renderer has one.
+    pub fn surface_format(&self) -> Option<wgpu::TextureFormat> {
+        self.surface.as_ref().map(|s| s.format)
+    }
+
     fn edge_pipeline_index(&mut self, format: wgpu::TextureFormat) -> usize {
         if let Some(i) = self.edge_pipelines.iter().position(|(f, _)| *f == format) {
             return i;
@@ -556,25 +590,52 @@ impl Renderer {
     }
 
     fn ensure_scene(&mut self, scene: &Scene) {
-        if self.scene.as_ref().is_some_and(|s| s.uid == scene.uid) {
+        let same = self.scene.as_ref().is_some_and(|s| s.uid == scene.uid);
+        if !same {
+            self.scene = None;
+            let ground = self.upload_mesh(&scene.ground, "ground");
+            let chunks = scene
+                .chunks
+                .iter()
+                .map(|c| GpuChunk {
+                    rev: c.rev,
+                    mesh: self.upload_mesh(&c.mesh, "chunk"),
+                    lo: c.lo,
+                    hi: c.hi,
+                })
+                .collect();
+            self.scene = Some(GpuScene {
+                uid: scene.uid,
+                ground_rev: scene.ground_rev,
+                ground,
+                chunks,
+            });
             return;
         }
-        self.scene = None;
-        let ground = self.upload_mesh(&scene.ground, "ground");
-        let chunks = scene
-            .chunks
-            .iter()
-            .map(|c| GpuChunk {
+        // same scene: upload only what changed
+        let mut gpu = self.scene.take().unwrap();
+        if gpu.ground_rev != scene.ground_rev {
+            gpu.ground = self.upload_mesh(&scene.ground, "ground");
+            gpu.ground_rev = scene.ground_rev;
+        }
+        gpu.chunks.truncate(scene.chunks.len());
+        for (i, c) in scene.chunks.iter().enumerate() {
+            if i < gpu.chunks.len() && gpu.chunks[i].rev == c.rev {
+                continue;
+            }
+            let g = GpuChunk {
+                rev: c.rev,
                 mesh: self.upload_mesh(&c.mesh, "chunk"),
                 lo: c.lo,
                 hi: c.hi,
-            })
-            .collect();
-        self.scene = Some(GpuScene {
-            uid: scene.uid,
-            ground,
-            chunks,
-        });
+            };
+            if i < gpu.chunks.len() {
+                gpu.chunks[i] = g;
+            } else {
+                gpu.chunks.push(g);
+            }
+        }
+        self.scene = Some(gpu);
     }
 
     fn ensure_shadow(&mut self, size: u32) {
@@ -778,6 +839,20 @@ impl Renderer {
         width: u32,
         height: u32,
     ) -> Option<FrameStats> {
+        self.render_to_surface_with(scene, camera, style, width, height, |_, _, _, _| {})
+    }
+
+    /// Like `render_to_surface`, then calls `overlay(device, queue, encoder, surface_view)` so the
+    /// host can draw its UI on top in the same frame before it is presented.
+    pub fn render_to_surface_with(
+        &mut self,
+        scene: &Scene,
+        camera: &Camera,
+        style: &Style,
+        width: u32,
+        height: u32,
+        overlay: impl FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    ) -> Option<FrameStats> {
         let t_all = Instant::now();
         let (format, frame) = {
             let device = &self.device;
@@ -825,6 +900,7 @@ impl Renderer {
         self.draw_frame(
             &mut enc, scene, camera, &one, width, height, &view, format, &mut stats,
         );
+        overlay(&self.device, &self.queue, &mut enc, &view);
         self.queue.submit([enc.finish()]);
         self.queue.present(frame);
         stats.total = t_all.elapsed();

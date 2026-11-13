@@ -9,7 +9,7 @@
 //! Mesa software Vulkan driver.
 
 mod camera;
-mod ground;
+pub mod ground;
 pub mod kit;
 mod mesh;
 pub mod obj;
