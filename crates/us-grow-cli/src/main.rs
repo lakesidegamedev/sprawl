@@ -92,28 +92,33 @@ fn main() {
     match cmd.as_str() {
         "timing" => {
             let ev = evaluate(&town, &p, 1.0);
-            let mut ms = Vec::new();
-            for _ in 0..9 {
-                let t = Instant::now();
-                let r = us_traffic::assign(&ev.net, &ev.demand, &p.assign);
-                ms.push(t.elapsed().as_secs_f64() * 1000.0);
-                let _ = r;
+            for scale in [1.0, 2.1] {
+                let dem = ev.demand.scaled(scale);
+                let mut ms = Vec::new();
+                let mut last = None;
+                for _ in 0..9 {
+                    let t = Instant::now();
+                    last = Some(us_traffic::assign(&ev.net, &dem, &p.assign));
+                    ms.push(t.elapsed().as_secs_f64() * 1000.0);
+                }
+                ms.sort_by(|x, y| x.total_cmp(y));
+                let r = last.expect("ran");
+                println!(
+                    "{} seed {} demand x{scale}: {} nodes, {} streets, {} zones, {:.0} trips/h, assignment median {:.1} ms (min {:.1}, max {:.1}), {} iterations, gap {:.4}, {} streets over capacity",
+                    a.preset.name(),
+                    a.seed,
+                    ev.net.n_nodes(),
+                    ev.net.streets.edges.len(),
+                    ev.demand.zones.len(),
+                    dem.total,
+                    ms[4],
+                    ms[0],
+                    ms[8],
+                    r.iterations,
+                    r.gap,
+                    r.edge_vc.iter().filter(|&&v| v > 1.0).count()
+                );
             }
-            ms.sort_by(|x, y| x.total_cmp(y));
-            println!(
-                "{} seed {}: {} nodes, {} streets, {} zones, {:.0} trips/h, assignment median {:.1} ms (min {:.1}, max {:.1}), {} iterations, gap {:.4}",
-                a.preset.name(),
-                a.seed,
-                ev.net.n_nodes(),
-                ev.net.streets.edges.len(),
-                ev.demand.zones.len(),
-                ev.demand.total,
-                ms[4],
-                ms[0],
-                ms[8],
-                ev.assignment.iterations,
-                ev.assignment.gap
-            );
         }
         "run" => {
             let Some(out) = a.out.clone() else { usage() };
