@@ -87,6 +87,8 @@ struct Smoke {
     worst: f32,
     /// Test hook: set this tax rate (tenths) after this many seconds.
     tax_at: Option<(u32, f32)>,
+    sync_max_ms: f32,
+    sync_total_ms: f32,
 }
 
 pub struct State {
@@ -166,6 +168,8 @@ impl State {
                 stage: 0,
                 frames: 0,
                 worst: 0.0,
+                sync_max_ms: 0.0,
+                sync_total_ms: 0.0,
                 tax_at: std::env::var("URBAN_SPRAWL_SMOKE_TAX").ok().and_then(|v| {
                     let (a, b) = v.split_once(':')?;
                     Some((a.parse().ok()?, b.parse().ok()?))
@@ -207,7 +211,7 @@ impl State {
             sim.step_day();
         }
         let mut live = LiveScene::new(town, &sim, true);
-        live.sync(&mut sim, 100_000);
+        live.sync(&mut sim, 1.0e9);
         let mut cam = CamCtl::overview(4096.0, 1.7);
         cam.look_at(Vec3::new(hall.x as f32, hall.y as f32, 0.0), 800.0);
         self.demo = Some(Demo { live, cam });
@@ -378,7 +382,13 @@ impl State {
                 g.day_acc = 0.0;
             }
         }
-        g.live.sync(&mut g.sim, 6);
+        let t0 = Instant::now();
+        g.live.sync(&mut g.sim, 5.0);
+        let ms = t0.elapsed().as_secs_f32() * 1000.0;
+        if let Some(s) = self.smoke.as_mut() {
+            s.sync_max_ms = s.sync_max_ms.max(ms);
+            s.sync_total_ms += ms;
+        }
         g.refresh_stats();
     }
 
@@ -413,7 +423,7 @@ impl State {
         let sites = hall_sites(&town);
         let mut sim = Sim::new_with(&town, sites[0], seed, 0);
         let mut live = LiveScene::new(town.clone(), &sim, false);
-        live.sync(&mut sim, 100_000);
+        live.sync(&mut sim, 1.0e9);
         let cam = CamCtl::overview(town.size as f32, 1.7);
         self.game = Some(Game {
             town,
@@ -455,6 +465,14 @@ impl State {
                     let site = g.sites[0];
                     g.place(site);
                     g.speed = 3;
+                    if let Some(days) = std::env::var("URBAN_SPRAWL_SMOKE_DAYS")
+                        .ok()
+                        .and_then(|v| v.parse::<i32>().ok())
+                    {
+                        for _ in 0..days {
+                            g.sim.step_day();
+                        }
+                    }
                 }
                 s.stage = 2;
             }
@@ -467,7 +485,7 @@ impl State {
             3 if t > s.secs => {
                 if let Some(g) = self.game.as_ref() {
                     eprintln!(
-                        "smoke: day {} built {} pop {} treasury {} chunks {} tris {} fps {:.1} worst-frame {:.0} ms",
+                        "smoke: day {} built {} pop {} treasury {} chunks {} tris {} fps {:.1} worst-frame {:.0} ms sync max {:.1} ms avg {:.2} ms",
                         g.sim.day,
                         g.sim.built_count(),
                         g.sim.population(),
@@ -475,7 +493,9 @@ impl State {
                         g.live.scene.chunks.len(),
                         g.live.triangles,
                         self.fps,
-                        s.worst * 1000.0
+                        s.worst * 1000.0,
+                        s.sync_max_ms,
+                        s.sync_total_ms / s.frames.max(1) as f32
                     );
                 }
                 self.quit = true;
@@ -1005,7 +1025,7 @@ impl Game {
     fn place(&mut self, site: Pt) {
         let mut sim = Sim::new(&self.town, site, self.seed);
         let mut live = LiveScene::new(self.town.clone(), &sim, true);
-        live.sync(&mut sim, 100_000);
+        live.sync(&mut sim, 1.0e9);
         self.sim = sim;
         self.live = live;
         self.placed = true;

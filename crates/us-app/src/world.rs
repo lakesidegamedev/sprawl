@@ -2,8 +2,9 @@
 //! their addition, building meshes are rebuilt per 256 m cell only when a lot in it changes.
 
 use glam::Vec3;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::time::Instant;
 use us_gen::{LotKind, Pt, RoadClass, Town, Zone};
 use us_render::live::{abandoned, base_ground, construction, roads_ground, zone_ground};
 use us_render::obj::Obj;
@@ -24,7 +25,8 @@ pub struct LiveScene {
     cell_chunk: HashMap<Cell, usize>,
     cell_lots: HashMap<Cell, Vec<usize>>,
     hall_cell: Cell,
-    dirty: BTreeSet<Cell>,
+    dirty: HashSet<Cell>,
+    queue: VecDeque<Cell>,
     stage: Vec<u8>,
     objs: Vec<Option<Obj>>,
     rev: u64,
@@ -167,7 +169,8 @@ impl LiveScene {
             cell_chunk: HashMap::new(),
             cell_lots,
             hall_cell,
-            dirty: BTreeSet::new(),
+            dirty: HashSet::new(),
+            queue: VecDeque::new(),
             stage: vec![0; n],
             objs: vec![None; n],
             rev: 1,
@@ -175,7 +178,7 @@ impl LiveScene {
             triangles: 0,
         };
         if show_hall {
-            ls.dirty.insert(hall_cell);
+            ls.mark(hall_cell);
         }
         ls
     }
@@ -221,8 +224,16 @@ impl LiveScene {
         self.ground_chunks += 1;
     }
 
-    /// Follow the simulation: new additions, lot stage changes, and up to `budget` cell rebuilds.
-    pub fn sync(&mut self, sim: &mut Sim, budget: usize) {
+    fn mark(&mut self, c: Cell) {
+        if self.dirty.insert(c) {
+            self.queue.push_back(c);
+        }
+    }
+
+    /// Follow the simulation: new additions, lot stage changes, and cell rebuilds until about
+    /// `max_ms` milliseconds are spent (always at least one when something is waiting).
+    pub fn sync(&mut self, sim: &mut Sim, max_ms: f32) {
+        let t0 = Instant::now();
         let (_, revealed) = sim.take_changes();
         for a in revealed {
             self.add_ground_chunk(sim, a);
@@ -232,15 +243,18 @@ impl LiveScene {
             let s = stage_of(l, day);
             if s != self.stage[i] {
                 self.stage[i] = s;
-                self.dirty.insert(cell_of(l.pos.x, l.pos.y));
+                let c = cell_of(l.pos.x, l.pos.y);
+                if self.dirty.insert(c) {
+                    self.queue.push_back(c);
+                }
             }
         }
-        for _ in 0..budget {
-            let Some(&c) = self.dirty.iter().next() else {
-                break;
-            };
+        while let Some(c) = self.queue.pop_front() {
             self.dirty.remove(&c);
             self.rebuild_cell(sim, c);
+            if t0.elapsed().as_secs_f32() * 1000.0 > max_ms {
+                break;
+            }
         }
         self.triangles = self.scene.triangles();
     }
