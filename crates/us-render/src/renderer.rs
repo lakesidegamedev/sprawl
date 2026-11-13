@@ -153,6 +153,8 @@ struct Globals {
     ink: [f32; 4],
     shade: [f32; 4],
     screen: [f32; 4],
+    tone: [f32; 4],
+    look: [f32; 4],
 }
 
 struct GpuMesh {
@@ -220,6 +222,14 @@ pub struct Renderer {
     targets: Option<Targets>,
     scene: Option<GpuScene>,
     surface: Option<SurfaceState>,
+    inst_pipeline: wgpu::RenderPipeline,
+    shadow_inst_pipeline: wgpu::RenderPipeline,
+    /// Car, smoke puff and person models, drawn instanced.
+    templates: Vec<GpuMesh>,
+    /// Per template: instance buffer and how many instances it holds.
+    inst_bufs: Vec<Option<(wgpu::Buffer, usize)>>,
+    /// Map view mesh: scene uid, overlay rev, mesh.
+    overlay_gpu: Option<(u64, u64, GpuMesh)>,
 }
 
 fn vertex_layout() -> (wgpu::VertexBufferLayout<'static>, ()) {
@@ -233,6 +243,16 @@ fn vertex_layout() -> (wgpu::VertexBufferLayout<'static>, ()) {
         },
         (),
     )
+}
+
+fn instance_layout() -> wgpu::VertexBufferLayout<'static> {
+    const ATTRS: [wgpu::VertexAttribute; 4] =
+        wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32, 6 => Uint32, 7 => Uint32];
+    wgpu::VertexBufferLayout {
+        array_stride: crate::instances::INSTANCE_BYTES as u64,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &ATTRS,
+    }
 }
 
 impl Renderer {
@@ -472,6 +492,68 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        let (vbl2, _) = vertex_layout();
+        let shadow_inst_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("shadow instances"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_inst_shadow"),
+                compilation_options: Default::default(),
+                buffers: &[Some(vbl2.clone()), Some(instance_layout())],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(depth_state(wgpu::DepthBiasState {
+                constant: 2,
+                slope_scale: 2.0,
+                clamp: 0.0,
+            })),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: None,
+            multiview_mask: None,
+            cache: None,
+        });
+        let inst_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("instances"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_inst"),
+                compilation_options: Default::default(),
+                buffers: &[Some(vbl2), Some(instance_layout())],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(depth_state(wgpu::DepthBiasState::default())),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: COLOUR_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: AUX_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let compare = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
@@ -500,7 +582,7 @@ impl Renderer {
                 view_formats: &[],
             })
             .create_view(&Default::default());
-        Ok(Renderer {
+        let mut r = Renderer {
             device,
             queue,
             info,
@@ -518,7 +600,18 @@ impl Renderer {
             targets: None,
             scene: None,
             surface,
-        })
+            inst_pipeline,
+            shadow_inst_pipeline,
+            templates: Vec::new(),
+            inst_bufs: vec![None, None, None],
+            overlay_gpu: None,
+        };
+        r.templates = vec![
+            r.upload_mesh(&crate::instances::car_mesh(), "car"),
+            r.upload_mesh(&crate::instances::puff_mesh(), "puff"),
+            r.upload_mesh(&crate::instances::person_mesh(), "person"),
+        ];
+        Ok(r)
     }
 
     pub fn adapter(&self) -> &AdapterSummary {
@@ -934,7 +1027,18 @@ impl Renderer {
     ) {
         let aspect = rw as f32 / rh as f32;
         let view = camera.view(aspect);
-        let sun = Vec3::from(style.sun).normalize();
+        use crate::calendar::{DayPhase, Season};
+        let cal = scene.calendar;
+        let sun = cal
+            .map_or(Vec3::from(style.sun), |c| Vec3::from(c.light()))
+            .normalize();
+        let shadow_tone = cal.map_or(style.shadow_tone, |c| c.shadow_tone());
+        let tone = cal.map_or([1.0; 3], |c| c.tone());
+        let lit_windows = cal.map_or(0.0, |c| c.lit_windows());
+        let map_view = scene.overlay_active();
+        let autumn = cal.is_some_and(|c| c.season() == Season::Autumn);
+        let snow = cal.is_some_and(|c| c.season() == Season::Winter);
+        let lamps = cal.is_some_and(|c| c.phase() != DayPhase::Day);
         let (light_vp, texel, range) = light_matrix(scene, &view, sun, style.shadow_size);
         self.ensure_shadow(style.shadow_size);
         let edge_i = self.edge_pipeline_index(final_format);
@@ -948,11 +1052,56 @@ impl Renderer {
                 style.ink[2] as f32 / 255.0,
                 style.ink_width as f32,
             ],
-            shade: [style.shadow_tone, 0.2 / range, 0.0, 0.0],
+            shade: [shadow_tone, 0.2 / range, 0.0, 0.0],
             screen: [rw as f32, rh as f32, 0.0, 0.0],
+            tone: [tone[0], tone[1], tone[2], lit_windows],
+            look: [
+                autumn as u8 as f32,
+                snow as u8 as f32,
+                map_view as u8 as f32,
+                lamps as u8 as f32,
+            ],
         };
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&globals));
+        // map view mesh
+        match scene.overlay_mesh() {
+            Some((m, rev)) => {
+                if !self
+                    .overlay_gpu
+                    .as_ref()
+                    .is_some_and(|o| o.0 == scene.uid && o.1 == rev)
+                {
+                    let g = self.upload_mesh(m, "overlay");
+                    self.overlay_gpu = Some((scene.uid, rev, g));
+                }
+            }
+            None => self.overlay_gpu = None,
+        }
+        // moving things for this frame
+        let fi = scene.instances();
+        let sets: [&[crate::instances::Instance]; 3] = [&fi.cars, &fi.puffs, &fi.people];
+        for (k, set) in sets.iter().enumerate() {
+            if set.is_empty() {
+                continue;
+            }
+            let need = set.len();
+            if self.inst_bufs[k].as_ref().is_none_or(|b| b.1 < need) {
+                let cap = need.next_power_of_two().max(256);
+                let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("instances"),
+                    size: (cap * crate::instances::INSTANCE_BYTES) as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                self.inst_bufs[k] = Some((buf, cap));
+            }
+            self.queue.write_buffer(
+                &self.inst_bufs[k].as_ref().unwrap().0,
+                0,
+                bytemuck::cast_slice(set),
+            );
+        }
         let shadow = self.shadow.as_ref().unwrap();
         let group0 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("globals"),
@@ -1031,12 +1180,40 @@ impl Renderer {
                     pass.draw_indexed(0..c.mesh.n_cast, 0, 0..1);
                 }
             }
+            pass.set_pipeline(&self.shadow_inst_pipeline);
+            pass.set_bind_group(0, Some(&group0_shadow), &[]);
+            for (k, set) in sets.iter().enumerate() {
+                let (Some((ib, _)), Some(ci)) = (&self.inst_bufs[k], &self.templates[k].cast)
+                else {
+                    continue;
+                };
+                if set.is_empty() {
+                    continue;
+                }
+                pass.set_vertex_buffer(0, self.templates[k].vb.slice(..));
+                pass.set_vertex_buffer(1, ib.slice(..));
+                pass.set_index_buffer(ci.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.templates[k].n_cast, 0, 0..set.len() as u32);
+            }
         }
         {
+            let mut base = [
+                crate::scene::GRASS[0] as f64 / 255.0,
+                crate::scene::GRASS[1] as f64 / 255.0,
+                crate::scene::GRASS[2] as f64 / 255.0,
+            ];
+            if map_view {
+                let lum = base[0] * 0.3 + base[1] * 0.59 + base[2] * 0.11;
+                for c in &mut base {
+                    *c = lum + (*c - lum) * 0.12;
+                }
+            } else if snow {
+                base = [236.0 / 255.0, 241.0 / 255.0, 247.0 / 255.0];
+            }
             let clear = wgpu::Color {
-                r: crate::scene::GRASS[0] as f64 / 255.0,
-                g: crate::scene::GRASS[1] as f64 / 255.0,
-                b: crate::scene::GRASS[2] as f64 / 255.0,
+                r: base[0] * tone[0] as f64,
+                g: base[1] * tone[1] as f64,
+                b: base[2] * tone[2] as f64,
                 a: 1.0,
             };
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1094,6 +1271,30 @@ impl Renderer {
             draw(&gpu.ground, stats);
             for c in &visible_main {
                 draw(&c.mesh, stats);
+            }
+            if let Some((_, _, om)) = &self.overlay_gpu {
+                draw(om, stats);
+            }
+            pass.set_pipeline(&self.inst_pipeline);
+            pass.set_bind_group(0, Some(&group0), &[]);
+            for (k, set) in sets.iter().enumerate() {
+                let Some((ib, _)) = &self.inst_bufs[k] else {
+                    continue;
+                };
+                if set.is_empty() {
+                    continue;
+                }
+                let t = &self.templates[k];
+                pass.set_vertex_buffer(0, t.vb.slice(..));
+                pass.set_vertex_buffer(1, ib.slice(..));
+                for (ix, n) in [(&t.plain, t.n_plain), (&t.cast, t.n_cast)] {
+                    if let Some(ix) = ix {
+                        pass.set_index_buffer(ix.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..n, 0, 0..set.len() as u32);
+                        stats.draw_calls += 1;
+                        stats.triangles += n as usize / 3 * set.len();
+                    }
+                }
             }
         }
         {

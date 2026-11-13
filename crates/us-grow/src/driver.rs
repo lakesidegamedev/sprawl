@@ -65,110 +65,137 @@ pub fn grow(
     let mut logs = Vec::new();
     for round in 0..p.rounds {
         let scale = (1.0 + p.demand_growth).powi(round as i32);
-        let ev = evaluate(&town, p, scale);
-        let index = Index::new(&town, &ev.net);
-        let ctx = Context {
-            town: &town,
-            net: &ev.net,
-            demand: &ev.demand,
-            assignment: &ev.assignment,
-            skim: &ev.skim,
-            index: &index,
-            params: p,
-        };
-        let mut log = RoundLog {
-            round,
-            scale,
-            vht: ev.assignment.vht,
-            vht_free: ev.assignment.vht_free,
-            gap: ev.assignment.gap,
-            over_capacity_streets: 0,
-            over_capacity_m: 0.0,
-            upgrades: 0,
-            upgraded_m: 0.0,
-            connectors: 0,
-            connector_m: 0.0,
-            lots_removed: 0,
-            links: Vec::new(),
-            link_gains: Vec::new(),
-        };
-        for (e, &vc) in ev.net.streets.edges.iter().zip(&ev.assignment.edge_vc) {
-            if vc > 1.0 {
-                log.over_capacity_streets += 1;
-                log.over_capacity_m += e.len;
-            }
-        }
-        let mut ups: Vec<Chosen> = Vec::new();
-        let mut cons: Vec<Chosen> = Vec::new();
-        for c in proposer.propose(&ctx) {
-            let Some(s) = scorer.score(&ctx, &c) else {
-                continue;
-            };
-            if !(s.gain.is_finite() && s.cost > 0.0) || s.gain <= 0.0 {
-                continue;
-            }
-            let ratio = s.gain / s.cost;
-            match &c {
-                Change::Upgrade { .. } => ups.push(Chosen {
-                    change: c,
-                    ratio,
-                    gain: s.gain,
-                }),
-                Change::Connector { .. } => {
-                    if s.gain >= p.min_gain && ratio * 1000.0 >= p.min_gain_per_km {
-                        cons.push(Chosen {
-                            change: c,
-                            ratio,
-                            gain: s.gain,
-                        });
-                    }
-                }
-            }
-        }
-        let by_ratio = |a: &Chosen, b: &Chosen| b.ratio.total_cmp(&a.ratio);
-        ups.sort_by(by_ratio);
-        cons.sort_by(by_ratio);
-        let mut chosen: Vec<Change> = Vec::new();
-        for u in ups {
-            let Change::Upgrade { street, .. } = &u.change else {
-                continue;
-            };
-            let len = ev.net.streets.edges[*street as usize].len;
-            if log.upgraded_m + len <= p.upgrade_budget_m || log.upgrades == 0 {
-                log.upgraded_m += len;
-                log.upgrades += 1;
-                chosen.push(u.change);
-            }
-        }
-        let mut taken: Vec<(Pt, Pt)> = Vec::new();
-        let mut taken_ends: Vec<Pt> = Vec::new();
-        for c in cons {
-            if log.connectors >= p.max_connectors {
-                break;
-            }
-            let Change::Connector { pa, pb, .. } = &c.change else {
-                continue;
-            };
-            let clash = taken.iter().any(|(a, b)| seg_dist(*pa, *pb, *a, *b) < 40.0)
-                || taken_ends
-                    .iter()
-                    .any(|e| e.dist(*pa) < 40.0 || e.dist(*pb) < 40.0);
-            if clash {
-                continue;
-            }
-            taken.push((*pa, *pb));
-            taken_ends.push(*pa);
-            taken_ends.push(*pb);
-            log.connectors += 1;
-            log.connector_m += pa.dist(*pb);
-            log.links.push((*pa, *pb));
-            log.link_gains.push(c.gain);
-            chosen.push(c.change);
-        }
-        log.lots_removed = apply(&mut town, &ev.net, &chosen);
+        let plan = plan_round(&town, p, proposer, scorer, round, scale);
+        let mut log = plan.log;
+        log.lots_removed = apply(&mut town, &plan.eval.net, &plan.changes);
         logs.push(log);
     }
     (town, logs)
+}
+
+/// One round decided but not applied: the traffic it was decided on and the chosen changes.
+pub struct RoundPlan {
+    pub eval: Evaluation,
+    pub changes: Vec<Change>,
+    /// `lots_removed` is left at zero; it is known only once the changes are applied.
+    pub log: RoundLog,
+}
+
+/// Assign traffic at `scale` times base demand, then propose, score and choose changes the way
+/// `grow` does, without touching the town.
+pub fn plan_round(
+    town: &Town,
+    p: &GrowParams,
+    proposer: &dyn Proposer,
+    scorer: &dyn Scorer,
+    round: usize,
+    scale: f64,
+) -> RoundPlan {
+    let ev = evaluate(town, p, scale);
+    let index = Index::new(town, &ev.net);
+    let ctx = Context {
+        town,
+        net: &ev.net,
+        demand: &ev.demand,
+        assignment: &ev.assignment,
+        skim: &ev.skim,
+        index: &index,
+        params: p,
+    };
+    let mut log = RoundLog {
+        round,
+        scale,
+        vht: ev.assignment.vht,
+        vht_free: ev.assignment.vht_free,
+        gap: ev.assignment.gap,
+        over_capacity_streets: 0,
+        over_capacity_m: 0.0,
+        upgrades: 0,
+        upgraded_m: 0.0,
+        connectors: 0,
+        connector_m: 0.0,
+        lots_removed: 0,
+        links: Vec::new(),
+        link_gains: Vec::new(),
+    };
+    for (e, &vc) in ev.net.streets.edges.iter().zip(&ev.assignment.edge_vc) {
+        if vc > 1.0 {
+            log.over_capacity_streets += 1;
+            log.over_capacity_m += e.len;
+        }
+    }
+    let mut ups: Vec<Chosen> = Vec::new();
+    let mut cons: Vec<Chosen> = Vec::new();
+    for c in proposer.propose(&ctx) {
+        let Some(s) = scorer.score(&ctx, &c) else {
+            continue;
+        };
+        if !(s.gain.is_finite() && s.cost > 0.0) || s.gain <= 0.0 {
+            continue;
+        }
+        let ratio = s.gain / s.cost;
+        match &c {
+            Change::Upgrade { .. } => ups.push(Chosen {
+                change: c,
+                ratio,
+                gain: s.gain,
+            }),
+            Change::Connector { .. } => {
+                if s.gain >= p.min_gain && ratio * 1000.0 >= p.min_gain_per_km {
+                    cons.push(Chosen {
+                        change: c,
+                        ratio,
+                        gain: s.gain,
+                    });
+                }
+            }
+        }
+    }
+    let by_ratio = |a: &Chosen, b: &Chosen| b.ratio.total_cmp(&a.ratio);
+    ups.sort_by(by_ratio);
+    cons.sort_by(by_ratio);
+    let mut chosen: Vec<Change> = Vec::new();
+    for u in ups {
+        let Change::Upgrade { street, .. } = &u.change else {
+            continue;
+        };
+        let len = ev.net.streets.edges[*street as usize].len;
+        if log.upgraded_m + len <= p.upgrade_budget_m || log.upgrades == 0 {
+            log.upgraded_m += len;
+            log.upgrades += 1;
+            chosen.push(u.change);
+        }
+    }
+    let mut taken: Vec<(Pt, Pt)> = Vec::new();
+    let mut taken_ends: Vec<Pt> = Vec::new();
+    for c in cons {
+        if log.connectors >= p.max_connectors {
+            break;
+        }
+        let Change::Connector { pa, pb, .. } = &c.change else {
+            continue;
+        };
+        let clash = taken.iter().any(|(a, b)| seg_dist(*pa, *pb, *a, *b) < 40.0)
+            || taken_ends
+                .iter()
+                .any(|e| e.dist(*pa) < 40.0 || e.dist(*pb) < 40.0);
+        if clash {
+            continue;
+        }
+        taken.push((*pa, *pb));
+        taken_ends.push(*pa);
+        taken_ends.push(*pb);
+        log.connectors += 1;
+        log.connector_m += pa.dist(*pb);
+        log.links.push((*pa, *pb));
+        log.link_gains.push(c.gain);
+        chosen.push(c.change);
+    }
+    RoundPlan {
+        eval: ev,
+        changes: chosen,
+        log,
+    }
 }
 
 fn seg_dist(a: Pt, b: Pt, c: Pt, d: Pt) -> f64 {
