@@ -15,6 +15,12 @@ use us_gen::{Preset, generate};
 const MAGIC: &[u8; 4] = b"USSV";
 /// The save format this build writes and reads.
 pub const SAVE_VERSION: u16 = 3;
+
+/// The first save format the game promises to keep opening. Formats before it come from the
+/// previews before street-by-street growth (preview 5 and earlier) and cannot be converted. From
+/// this format on, a change to the save format must bump `SAVE_VERSION` and add a converter from
+/// every older lasting format, so players never lose a town to an update.
+pub const FIRST_LASTING_VERSION: u16 = 3;
 const HEADER_LEN: usize = 4 + 2 + 8 + 8;
 /// How many autosave files are kept.
 pub const AUTOSAVE_SLOTS: usize = 3;
@@ -41,6 +47,10 @@ impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LoadError::NotASave => write!(f, "This file is not an Urban Sprawl save."),
+            LoadError::TooOld { found, current } if *found < FIRST_LASTING_VERSION => write!(
+                f,
+                "This town was saved before 1.0.0 preview 6. Towns now grow street by street, so towns saved before that change cannot be opened (save format {found}, this version reads format {current}). Start a new town; saves from preview 6 on will keep working."
+            ),
             LoadError::TooOld { found, current } => write!(
                 f,
                 "This save was made by an older version of the game (save format {found}, this version reads format {current}) and can no longer be opened."

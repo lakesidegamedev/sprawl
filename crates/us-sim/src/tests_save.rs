@@ -129,7 +129,8 @@ fn bad_files_are_refused_with_a_clear_error() {
             current: SAVE_VERSION
         }
     );
-    assert!(e.to_string().contains("older version"));
+    assert!(e.to_string().contains("before 1.0.0 preview 6"));
+    assert!(e.to_string().contains("cannot be opened"));
     let mut new = good.clone();
     new[4..6].copy_from_slice(&(SAVE_VERSION + 1).to_le_bytes());
     let e = Sim::load(&new).err().unwrap();
