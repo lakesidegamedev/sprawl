@@ -65,14 +65,34 @@ pub fn base_ground_on(land: &Land, t: &Town, farm_additions: &[usize]) -> Mesh {
 
 /// Sand around each water body and the water itself, flat at its level.
 pub fn add_water(g: &mut Ground, land: &Land, t: &Town) {
+    add_water_at(g, land, land, t);
+}
+
+/// Like `add_water`, with the water levels taken from `levels` (a finer copy of `land`).
+fn add_water_at(g: &mut Ground, land: &Land, levels: &Land, t: &Town) {
     for w in &t.water {
         g.polygon(&Ground::grow(w, 14.0), layer::SAND, SAND);
         if land.is_flat() {
             g.polygon(w, layer::WATER, WATER);
         } else {
-            g.polygon_level(w, land.water_level(w) + layer::WATER - layer::BASE, WATER);
+            g.polygon_level(w, levels.water_level(w) + layer::WATER - layer::BASE, WATER);
         }
     }
+}
+
+/// The base ground again on a coarser copy of the land (`coarse`, built from `fine`), for a
+/// chunk that is far from the camera. Water keeps the fine level so shores line up.
+pub fn base_ground_far_on(fine: &Land, coarse: &Land, t: &Town, farm_additions: &[usize]) -> Mesh {
+    let mut g = Ground::on(coarse);
+    g.terrain(coarse, 1500.0, GRASS);
+    for &ai in farm_additions {
+        let a = &t.additions[ai];
+        if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, ai) {
+            g.polygon(&a.polygon, layer::ZONE, c);
+        }
+    }
+    add_water_at(&mut g, coarse, fine, t);
+    g.mesh
 }
 
 /// The paved land of one addition (its zone colour).

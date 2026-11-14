@@ -508,27 +508,33 @@ impl Game {
             ("VOTERS", self.voters_open),
             ("MAP", self.map_open),
         ];
-        let n = items.len() as f32;
+        let rows = super::panels::dock_rows(ui.ctx());
+        let per = items.len().div_ceil(rows);
+        let n = per as f32;
         let gap = 3.0;
         let w = ((ui.available_width() - 12.0 - gap * (n - 1.0)) / n).floor();
-        let font = if w >= 52.0 { 11.0 } else { 9.0 };
+        let font = if rows == 1 && w >= 64.0 { 12.0 } else { 11.0 };
         let mut hit: Option<usize> = None;
-        ui.spacing_mut().item_spacing.x = gap;
+        ui.spacing_mut().item_spacing = vec2(gap, gap);
         ui.spacing_mut().button_padding = vec2(1.0, 6.0);
-        ui.horizontal(|ui| {
-            for (i, (name, on)) in items.iter().enumerate() {
-                let b = egui::Button::new(RichText::new(*name).font(pixel(font)).color(if *on {
-                    LINE
-                } else {
-                    INK
-                }))
-                .fill(if *on { ACCENT } else { RAISED })
-                .min_size(vec2(w, theme::TOUCH));
-                if ui.add(b).clicked() {
-                    hit = Some(i);
+        for row in items.chunks(per).enumerate() {
+            ui.horizontal(|ui| {
+                for (j, (name, on)) in row.1.iter().enumerate() {
+                    let i = row.0 * per + j;
+                    let b =
+                        egui::Button::new(RichText::new(*name).font(pixel(font)).color(if *on {
+                            LINE
+                        } else {
+                            INK
+                        }))
+                        .fill(if *on { ACCENT } else { RAISED })
+                        .min_size(vec2(w, theme::TOUCH));
+                    if ui.add(b).clicked() {
+                        hit = Some(i);
+                    }
                 }
-            }
-        });
+            });
+        }
         if let Some(i) = hit {
             let was = items[i].1;
             self.close_sheets();

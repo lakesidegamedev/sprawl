@@ -180,7 +180,9 @@ pub fn centered(ctx: &egui::Context, id: &str, margin: i8, body: impl FnOnce(&mu
     let y = ((r.height() - prev) / 2.0).max(12.0);
     let inner_max = max_h - 2.0 * margin as f32 - 8.0;
     let mut content_h = prev_content;
+    // above the dim layer, whatever order the layers were first made in
     let out = egui::Area::new(egui::Id::new(id))
+        .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, r.top() + y))
         .show(ctx, |ui| {
             panel().inner_margin(Margin::same(margin)).show(ui, |ui| {

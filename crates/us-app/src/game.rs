@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use us_gen::{LotKind, Preset, Pt, Town, generate, pt};
-use us_render::{Calendar, Camera, Scene, Style, pick_ground, project};
+use us_render::{Calendar, Camera, Scene, Style, project};
 use us_sim::{Phase, Sim, hall_sites};
 use winit::keyboard::KeyCode;
 
@@ -436,6 +436,8 @@ impl State {
         let cycle = self.settings.day_night;
         let Some(g) = self.game.as_mut() else { return };
         g.cam.keys(dt, pan, rot, fast);
+        let (gx, gy) = g.cam.goal_xy();
+        g.cam.follow_ground(g.live.ground_at(gx, gy));
         g.cam.update(dt);
         if let Some((b, t)) = g.banner.as_mut() {
             *t -= dt;
@@ -453,7 +455,14 @@ impl State {
                 let ppp = 1.0;
                 let mut best: Option<(f32, Pt)> = None;
                 for s in &g.sites {
-                    if let Some(p) = project(&view, Vec3::new(s.x as f32, s.y as f32, 0.0)) {
+                    if let Some(p) = project(
+                        &view,
+                        Vec3::new(
+                            s.x as f32,
+                            s.y as f32,
+                            g.live.ground_at(s.x as f32, s.y as f32),
+                        ),
+                    ) {
                         let sp = to_screen(p, w, h, ppp);
                         let d = ((sp.x - c.0).powi(2) + (sp.y - c.1).powi(2)).sqrt();
                         if best.is_none_or(|b| d < b.0) {
@@ -464,7 +473,7 @@ impl State {
                 if let Some((_, s)) = best {
                     g.place(s);
                 }
-            } else if let Some(p) = pick_ground(&view, ndc) {
+            } else if let Some(p) = g.live.scene.pick(&view, ndc) {
                 if g.ui.tool.is_some() {
                     g.place_tool(pt(p.x as f64, p.y as f64));
                 } else {
@@ -645,8 +654,13 @@ impl State {
             }
             0 if t > 1.5 => {
                 self.seed_text = "1".into();
-                if std::env::var("URBAN_SPRAWL_SMOKE_PRESET").is_ok_and(|v| v == "winding") {
-                    self.preset = Preset::Winding;
+                if let Ok(v) = std::env::var("URBAN_SPRAWL_SMOKE_SEED") {
+                    self.seed_text = v;
+                }
+                if let Ok(v) = std::env::var("URBAN_SPRAWL_SMOKE_PRESET")
+                    && let Some(p) = Preset::ALL.iter().find(|p| p.name() == v)
+                {
+                    self.preset = *p;
                 }
                 self.screen = Screen::Generating;
                 self.gen_wait = 0;
@@ -689,13 +703,14 @@ impl State {
             3 if t > s.secs => {
                 if let Some(g) = self.game.as_ref() {
                     eprintln!(
-                        "smoke: day {} built {} pop {} treasury {} chunks {} tris {} fps {:.1} worst-frame {:.0} ms sync max {:.1} ms avg {:.2} ms",
+                        "smoke: day {} built {} pop {} treasury {} chunks {} tris {} ground {} fps {:.1} worst-frame {:.0} ms sync max {:.1} ms avg {:.2} ms",
                         g.sim.day,
                         g.sim.built_count(),
                         g.sim.population(),
                         g.sim.treasury,
                         g.live.scene.chunks.len(),
                         g.live.triangles,
+                        g.live.ground_triangles(),
                         self.fps,
                         s.worst * 1000.0,
                         s.sync_max_ms,
@@ -1021,7 +1036,8 @@ impl State {
                 .sites
                 .iter()
                 .map(|s| {
-                    project(&view, Vec3::new(s.x as f32, s.y as f32, 0.0))
+                    let z = g.live.ground_at(s.x as f32, s.y as f32);
+                    project(&view, Vec3::new(s.x as f32, s.y as f32, z))
                         .map(|p| to_screen(p, w, h, ppp))
                 })
                 .collect();
@@ -1056,7 +1072,11 @@ impl State {
                 }
                 Sel::Hall => (g.sim.hall, g.town.hall_radius as f32 + 6.0),
             };
-            let c = Vec3::new(pos.x as f32, pos.y as f32, 0.0);
+            let c = Vec3::new(
+                pos.x as f32,
+                pos.y as f32,
+                g.live.ground_at(pos.x as f32, pos.y as f32),
+            );
             if let (Some(a), Some(b)) = (
                 project(&view, c),
                 project(&view, c + Vec3::new(r, 0.0, 0.0)),
@@ -1602,9 +1622,13 @@ impl State {
         }
 
         let help = if cfg!(target_os = "ios") {
-            "DRAG TO PAN   PINCH TO ZOOM   TWIST TO ROTATE   TWO FINGERS UP OR DOWN TO TILT   TAP TO SELECT   HOLD TO ASK WHY"
+            if compact {
+                "DRAG PAN   PINCH ZOOM   TWIST ROTATE   TAP SELECT"
+            } else {
+                "DRAG TO PAN   PINCH TO ZOOM   TWIST TO ROTATE   TWO FINGERS UP OR DOWN TO TILT   TAP TO SELECT   HOLD TO ASK WHY"
+            }
         } else if compact {
-            "DRAG PAN   WHEEL ZOOM   TAP SELECT"
+            "DRAG PAN   PINCH ZOOM   TWIST ROTATE   TAP SELECT"
         } else {
             "WASD PAN   Q E ROTATE   RIGHT DRAG ORBIT   WHEEL ZOOM   0 1 2 3 SPEED   SPACE PAUSE   P K O B G J V PANELS   M MAP VIEW"
         };
@@ -1615,7 +1639,7 @@ impl State {
                     vec2(
                         0.0,
                         if compact {
-                            -(panels::DOCK_H + 4.0)
+                            -(panels::dock_h(ctx) + 4.0)
                         } else {
                             -6.0
                         },
@@ -1630,7 +1654,7 @@ impl State {
                             ui.add(
                                 egui::Label::new(
                                     RichText::new(help)
-                                        .font(pixel(10.0))
+                                        .font(pixel(if compact { 11.0 } else { 10.0 }))
                                         .color(Color32::from_rgb(200, 208, 222)),
                                 )
                                 .wrap(),
