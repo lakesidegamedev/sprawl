@@ -18,6 +18,7 @@ mod dynamic;
 mod econ;
 mod growth;
 mod ledger_view;
+mod limits;
 mod model;
 mod pressure;
 mod roadnet;
@@ -45,12 +46,14 @@ pub const ABANDON_ABOVE_X10: u32 = 140;
 /// Revealed, unbuilt lots the town keeps ahead of itself.
 /// Empty lots kept ready ahead of the builders. Towns are about twice as dense as they were, so
 /// the reserve is twice as big.
-const RESERVE: usize = 60;
+const RESERVE: usize = 36;
 /// Builders start this many times as many buildings a day as before the density change, because
 /// each neighbourhood now holds about twice as many lots.
 const PACE: f64 = 2.0;
 const EMPTY_DAYS_BEFORE_CLEARING: i32 = 150;
-pub const START_TREASURY: i64 = 600_000;
+pub const START_TREASURY: i64 = 900_000;
+/// Streets this near the town hall are standing on day 0.
+const START_RADIUS_M: i64 = 320;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -357,6 +360,19 @@ pub struct Sim {
     pub(crate) peak_population: i64,
     /// Days fires burned buildings down for lack of fire cover, for the approval rating.
     pub(crate) fire_days: Vec<i32>,
+    /// Arrivals waiting for a building to be started for them, per class: people for homes,
+    /// jobs for shops and industry.
+    pub(crate) queue: ByClass<f64>,
+    /// Per `Capacity`: full, so growth that needs it is held back.
+    pub(crate) stalled: [bool; 4],
+    /// Per `Capacity`: past the warning level.
+    pub(crate) warned: [bool; 4],
+    /// Families are leaving for lack of jobs.
+    pub(crate) jobless: bool,
+    /// Day a street was last started for want of one kind of lot.
+    pub(crate) last_kind_street: i32,
+    /// Dollars the town has paid for new streets and utility connections so far.
+    pub(crate) growth_spent: i64,
 }
 
 impl Sim {
@@ -448,6 +464,12 @@ impl Sim {
             },
             peak_population: 0,
             fire_days: Vec::new(),
+            queue: ByClass::all(0.0),
+            stalled: [false; 4],
+            warned: [false; 4],
+            jobless: false,
+            last_kind_street: -1000,
+            growth_spent: 0,
         };
         // reveal order: nearest to the hall first
         let mut ord: Vec<(i64, usize)> = (0..n_add)
@@ -682,6 +704,12 @@ impl Sim {
         for c in Class::ALL {
             f(self.tax.get(c) as u64);
         }
+        for c in Class::ALL {
+            f(self.queue.get(c).to_bits());
+        }
+        for st in self.stalled {
+            f(st as u64);
+        }
         f(self.runs.len() as u64);
         for r in &self.runs {
             f(r.class as u64);
@@ -745,10 +773,20 @@ impl Sim {
             return false;
         };
         self.open_addition(a);
-        for s in 0..self.streets.len() {
-            if self.streets[s].addition == Some(a) && self.streets[s].state == StreetState::Planned
-            {
+        // the starting town is the streets near the hall; the rest is built as the town grows
+        let mut own: Vec<(i64, usize)> = (0..self.streets.len())
+            .filter(|&s| {
+                self.streets[s].addition == Some(a)
+                    && self.streets[s].state == StreetState::Planned
+                    && self.streets[s].class != RoadClass::Alley
+            })
+            .map(|s| ((self.streets[s].mid.dist(self.hall) * 10.0) as i64, s))
+            .collect();
+        own.sort();
+        for (k, &(d, s)) in own.iter().enumerate() {
+            if k < 4 || d < START_RADIUS_M * 10 {
                 self.open_street(s);
+                self.open_alleys_beside_now(s);
             }
         }
         true
@@ -762,6 +800,9 @@ impl Sim {
         let mut best: Option<(f64, usize)> = None;
         for (vi, &li) in self.vacant.iter().enumerate() {
             let l = &self.lots[li];
+            if !self.can_start(l.kind) {
+                continue;
+            }
             let noise = roll(self.seed, li as u64, 77) * 140.0;
             // builders prefer valuable land near the hall, in the class the town wants most
             let lv = self.lot_value.get(li).copied().unwrap_or(0.5) as f64;
@@ -773,8 +814,17 @@ impl Sim {
                 best = Some((score, vi));
             }
         }
-        let (_, vi) = best.unwrap();
+        let Some((_, vi)) = best else {
+            return false;
+        };
         let li = self.vacant.swap_remove(vi);
+        let kind = self.lots[li].kind;
+        self.take_units(kind, Sim::units_at(kind, 1));
+        if class_of(kind).is_some() {
+            let cost = self.hookup_cost(kind);
+            self.treasury -= cost;
+            self.growth_spent += cost;
+        }
         let days =
             kind_build_days(self.lots[li].kind) + (roll(self.seed, li as u64, 5) * 10.0) as i32;
         self.lots[li].phase = Phase::Building {
@@ -848,7 +898,9 @@ impl Sim {
                 }
                 Phase::Empty { since } => {
                     if !over {
-                        if roll(self.seed ^ 0xbeef, i as u64, day as u64) < 0.01 {
+                        let no_work =
+                            self.jobless && class_of(self.lots[i].kind) == Some(Class::Homes);
+                        if !no_work && roll(self.seed ^ 0xbeef, i as u64, day as u64) < 0.01 {
                             self.lots[i].phase = Phase::Built {
                                 since: day,
                                 tax_x10: rate,
@@ -1108,7 +1160,7 @@ mod tests {
         let low = run(&town, 30, 500);
         let high = run(&town, 120, 500);
         assert!(
-            low.built_count() > high.built_count() * 3 / 2,
+            low.built_count() > high.built_count() * 11 / 10,
             "low {} high {}",
             low.built_count(),
             high.built_count()
@@ -1171,8 +1223,8 @@ mod tests {
     fn town_keeps_growing_and_pays_something() {
         let town = generate(Preset::Grid, 3);
         let s = run(&town, 70, 1500);
-        assert!(s.built_count() > 400, "built {}", s.built_count());
-        assert!(s.population() > 1000);
+        assert!(s.built_count() > 80, "built {}", s.built_count());
+        assert!(s.population() > 500);
         eprintln!(
             "day {} built {} pop {} treasury {} flow {:?} left {}",
             s.day,
@@ -1205,3 +1257,6 @@ mod tests_save;
 
 #[cfg(test)]
 mod tests_streets;
+
+#[cfg(test)]
+mod tests_limits;

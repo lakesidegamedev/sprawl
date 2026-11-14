@@ -309,7 +309,23 @@ impl Sim {
             start: self.day,
             end: self.day + days,
         };
+        // the town pays for the street now; the taxes it brings come later
+        let cost = self.street_cost(s);
+        self.treasury -= cost;
+        self.growth_spent += cost;
         self.roads_version += 1;
+    }
+
+    /// What building a street costs the treasury.
+    pub(crate) fn street_cost(&self, s: usize) -> i64 {
+        let st = &self.streets[s];
+        let per_m = match st.class {
+            RoadClass::Alley => 20.0,
+            RoadClass::Local => 70.0,
+            RoadClass::Collector => 120.0,
+            _ => 200.0,
+        };
+        (st.len * per_m) as i64 * self.rules.difficulty.cost_pct() / 100
     }
 
     /// Days a street takes to build.
@@ -329,7 +345,13 @@ impl Sim {
     /// to build on.
     pub(crate) fn step_streets(&mut self) {
         let day = self.day;
-        let (mut building, mut pending) = (0usize, 0usize);
+        let mut building = 0usize;
+        // lots ready or coming, per class (homes, shops, industry) and of any other kind
+        let mut have = [0usize; 4];
+        let slot = |k: LotKind| class_of(k).map_or(3, Class::index);
+        for &v in &self.vacant {
+            have[slot(self.lots[v].kind)] += 1;
+        }
         for s in 0..self.streets.len() {
             if let StreetState::Building { end, .. } = self.streets[s].state {
                 if day >= end {
@@ -338,18 +360,46 @@ impl Sim {
                     continue;
                 }
                 building += 1;
-                pending += self.streets[s]
-                    .lots
-                    .iter()
-                    .filter(|&&i| {
-                        let l = &self.lots[i as usize];
-                        l.phase == Phase::Hidden && l.addition != usize::MAX
-                    })
-                    .count();
+                for &i in &self.streets[s].lots {
+                    let l = &self.lots[i as usize];
+                    if l.phase == Phase::Hidden && l.addition != usize::MAX {
+                        have[slot(l.kind)] += 1;
+                    }
+                }
             }
         }
-        if building >= MAX_BUILDING || self.vacant.len() + pending >= RESERVE {
+        // short of room: too few lots overall, or too few of a kind that newcomers are waiting for
+        // newcomers waiting for a kind of lot that the town has none of: head for the nearest
+        // land of that kind, one street a month
+        let wanted_class = if day - self.last_kind_street >= 30 {
+            Class::ALL.into_iter().find(|&c| {
+                !self.class_blocked(c) && self.queue.get(c) >= 6.0 && have[c.index()] == 0
+            })
+        } else {
+            None
+        };
+        let short = have.iter().sum::<usize>() < RESERVE || wanted_class.is_some();
+        if building >= MAX_BUILDING || !short {
             return;
+        }
+        let mut target: Option<Vec<Pt>> = None;
+        if let Some(c) = wanted_class {
+            self.last_kind_street = day;
+            let pts: Vec<Pt> = self
+                .lots
+                .iter()
+                .filter(|l| {
+                    l.phase == Phase::Hidden
+                        && l.addition != usize::MAX
+                        && class_of(l.kind) == Some(c)
+                })
+                .map(|l| l.pos)
+                .collect();
+            if !pts.is_empty() {
+                target = Some(pts);
+            } else if have.iter().sum::<usize>() >= RESERVE {
+                return;
+            }
         }
         // a neighbourhood with no streets of its own opens in its turn
         while let Some(&a) = self.order.get(self.next_reveal) {
@@ -362,9 +412,22 @@ impl Sim {
                 break;
             }
         }
-        if let Some(s) = self.pick_street() {
+        if let Some(s) = self.pick_street(target.as_deref()) {
             let days = self.build_days(s);
             self.begin_street(s, days);
+        }
+    }
+
+    /// Alleys beside a street of the starting town stand at once.
+    pub(crate) fn open_alleys_beside_now(&mut self, s: usize) {
+        for k in 0..self.streets[s].adj.len() {
+            let n = self.streets[s].adj[k] as usize;
+            if self.streets[n].class == RoadClass::Alley
+                && self.streets[n].state == StreetState::Planned
+                && self.streets[n].addition.is_some_and(|a| self.revealed[a])
+            {
+                self.open_street(n);
+            }
         }
     }
 
@@ -386,7 +449,7 @@ impl Sim {
     /// The next street to build: one that touches the roads already standing, among the
     /// neighbourhoods already started and the next one in line. Near the town hall and on the
     /// bigger streets first, with some noise so the edge stays ragged.
-    fn pick_street(&mut self) -> Option<usize> {
+    fn pick_street(&mut self, target: Option<&[Pt]>) -> Option<usize> {
         let touches_open = |me: &Sim, s: usize| {
             me.streets[s].adj.iter().any(|&n| {
                 let o = &me.streets[n as usize];
@@ -424,6 +487,15 @@ impl Sim {
                 }
             }
             return best.map(|b| b.1);
+        }
+        if let Some(pts) = target {
+            // toward the land that is wanted: the candidate nearest to it
+            let near = |p: Pt| pts.iter().map(|q| q.dist(p)).fold(f64::MAX, f64::min);
+            return cands
+                .iter()
+                .map(|&s| (near(self.streets[s].mid), s))
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|b| b.1);
         }
         let gate = cands
             .iter()

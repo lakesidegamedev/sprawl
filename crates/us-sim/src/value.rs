@@ -98,7 +98,11 @@ impl Sim {
                     if !matches!(l.phase, Phase::Built { .. }) {
                         continue;
                     }
-                    let svc = l.civic.map(CivicKind::service).or(service_of_kind(l.kind));
+                    let svc = match l.civic {
+                        Some(CivicKind::Power) => None,
+                        Some(c) => Some(c.service()),
+                        None => service_of_kind(l.kind),
+                    };
                     if svc != Some(s) {
                         continue;
                     }
