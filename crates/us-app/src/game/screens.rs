@@ -9,7 +9,7 @@ use crate::theme::{
 };
 use egui::{Align2, Color32, Context, RichText, Sense, Stroke, Ui, vec2};
 use us_gen::Preset;
-use us_sim::{ElectionResult, GameOverReason, Issue, Rules};
+use us_sim::{Difficulty, ElectionResult, GameOverReason, Issue, Rules};
 
 const MUTED: Color32 = Color32::from_rgb(170, 176, 196);
 const GOLD: Color32 = ACCENT;
@@ -141,6 +141,13 @@ impl State {
             for m in Mode::ALL {
                 if choice(ui, self.mode == m, m.label(), m.blurb()) {
                     self.mode = m;
+                }
+            }
+            ui.add_space(4.0);
+            label(ui, "DIFFICULTY", 14.0);
+            for d in Difficulty::ALL {
+                if choice(ui, self.difficulty == d, d.label(), d.blurb()) {
+                    self.difficulty = d;
                 }
             }
             ui.add_space(4.0);

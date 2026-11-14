@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use us_gen::{LotKind, Preset, Pt, Town, generate, pt};
 use us_render::{Calendar, Camera, Scene, Style, project};
-use us_sim::{Phase, Sim, hall_sites};
+use us_sim::{Difficulty, Phase, Sim, hall_sites};
 use winit::keyboard::KeyCode;
 
 mod charts;
@@ -175,6 +175,7 @@ pub struct State {
     account_note: Arc<Mutex<String>>,
     account_busy: Arc<AtomicBool>,
     mode: Mode,
+    difficulty: Difficulty,
     saves: Vec<crate::saves::SaveInfo>,
     continue_info: Option<crate::saves::SaveInfo>,
     /// The load screen was opened from a running game, so Back returns to it.
@@ -276,6 +277,7 @@ impl State {
             account_note: Arc::new(Mutex::new(String::new())),
             account_busy: Arc::new(AtomicBool::new(false)),
             mode: Mode::Standard,
+            difficulty: Difficulty::Normal,
             saves: Vec::new(),
             continue_info: None,
             load_from_game: false,
@@ -573,7 +575,7 @@ impl State {
             false,
             sites,
             cam,
-            self.mode.rules(),
+            self.mode.rules().with_difficulty(self.difficulty),
             name,
         ));
         self.screen = Screen::Game;

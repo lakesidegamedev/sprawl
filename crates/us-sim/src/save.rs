@@ -14,7 +14,7 @@ use us_gen::{Preset, generate};
 
 const MAGIC: &[u8; 4] = b"USSV";
 /// The save format this build writes and reads.
-pub const SAVE_VERSION: u16 = 1;
+pub const SAVE_VERSION: u16 = 3;
 const HEADER_LEN: usize = 4 + 2 + 8 + 8;
 /// How many autosave files are kept.
 pub const AUTOSAVE_SLOTS: usize = 3;
@@ -263,7 +263,7 @@ const ROAD_CLASSES: [RoadClass; 6] = [
     RoadClass::Alley,
     RoadClass::Rail,
 ];
-const EVENT_KINDS: [EventKind; 12] = [
+const EVENT_KINDS: [EventKind; 13] = [
     EventKind::Neighborhood,
     EventKind::Milestone,
     EventKind::Budget,
@@ -276,6 +276,7 @@ const EVENT_KINDS: [EventKind; 12] = [
     EventKind::Decline,
     EventKind::Election,
     EventKind::GameOver,
+    EventKind::Limit,
 ];
 
 fn code<T: PartialEq + Copy>(all: &[T], v: T) -> u8 {
@@ -547,6 +548,19 @@ impl Sim {
             if let Some(a) = r.addition {
                 w.usize(a);
             }
+            w.u32(r.street);
+        }
+        w.usize(self.streets.len());
+        for st in &self.streets {
+            match st.state {
+                StreetState::Planned => w.u8(0),
+                StreetState::Building { start, end } => {
+                    w.u8(1);
+                    w.i32(start);
+                    w.i32(end);
+                }
+                StreetState::Open => w.u8(2),
+            }
         }
         w.usize(self.road_cost_per_month.len());
         for &c in &self.road_cost_per_month {
@@ -651,6 +665,7 @@ impl Sim {
         w.bool(self.rules.bankruptcy);
         w.bool(self.rules.elections);
         w.bool(self.rules.unlimited_money);
+        w.u8(code(&Difficulty::ALL, self.rules.difficulty));
         w.bool(self.game_over.is_some());
         if let Some(g) = &self.game_over {
             w.i32(g.day);
@@ -693,6 +708,16 @@ impl Sim {
         for &d in &self.fire_days {
             w.i32(d);
         }
+        for c in Class::ALL {
+            w.f64(self.queue.get(c));
+        }
+        for i in 0..4 {
+            w.bool(self.stalled[i]);
+            w.bool(self.warned[i]);
+        }
+        w.bool(self.jobless);
+        w.i32(self.last_kind_street);
+        w.i64(self.growth_spent);
 
         let body = w.0;
         let mut out = Vec::with_capacity(HEADER_LEN + body.len());
@@ -800,13 +825,42 @@ impl Sim {
             if addition.is_some_and(|a| a >= s.revealed.len()) {
                 return Err(LoadError::Invalid("road addition"));
             }
+            let street = r.u32()?;
             runs.push(RoadRun {
                 class,
                 points,
                 addition,
+                street,
             });
         }
         s.runs = runs;
+        let n = r.len(1)?;
+        if n < s.streets.len() {
+            return Err(LoadError::Invalid("streets"));
+        }
+        for i in 0..n {
+            let state = match r.u8()? {
+                0 => StreetState::Planned,
+                1 => StreetState::Building {
+                    start: r.i32()?,
+                    end: r.i32()?,
+                },
+                2 => StreetState::Open,
+                _ => return Err(LoadError::Invalid("street state")),
+            };
+            if i == s.streets.len() {
+                // a connector the traffic model added after the town was planned
+                s.streets.push(streets::Street::open_connector(
+                    RoadClass::Collector,
+                    s.hall,
+                    s.hall,
+                ));
+            }
+            s.streets[i].state = state;
+        }
+        if s.runs.iter().any(|r| r.street as usize >= s.streets.len()) {
+            return Err(LoadError::Invalid("road street"));
+        }
         let n = r.len(8)?;
         s.road_cost_per_month = (0..n).map(|_| r.i64()).collect::<Res<_>>()?;
         let n = r.len(8)?;
@@ -929,6 +983,7 @@ impl Sim {
             bankruptcy: r.bool()?,
             elections: r.bool()?,
             unlimited_money: r.bool()?,
+            difficulty: decode(&Difficulty::ALL, r.u8()?, "difficulty")?,
         };
         s.game_over = if r.bool()? {
             let day = r.i32()?;
@@ -977,6 +1032,16 @@ impl Sim {
         s.peak_population = r.i64()?;
         let n = r.len(4)?;
         s.fire_days = (0..n).map(|_| r.i32()).collect::<Res<_>>()?;
+        for c in Class::ALL {
+            s.queue.set(c, r.f64()?);
+        }
+        for i in 0..4 {
+            s.stalled[i] = r.bool()?;
+            s.warned[i] = r.bool()?;
+        }
+        s.jobless = r.bool()?;
+        s.last_kind_street = r.i32()?;
+        s.growth_spent = r.i64()?;
 
         // the sizes the rest of the code indexes by
         let nl = s.lots.len();
@@ -999,7 +1064,7 @@ impl Sim {
             let roads: Vec<(RoadClass, Vec<Pt>)> = s
                 .runs
                 .iter()
-                .filter(|r| r.addition.is_none_or(|a| s.revealed[a]))
+                .filter(|r| s.street_open(r.street))
                 .map(|r| (r.class, r.points.clone()))
                 .collect();
             s.roadnet = Some(roadnet::RoadNet::build(&roads));

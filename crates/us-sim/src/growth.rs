@@ -62,7 +62,11 @@ impl Sim {
                 && self.class_demand.get(class) >= 0.2
                 && self.services_avg(i) >= 0.1 * (l.level as f64 - 1.0)
                 && roll_m < UPGRADE_CHANCE
+                && self.can_upgrade(l.kind, l.level)
             {
+                let (k, lv) = (l.kind, l.level);
+                self.take_units(k, Sim::units_at(k, lv + 1) - Sim::units_at(k, lv));
+                let l = &self.lots[i];
                 let days = 30 + 15 * l.level as i32 + (roll_m * 100.0) as i32 % 15;
                 let pos = l.pos;
                 let next = l.level + 1;

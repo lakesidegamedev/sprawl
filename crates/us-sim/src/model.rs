@@ -213,16 +213,20 @@ pub enum CivicKind {
     Clinic,
     Park,
     Water,
+    /// Supplies power; a town cannot grow past the plants it has built. Until the renderer has a
+    /// model it is drawn with the sports field look.
+    Power,
 }
 
 impl CivicKind {
-    pub const ALL: [CivicKind; 6] = [
+    pub const ALL: [CivicKind; 7] = [
         CivicKind::School,
         CivicKind::Police,
         CivicKind::Fire,
         CivicKind::Clinic,
         CivicKind::Park,
         CivicKind::Water,
+        CivicKind::Power,
     ];
 
     pub fn label(self) -> &'static str {
@@ -233,6 +237,7 @@ impl CivicKind {
             CivicKind::Clinic => "Clinic",
             CivicKind::Park => "Park",
             CivicKind::Water => "Water tower",
+            CivicKind::Power => "Power plant",
         }
     }
 
@@ -245,6 +250,7 @@ impl CivicKind {
             CivicKind::Clinic => 80_000,
             CivicKind::Park => 30_000,
             CivicKind::Water => 60_000,
+            CivicKind::Power => 250_000,
         }
     }
 
@@ -257,6 +263,7 @@ impl CivicKind {
             CivicKind::Clinic => 2200,
             CivicKind::Park => 400,
             CivicKind::Water => 800,
+            CivicKind::Power => 4000,
         }
     }
 
@@ -267,7 +274,8 @@ impl CivicKind {
             CivicKind::Fire => Service::Fire,
             CivicKind::Clinic => Service::Health,
             CivicKind::Park => Service::Parks,
-            CivicKind::Water => Service::Water,
+            // a utility: it covers nothing, only adds capacity (see `Capacity`)
+            CivicKind::Water | CivicKind::Power => Service::Water,
         }
     }
 
@@ -280,6 +288,7 @@ impl CivicKind {
             CivicKind::Clinic => 10.0,
             CivicKind::Park => 14.0,
             CivicKind::Water => 7.0,
+            CivicKind::Power => 16.0,
         }
     }
 
@@ -292,6 +301,7 @@ impl CivicKind {
             CivicKind::Clinic => LotKind::Church,
             CivicKind::Park => LotKind::Park,
             CivicKind::Water => LotKind::Water,
+            CivicKind::Power => LotKind::Sports,
         }
     }
 }
@@ -391,6 +401,8 @@ pub enum EventKind {
     Decline,
     Election,
     GameOver,
+    /// A capacity ran short or came back (see `Capacity`).
+    Limit,
 }
 
 /// A dated line for the news feed.
@@ -443,5 +455,153 @@ impl Sample {
 
     pub fn spending_total(&self) -> i64 {
         self.spending.iter().sum::<i64>() + self.admin + self.debt_service
+    }
+}
+
+/// How hard the town is to grow, chosen at the start of a game. It scales how fast people and
+/// firms arrive, how much each building adds to the town's capacities, and what new streets and
+/// connections cost the treasury.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Difficulty {
+    Easy,
+    Normal,
+    Hard,
+}
+
+impl Difficulty {
+    pub const ALL: [Difficulty; 3] = [Difficulty::Easy, Difficulty::Normal, Difficulty::Hard];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Difficulty::Easy => "Easy",
+            Difficulty::Normal => "Normal",
+            Difficulty::Hard => "Hard",
+        }
+    }
+
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Difficulty::Easy => {
+                "People and firms arrive faster, utilities stretch further and new streets cost less."
+            }
+            Difficulty::Normal => "A well run town reaches about 10,000 people in 10 to 15 years.",
+            Difficulty::Hard => {
+                "People arrive slowly, utilities run out sooner and growth costs the treasury more."
+            }
+        }
+    }
+
+    /// Speed of arrivals, percent of normal.
+    pub fn arrival_pct(self) -> i64 {
+        match self {
+            Difficulty::Easy => 135,
+            Difficulty::Normal => 100,
+            Difficulty::Hard => 75,
+        }
+    }
+
+    /// What one water tower, school, clinic or power plant carries, percent of normal.
+    pub fn capacity_pct(self) -> i64 {
+        match self {
+            Difficulty::Easy => 125,
+            Difficulty::Normal => 100,
+            Difficulty::Hard => 85,
+        }
+    }
+
+    /// What new streets and connections cost the town, percent of normal.
+    pub fn cost_pct(self) -> i64 {
+        match self {
+            Difficulty::Easy => 60,
+            Difficulty::Normal => 100,
+            Difficulty::Hard => 140,
+        }
+    }
+}
+
+/// Something a town cannot grow past without building more of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Capacity {
+    /// Water towers. Everything that grows needs it.
+    Water,
+    /// Power plants. Everything that grows needs it.
+    Power,
+    /// School seats for the town's children. Homes stop growing when they are full.
+    Schools,
+    /// Clinic capacity. Homes stop growing when it is full.
+    Health,
+}
+
+impl Capacity {
+    pub const ALL: [Capacity; 4] = [
+        Capacity::Water,
+        Capacity::Power,
+        Capacity::Schools,
+        Capacity::Health,
+    ];
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Capacity::Water => "Water supply",
+            Capacity::Power => "Power",
+            Capacity::Schools => "School seats",
+            Capacity::Health => "Clinics",
+        }
+    }
+
+    /// What to build when it is full.
+    pub fn build_hint(self) -> &'static str {
+        match self {
+            Capacity::Water => "Build a water tower.",
+            Capacity::Power => "Build a power plant.",
+            Capacity::Schools => "Build a school.",
+            Capacity::Health => "Build a clinic.",
+        }
+    }
+
+    /// The civic building that adds to it.
+    pub fn civic(self) -> CivicKind {
+        match self {
+            Capacity::Water => CivicKind::Water,
+            Capacity::Power => CivicKind::Power,
+            Capacity::Schools => CivicKind::School,
+            Capacity::Health => CivicKind::Clinic,
+        }
+    }
+
+    /// The news line when growth stalls.
+    pub fn stall_text(self) -> String {
+        let what = match self {
+            Capacity::Water => "the water supply is full",
+            Capacity::Power => "the power supply is full",
+            Capacity::Schools => "the schools are full",
+            Capacity::Health => "the clinics are full",
+        };
+        format!("Growth has stalled: {what}. {}", self.build_hint())
+    }
+}
+
+/// How much of a capacity the town uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapacityStatus {
+    pub capacity: Capacity,
+    /// What the town needs now.
+    pub demand: i64,
+    /// What it has.
+    pub supply: i64,
+}
+
+impl CapacityStatus {
+    /// Demand over supply; above 1.0 the town is short.
+    pub fn ratio(&self) -> f64 {
+        self.demand as f64 / self.supply.max(1) as f64
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.demand >= self.supply
     }
 }

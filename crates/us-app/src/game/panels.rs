@@ -648,7 +648,7 @@ impl Game {
                     }
                 }
                 "civic" => {
-                    let kind = CivicKind::ALL[n.min(5)];
+                    let kind = CivicKind::ALL[n.min(CivicKind::ALL.len() - 1)];
                     let found = self
                         .sim
                         .lots()
@@ -1258,6 +1258,31 @@ impl Game {
                 Color32::from_rgb(170, 176, 196),
             );
             ui.add_space(4.0);
+            // what the town can carry: when one is full, growth that needs it stops
+            for st in self.sim.capacities() {
+                let full = st.is_full();
+                lab_c(
+                    ui,
+                    format!(
+                        "{}: {} of {} used{}",
+                        st.capacity.label(),
+                        st.demand,
+                        st.supply,
+                        if full {
+                            ". Full: growth is held back."
+                        } else {
+                            ""
+                        }
+                    ),
+                    11.0,
+                    if full {
+                        ORANGE
+                    } else {
+                        Color32::from_rgb(170, 176, 196)
+                    },
+                );
+            }
+            ui.add_space(4.0);
             for k in CivicKind::ALL {
                 let on = self.ui.tool == Some(k);
                 let can = self.sim.treasury >= k.cost();
@@ -1833,6 +1858,7 @@ impl Game {
                             EventKind::Decline => ("Decline", CORAL),
                             EventKind::Election => ("Election", GOLD),
                             EventKind::GameOver => ("Game over", CORAL),
+                            EventKind::Limit => ("Limit", ORANGE),
                         };
                         ui.horizontal(|ui| {
                             lab_c(

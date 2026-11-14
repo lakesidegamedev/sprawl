@@ -89,8 +89,9 @@ fn grow_params() -> GrowParams {
 }
 
 impl Sim {
+    /// Whether road run `i` is open to traffic (a street still being built is not).
     pub(crate) fn run_visible_idx(&self, i: usize) -> bool {
-        self.runs[i].addition.is_none_or(|a| self.revealed[a])
+        self.road_open(i)
     }
 
     /// Bumped whenever a road is widened or added, so a renderer knows to redraw the roads.
@@ -337,6 +338,7 @@ impl Sim {
                 class,
                 points,
                 addition: run.addition,
+                street: run.street,
             }),
         );
         self.run_traffic.splice(r..=r, std::iter::repeat_n(tr, n));
@@ -355,10 +357,14 @@ impl Sim {
         }
         let n_add = self.revealed.len();
         self.road_cost_per_month[n_add] += (pa.dist(pb) * road_cost_per_m(class) * 3.0) as i64;
+        let street = self.streets.len() as u32;
+        self.streets
+            .push(streets::Street::open_connector(class, pa, pb));
         self.runs.push(RoadRun {
             class,
             points: vec![pa, pb],
             addition: None,
+            street,
         });
         self.run_traffic.push(RoadTraffic::default());
         // keep the hidden, never-built land clear of the new road
