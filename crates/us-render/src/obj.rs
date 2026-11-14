@@ -1,7 +1,29 @@
 //! Model builder: a list of flat polygons in local metres (x east, y north, z up), front door
 //! facing south (-y). Port of the mockup kit's `Obj`.
 
+use crate::land::Land;
 use crate::mesh::{ID_NONE, Mesh};
+
+/// Vertices of a model at or below this height (metres) follow the ground under them.
+pub const GROUND_LEVEL: f32 = 0.3;
+
+/// Where a model stands on hills: floor height `z`, with everything near its base following the
+/// land so aprons and wall feet meet the slope.
+#[derive(Clone, Copy)]
+pub struct Sit<'a> {
+    pub land: &'a Land,
+    pub z: f32,
+}
+
+impl Sit<'_> {
+    fn place(&self, wx: f32, wy: f32, lz: f32, local_z: f32) -> f32 {
+        if local_z <= GROUND_LEVEL {
+            self.land.height(wx, wy) + lz + 0.02
+        } else {
+            self.z + lz
+        }
+    }
+}
 
 pub type V3 = [f32; 3];
 pub type Rgb = [u8; 3];
@@ -739,6 +761,11 @@ impl Obj {
     /// Emit the far (level of detail) form: only the big shaded faces, no windows, doors, signs
     /// or small fittings, and no ink outline. For buildings that are a few pixels on screen.
     pub fn emit_far(&self, mesh: &mut Mesh, x: f32, y: f32, theta: f32) {
+        self.emit_far_on(mesh, x, y, theta, None);
+    }
+
+    /// Like `emit_far`, standing on hills.
+    pub fn emit_far_on(&self, mesh: &mut Mesh, x: f32, y: f32, theta: f32, sit: Option<Sit>) {
         let (s, c) = (libm::sinf(theta), libm::cosf(theta));
         let mut pts: Vec<V3> = Vec::with_capacity(8);
         for p in &self.polys {
@@ -751,11 +778,10 @@ impl Obj {
                 continue;
             }
             pts.clear();
-            pts.extend(
-                p.pts
-                    .iter()
-                    .map(|v| [x + c * v[0] - s * v[1], y + s * v[0] + c * v[1], v[2]]),
-            );
+            pts.extend(p.pts.iter().map(|v| {
+                let (wx, wy) = (x + c * v[0] - s * v[1], y + s * v[0] + c * v[1]);
+                [wx, wy, sit.map_or(v[2], |st| st.place(wx, wy, v[2], v[2]))]
+            }));
             mesh.push_poly(&pts, p.color, false, p.shadow, ID_NONE);
         }
     }
@@ -763,16 +789,30 @@ impl Obj {
     /// Emit into a mesh, moved to (x, y), turned by `theta` and scaled. `next_id` hands out the
     /// outline ids: one per outlined polygon.
     pub fn emit(&self, mesh: &mut Mesh, next_id: &mut u32, x: f32, y: f32, theta: f32, scale: f32) {
+        self.emit_on(mesh, next_id, x, y, theta, scale, None);
+    }
+
+    /// Like `emit`, standing on hills: see [`Sit`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit_on(
+        &self,
+        mesh: &mut Mesh,
+        next_id: &mut u32,
+        x: f32,
+        y: f32,
+        theta: f32,
+        scale: f32,
+        sit: Option<Sit>,
+    ) {
         let (s, c) = (libm::sinf(theta), libm::cosf(theta));
         let mut pts: Vec<V3> = Vec::with_capacity(8);
         for p in &self.polys {
             pts.clear();
             pts.extend(p.pts.iter().map(|v| {
-                [
-                    x + scale * (c * v[0] - s * v[1]),
-                    y + scale * (s * v[0] + c * v[1]),
-                    scale * v[2],
-                ]
+                let wx = x + scale * (c * v[0] - s * v[1]);
+                let wy = y + scale * (s * v[0] + c * v[1]);
+                let lz = scale * v[2];
+                [wx, wy, sit.map_or(lz, |st| st.place(wx, wy, lz, v[2]))]
             }));
             let id = if p.outline {
                 let id = *next_id;

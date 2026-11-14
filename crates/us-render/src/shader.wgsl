@@ -242,7 +242,25 @@ fn fs_main(v: VOut) -> FOut {
         col = mix(vec3<f32>(lum), col, 0.12);
     }
     var k = 1.0;
-    if (cel) {
+    if (cel && ground) {
+        // hillshade: stepped tones by how the slope faces the sun compared with level ground
+        let d = l - g.sun.z;
+        if (d > 0.03) {
+            k = 1.1;
+        } else if (d > 0.012) {
+            k = 1.05;
+        } else if (d > -0.012) {
+            k = 1.0;
+        } else if (d > -0.03) {
+            k = 0.93;
+        } else if (d > -0.055) {
+            k = 0.86;
+        } else if (d > -0.09) {
+            k = 0.78;
+        } else {
+            k = 0.7;
+        }
+    } else if (cel) {
         // top brightest, sun side, shade side: three steps
         if (n.z > 0.9) {
             k = 1.0;

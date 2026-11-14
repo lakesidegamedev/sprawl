@@ -221,6 +221,21 @@ pub fn build_lot_level(kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
     build_lot_level_in(Region::Mixed, kind, level, rng)
 }
 
+/// The model for one lot of a town of this preset at a building level from 1 to 5, in the
+/// preset's regional style and fitted to the lot's collision radius (metres).
+pub fn build_lot_level_for(
+    preset: us_gen::Preset,
+    kind: LotKind,
+    level: u8,
+    radius: f32,
+    rng: &mut Rng,
+) -> Obj {
+    kit::fit_to_lot(
+        build_lot_level_in(Region::of(preset), kind, level, rng),
+        radius,
+    )
+}
+
 /// The model for one lot at a building level from 1 to 5 in a region.
 pub fn build_lot_level_in(region: Region, kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
     let level = level.clamp(1, MAX_LEVEL);

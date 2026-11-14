@@ -1455,22 +1455,24 @@ fn light_matrix(scene: &Scene, view: &View, sun: Vec3, size: u32) -> (Mat4, f32,
         let (a, b) = (near.truncate() / near.w, far.truncate() / far.w);
         let dir = (b - a).normalize();
         let t = if dir.z < -0.02 {
-            (-a.z / dir.z).min(view.far)
+            crate::camera::ray_ground(a, dir, view.far, &scene.land).unwrap_or(view.far)
         } else {
             view.far
         };
         let p = a + dir * t;
-        pts.push(Vec3::new(
-            p.x.clamp(lim.0, lim.1),
-            p.y.clamp(lim.0, lim.1),
-            0.0,
-        ));
+        let (px, py) = (p.x.clamp(lim.0, lim.1), p.y.clamp(lim.0, lim.1));
+        pts.push(Vec3::new(px, py, scene.land.height(px, py)));
     }
-    let zmax = 70.0;
+    let (hmin, hmax) = pts
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.z), b.max(p.z)));
+    // on hills the ground between the sampled points can bulge a little either way
+    let slack = if scene.land.is_flat() { 0.0 } else { 8.0 };
+    let (zlo, zhi) = (hmin - slack, hmax + slack + 70.0);
     let mut corners = Vec::new();
     for p in &pts {
-        corners.push(*p);
-        corners.push(Vec3::new(p.x, p.y, zmax));
+        corners.push(Vec3::new(p.x, p.y, zlo));
+        corners.push(Vec3::new(p.x, p.y, zhi));
     }
     let centre = corners.iter().fold(Vec3::ZERO, |a, b| a + *b) / corners.len() as f32;
     let lv = Mat4::look_at_rh(centre + sun * 3000.0, centre, Vec3::Z);

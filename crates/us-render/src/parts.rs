@@ -258,6 +258,32 @@ pub fn wall_colours(m: Mat, rng: &mut Rng) -> (Rgb, Rgb) {
     }
 }
 
+/// Roof colour for shops, flats and offices: the usual mix, but a dark slate is rolled again so
+/// a street of them is not a row of black lids.
+pub fn roof_colour_civic(r: Region, rng: &mut Rng) -> Rgb {
+    for _ in 0..4 {
+        let c = roof_colour(r, rng);
+        let lum = (c[0] as u32 * 3 + c[1] as u32 * 6 + c[2] as u32) / 10;
+        if lum >= 108 {
+            return c;
+        }
+    }
+    // a light weathered tone with a tint of the last roll
+    let c = roof_colour(r, rng);
+    [
+        c[0].saturating_add(70).max(150),
+        c[1].saturating_add(60).max(140),
+        c[2].saturating_add(55).max(130),
+    ]
+}
+
+/// Flat roof deck colour that goes with a wall colour: a pale weathered grey with a tint of the
+/// wall, never the dark slate a flat roof used to get.
+pub fn deck_of(wall: Rgb) -> Rgb {
+    let m = |w: u8, g: u8| ((w as u32 + g as u32 * 2) / 3) as u8;
+    [m(wall[0], 168), m(wall[1], 164), m(wall[2], 158)]
+}
+
 pub fn roof_colour(r: Region, rng: &mut Rng) -> Rgb {
     let (tile, metal) = match r {
         Region::Sunbelt => (7, 1),
