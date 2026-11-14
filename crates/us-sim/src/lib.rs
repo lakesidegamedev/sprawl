@@ -21,6 +21,7 @@ mod ledger_view;
 mod model;
 mod pressure;
 mod roadnet;
+mod save;
 mod traffic;
 mod value;
 
@@ -28,6 +29,7 @@ pub use dynamic::Rival;
 pub use ledger_view::LedgerNow;
 pub use model::*;
 pub use pressure::*;
+pub use save::{AUTOSAVE_SLOTS, LoadError, SAVE_VERSION, autosave_path};
 pub use traffic::RoadTraffic;
 
 use us_gen::{LotKind, Pt, RoadClass, Town, Zone, pt};
@@ -1167,3 +1169,6 @@ mod tests_balance;
 
 #[cfg(test)]
 mod tests_pressure;
+
+#[cfg(test)]
+mod tests_save;
