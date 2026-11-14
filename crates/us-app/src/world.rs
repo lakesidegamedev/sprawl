@@ -77,6 +77,10 @@ pub struct LiveScene {
     road_dirty: Vec<Group>,
     roads_ver: u32,
     run_work: Vec<RunWork>,
+    /// Progress of each street the town is building now (from the simulation), by run.
+    build_prog: Vec<Option<f32>>,
+    /// The step of `build_prog` last drawn, 0 when not under construction.
+    build_step: Vec<u8>,
     prev_runs: Vec<PrevRun>,
     rev: u64,
     ground_chunks: usize,
@@ -368,6 +372,8 @@ impl LiveScene {
             road_dirty: Vec::new(),
             roads_ver: sim.roads_version(),
             run_work: vec![RunWork::default(); sim.road_runs().len()],
+            build_prog: vec![None; sim.road_runs().len()],
+            build_step: vec![0; sim.road_runs().len()],
             prev_runs: sim
                 .road_runs()
                 .iter()
@@ -425,9 +431,10 @@ impl LiveScene {
         let roads: Vec<RoadInfo> = sim
             .road_runs()
             .iter()
+            .enumerate()
             .zip(&works)
-            .map(|(r, &w)| {
-                let built = r.addition.is_none_or(|a| sim.is_revealed(a));
+            .map(|((i, r), &w)| {
+                let built = sim.road_visible(i);
                 RoadInfo {
                     class: r.class,
                     points: if built {
@@ -457,6 +464,9 @@ impl LiveScene {
 
     /// Roadworks progress 0 to 1 of a road run, `None` when no work is going on.
     fn works_progress(&self, run: usize, day: i32) -> Option<f32> {
+        if let Some(Some(p)) = self.build_prog.get(run) {
+            return Some(*p);
+        }
         let start = self.run_work.get(run)?.start?;
         let p = (day - start) as f32 / WORKS_DAYS as f32;
         (0.0..1.0).contains(&p).then_some(p)
@@ -504,7 +514,7 @@ impl LiveScene {
         let draws: Vec<RoadDraw> = runs
             .iter()
             .enumerate()
-            .filter(|(_, r)| r.addition == group)
+            .filter(|(i, r)| r.addition == group && sim.road_visible(*i))
             .map(|(i, r)| RoadDraw {
                 class: r.class,
                 points: r.points.as_slice(),
@@ -517,6 +527,14 @@ impl LiveScene {
                 .cul_de_sacs
                 .iter()
                 .filter(|c| c.addition == a)
+                // the bulb is drawn once the street that ends in it is there
+                .filter(|c| {
+                    runs.iter().enumerate().any(|(i, r)| {
+                        r.addition == group
+                            && sim.road_visible(i)
+                            && r.points.iter().any(|p| p.dist(c.pos) < 12.0)
+                    })
+                })
                 .map(|c| c.pos)
                 .collect(),
             None => Vec::new(),
@@ -574,6 +592,28 @@ impl LiveScene {
     fn sync_roads(&mut self, sim: &Sim) {
         let day = sim.day;
         let runs = sim.road_runs();
+        // streets the town is building: drawn as roadworks at the simulation's own progress, and
+        // redrawn when the progress moves a step or the street opens
+        let same_len = self.build_step.len() == runs.len();
+        let mut changed: Vec<Group> = Vec::new();
+        let mut steps = Vec::with_capacity(runs.len());
+        self.build_prog = (0..runs.len())
+            .map(|i| sim.road_build_state(i).map(|b| b.progress.min(0.999)))
+            .collect();
+        for (i, p) in self.build_prog.iter().enumerate() {
+            let step = p.map_or(0, |p| 1 + (p * WORKS_STEPS as f32) as u8);
+            if !same_len || self.build_step[i] != step {
+                changed.push(runs[i].addition);
+            }
+            steps.push(step);
+        }
+        self.build_step = steps;
+        if !changed.is_empty() {
+            self.geo_dirty = true;
+            for g in changed {
+                self.mark_roads(g);
+            }
+        }
         if sim.roads_version() != self.roads_ver || self.run_work.len() != runs.len() {
             self.roads_ver = sim.roads_version();
             // the roads as they were drawn last time: same order as the old `run_work`
@@ -589,13 +629,16 @@ impl LiveScene {
                 .collect();
             let old = OldRoads::new(&prev);
             let mut work = Vec::with_capacity(runs.len());
-            for r in runs {
+            for (ri, r) in runs.iter().enumerate() {
                 let probe = r.points.windows(2).next().map(|w| w[0].lerp(w[1], 0.5));
                 let was = probe.and_then(|p| old.at(p));
                 let w = match was {
                     Some((c, w)) if c == r.class => w,
                     Some(_) | None => {
-                        if r.addition.is_none_or(|a| sim.is_revealed(a)) && !prev.is_empty() {
+                        if r.addition.is_none_or(|a| sim.is_revealed(a))
+                            && !prev.is_empty()
+                            && sim.road_visible(ri)
+                        {
                             RunWork {
                                 start: Some(day),
                                 step: 255,
@@ -974,12 +1017,19 @@ mod tests {
         let mut sim = Sim::new(&town, hall, 1);
         let mut live = LiveScene::new(town, &sim, true);
         let (mut works, mut site, mut done) = (false, false, false);
+        // streets are always being built, so roadworks finish when a run that was under
+        // construction opens
+        let mut was_building: HashSet<usize> = HashSet::new();
         for _ in 0..2500 {
             sim.step_day();
             live.sync(&mut sim, 1.0e9);
             works |= live.works_place(&sim).is_some();
-            if works && live.works_place(&sim).is_none() {
-                done = true;
+            for i in 0..sim.road_runs().len() {
+                if sim.road_build_state(i).is_some() {
+                    was_building.insert(i);
+                } else if was_building.remove(&i) && sim.road_open(i) {
+                    done = true;
+                }
             }
             site |= sim
                 .lots()

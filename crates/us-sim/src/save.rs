@@ -14,7 +14,7 @@ use us_gen::{Preset, generate};
 
 const MAGIC: &[u8; 4] = b"USSV";
 /// The save format this build writes and reads.
-pub const SAVE_VERSION: u16 = 1;
+pub const SAVE_VERSION: u16 = 2;
 const HEADER_LEN: usize = 4 + 2 + 8 + 8;
 /// How many autosave files are kept.
 pub const AUTOSAVE_SLOTS: usize = 3;
@@ -547,6 +547,19 @@ impl Sim {
             if let Some(a) = r.addition {
                 w.usize(a);
             }
+            w.u32(r.street);
+        }
+        w.usize(self.streets.len());
+        for st in &self.streets {
+            match st.state {
+                StreetState::Planned => w.u8(0),
+                StreetState::Building { start, end } => {
+                    w.u8(1);
+                    w.i32(start);
+                    w.i32(end);
+                }
+                StreetState::Open => w.u8(2),
+            }
         }
         w.usize(self.road_cost_per_month.len());
         for &c in &self.road_cost_per_month {
@@ -800,13 +813,42 @@ impl Sim {
             if addition.is_some_and(|a| a >= s.revealed.len()) {
                 return Err(LoadError::Invalid("road addition"));
             }
+            let street = r.u32()?;
             runs.push(RoadRun {
                 class,
                 points,
                 addition,
+                street,
             });
         }
         s.runs = runs;
+        let n = r.len(1)?;
+        if n < s.streets.len() {
+            return Err(LoadError::Invalid("streets"));
+        }
+        for i in 0..n {
+            let state = match r.u8()? {
+                0 => StreetState::Planned,
+                1 => StreetState::Building {
+                    start: r.i32()?,
+                    end: r.i32()?,
+                },
+                2 => StreetState::Open,
+                _ => return Err(LoadError::Invalid("street state")),
+            };
+            if i == s.streets.len() {
+                // a connector the traffic model added after the town was planned
+                s.streets.push(streets::Street::open_connector(
+                    RoadClass::Collector,
+                    s.hall,
+                    s.hall,
+                ));
+            }
+            s.streets[i].state = state;
+        }
+        if s.runs.iter().any(|r| r.street as usize >= s.streets.len()) {
+            return Err(LoadError::Invalid("road street"));
+        }
         let n = r.len(8)?;
         s.road_cost_per_month = (0..n).map(|_| r.i64()).collect::<Res<_>>()?;
         let n = r.len(8)?;
@@ -999,7 +1041,7 @@ impl Sim {
             let roads: Vec<(RoadClass, Vec<Pt>)> = s
                 .runs
                 .iter()
-                .filter(|r| r.addition.is_none_or(|a| s.revealed[a]))
+                .filter(|r| s.street_open(r.street))
                 .map(|r| (r.class, r.points.clone()))
                 .collect();
             s.roadnet = Some(roadnet::RoadNet::build(&roads));
