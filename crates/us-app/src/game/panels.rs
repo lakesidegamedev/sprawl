@@ -122,15 +122,32 @@ pub fn dock_rows(ctx: &Context) -> usize {
     }
 }
 
+/// Remember where the phone's bottom bar starts this frame (its real top edge, after the home
+/// bar inset and however many rows it has), so sheets can sit just above it.
+pub fn set_dock_top(ctx: &Context, y: f32) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("dock_top"), y));
+}
+
+/// Top edge of the phone's bottom bar, or an estimate before it has been laid out.
+fn dock_top(ctx: &Context) -> f32 {
+    let screen = ctx.content_rect();
+    ctx.data(|d| d.get_temp::<f32>(egui::Id::new("dock_top")))
+        .filter(|y| *y > screen.top() && *y <= screen.bottom())
+        .unwrap_or(screen.bottom() - dock_h(ctx))
+}
+
 /// The phone version of a panel: a sheet over the lower half of the screen, above the bottom
-/// bar, with a large close button. Only one sheet is open at a time.
+/// bar, with a large close button. Only one sheet is open at a time. It is placed from the bar's
+/// real position so the bar's buttons always stay visible and tappable.
 pub(super) fn sheet(ctx: &Context, title: &str, body: impl FnOnce(&mut Ui)) -> bool {
     let mut closed = false;
     let screen = ctx.content_rect();
     let width = (screen.width() - 12.0).max(240.0);
-    let total = (screen.height() * 0.5).max(240.0) - dock_h(ctx);
+    let bottom = dock_top(ctx) - 4.0;
+    let total = ((bottom - screen.top()) * 0.6).max(200.0);
     egui::Area::new(egui::Id::new("sheet"))
-        .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -(dock_h(ctx) + 4.0)))
+        .pivot(Align2::CENTER_BOTTOM)
+        .fixed_pos(egui::pos2(screen.center().x, bottom))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             theme::panel()
