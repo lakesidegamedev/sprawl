@@ -287,8 +287,8 @@ fn fs_main(v: VOut) -> FOut {
 
 // ---- edge pass ----
 
-@group(1) @binding(0) var colour_tex: texture_2d<f32>;
-@group(1) @binding(1) var aux_tex: texture_2d<u32>;
+@group(1) @binding(0) var colour_tex: COLOUR_TEX_TYPE;
+@group(1) @binding(1) var aux_tex: AUX_TEX_TYPE;
 
 struct EOut {
     @builtin(position) clip: vec4<f32>,
@@ -304,16 +304,16 @@ fn vs_full(@builtin(vertex_index) i: u32) -> EOut {
 
 const EXEMPT: u32 = 16777215u;
 
-fn aux_at(p: vec2<i32>) -> vec2<f32> {
+fn aux_at(p: vec2<i32>, s: i32) -> vec2<f32> {
     let size = vec2<i32>(i32(g.screen.x), i32(g.screen.y));
     let q = clamp(p, vec2<i32>(0, 0), size - vec2<i32>(1, 1));
-    let t = textureLoad(aux_tex, q, 0);
+    let t = textureLoad(aux_tex, q, s);
     return vec2<f32>(bitcast<f32>(t.x), f32(t.y));
 }
 
 // True when this pixel is on the near side of a face change: one pixel wide ink line.
-fn ink_at(p: vec2<i32>) -> bool {
-    let a = aux_at(p);
+fn ink_at(p: vec2<i32>, s: i32) -> bool {
+    let a = aux_at(p, s);
     let ida = u32(a.y);
     if (ida == EXEMPT) {
         return false;
@@ -321,7 +321,7 @@ fn ink_at(p: vec2<i32>) -> bool {
     let tol = 0.002 * a.x + 0.05;
     var offs = array<vec2<i32>, 4>(vec2<i32>(1, 0), vec2<i32>(-1, 0), vec2<i32>(0, 1), vec2<i32>(0, -1));
     for (var i = 0; i < 4; i = i + 1) {
-        let b = aux_at(p + offs[i]);
+        let b = aux_at(p + offs[i], s);
         let idb = u32(b.y);
         if (idb == ida || idb == EXEMPT) {
             continue;
@@ -339,12 +339,24 @@ fn ink_at(p: vec2<i32>) -> bool {
 @fragment
 fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
     let p = vec2<i32>(i32(e.clip.x), i32(e.clip.y));
-    var ink = ink_at(p);
-    if (!ink && g.ink.a > 1.5) {
-        ink = ink_at(p + vec2<i32>(-1, 0)) || ink_at(p + vec2<i32>(0, -1));
+    var acc = vec3<f32>(0.0);
+    // ink thins out as a pixel covers more of the world: a one pixel line from about half a
+    // metre a pixel, none from a metre and a half (whole-town views keep their roof colours)
+    let px = g.screen.z * aux_at(p, 0).x;
+    let inked = px < 1.5;
+    for (var s = 0; s < SAMPLE_COUNT; s = s + 1) {
+        var ink = false;
+        if (inked) {
+            ink = ink_at(p, s);
+            if (!ink && g.ink.a > 1.5 && px < 0.5) {
+                ink = ink_at(p + vec2<i32>(-1, 0), s) || ink_at(p + vec2<i32>(0, -1), s);
+            }
+        }
+        if (ink) {
+            acc = acc + g.ink.rgb;
+        } else {
+            acc = acc + textureLoad(colour_tex, p, s).rgb;
+        }
     }
-    if (ink) {
-        return vec4<f32>(g.ink.rgb, 1.0);
-    }
-    return vec4<f32>(textureLoad(colour_tex, p, 0).rgb, 1.0);
+    return vec4<f32>(acc / f32(SAMPLE_COUNT), 1.0);
 }

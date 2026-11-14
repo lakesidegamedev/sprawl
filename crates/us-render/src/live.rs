@@ -107,6 +107,9 @@ pub fn zone_ground_on(land: &Land, t: &Town, index: usize) -> Mesh {
     if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, index) {
         g.polygon(&a.polygon, layer::ZONE, c);
     }
+    if a.zone == Zone::Park && a.pattern == Pattern::Park {
+        crate::park::add_park(&mut g, land, &a.polygon, t.seed, index);
+    }
     g.mesh
 }
 
@@ -123,6 +126,152 @@ pub struct RoadDraw<'a> {
 pub const SNOW_EDGE: Rgb = [247, 248, 253];
 pub const DIRT: Rgb = [190, 152, 104];
 pub const CONE_ORANGE: Rgb = [238, 132, 40];
+pub const DIRT_RUT: Rgb = [160, 122, 80];
+pub const GRAVEL: Rgb = [176, 170, 158];
+pub const FRESH_ASPHALT: Rgb = [58, 60, 68];
+
+/// Pieces of `line` that are `on` metres long with `off` metres between them.
+fn dashes(line: &[Pt], on: f64, off: f64) -> Vec<Vec<Pt>> {
+    let mut out = Vec::new();
+    let mut cur: Vec<Pt> = Vec::new();
+    let (mut drawing, mut left) = (true, on);
+    if let Some(&p) = line.first() {
+        cur.push(p);
+    }
+    for w in line.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let len = a.dist(b);
+        let mut t = 0.0;
+        while len - t > left {
+            t += left;
+            let p = a.lerp(b, t / len);
+            if drawing {
+                cur.push(p);
+                out.push(std::mem::take(&mut cur));
+            } else {
+                cur.push(p);
+            }
+            drawing = !drawing;
+            left = if drawing { on } else { off };
+        }
+        left -= len - t;
+        if drawing {
+            cur.push(b);
+        }
+    }
+    if drawing && cur.len() > 1 {
+        out.push(cur);
+    }
+    out
+}
+
+/// A road being built, by how far along the work is: graded dirt, gravel, fresh asphalt, then the
+/// finished surface with its markings, with a machine on the site and cones along the edges.
+fn road_works(g: &mut Ground, r: &RoadDraw, hw: f32, p: f32) {
+    let rut = layer::ROAD + 0.01;
+    if p < 0.3 {
+        // graded earth: two darker wheel tracks and a rough centre
+        for side in [-1.0f32, 1.0] {
+            g.ribbon(r.points, 0.55, side * hw * 0.45, rut, DIRT_RUT);
+        }
+        g.ribbon(r.points, hw * 0.25, 0.0, rut, DIRT_RUT);
+    } else if p < 0.6 {
+        // gravel laid down the middle, dirt shoulders left
+        g.ribbon(
+            r.points,
+            (hw - 0.9).max(0.5),
+            0.0,
+            layer::ROAD + 0.02,
+            GRAVEL,
+        );
+    } else {
+        g.ribbon(
+            r.points,
+            (hw - 0.9).max(0.5),
+            0.0,
+            layer::ROAD + 0.02,
+            GRAVEL,
+        );
+        g.ribbon(
+            r.points,
+            (hw - 0.9).max(0.5),
+            0.0,
+            layer::ROAD + 0.04,
+            FRESH_ASPHALT,
+        );
+        if p >= 0.82 {
+            // lines painted last
+            let line = if matches!(r.class, RoadClass::Arterial | RoadClass::Highway) {
+                YELLOW
+            } else {
+                [236, 232, 214]
+            };
+            for d in dashes(r.points, 3.5, 4.5) {
+                g.ribbon(&d, 0.16, 0.0, layer::MARK + 0.01, line);
+            }
+        }
+    }
+    for side in [-1.0f32, 1.0] {
+        g.ribbon(
+            r.points,
+            0.35,
+            side * (hw - 0.6),
+            layer::MARK + 0.02,
+            CONE_ORANGE,
+        );
+    }
+    // the machine: a truck while the earth is moved, a roller after
+    let total: f64 = r.points.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let (at, ahead) = along(r.points, 0.5);
+    if let Some(prop) = site_machine(p < 0.3).filter(|_| total >= 40.0) {
+        let theta = libm::atan2(ahead.y - at.y, ahead.x - at.x) as f32;
+        g.place_prop(&prop, at.x as f32, at.y as f32, theta);
+    }
+}
+
+/// The point `share` of the way along a line, and a point a little further on.
+fn along(line: &[Pt], share: f64) -> (Pt, Pt) {
+    let total: f64 = line.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let mut left = total * share.clamp(0.0, 1.0);
+    for w in line.windows(2) {
+        let len = w[0].dist(w[1]);
+        if left <= len && len > 1e-9 {
+            let t = left / len;
+            let t2 = ((left + 3.0) / len).min(1.0);
+            return (w[0].lerp(w[1], t), w[0].lerp(w[1], t2));
+        }
+        left -= len;
+    }
+    let n = line.len();
+    (line[n - 1], line[n - 1])
+}
+
+/// A dump truck (`true`) or a road roller (`false`), nose along local +x.
+fn site_machine(truck: bool) -> Option<Obj> {
+    let mut o = Obj::new();
+    let yellow = [240, 190, 40];
+    let dark = [48, 50, 58];
+    if truck {
+        o.bx(-2.4, -1.0, 0.5, 1.0, 1.0, 0.7, dark);
+        o.bx(-2.4, -1.0, 0.7, 0.8, 1.0, 1.8, yellow);
+        o.bx(1.0, -1.0, 0.5, 2.5, 1.0, 2.0, [220, 100, 40]);
+        o.bx(1.9, -0.9, 1.3, 2.52, 0.9, 1.8, [120, 180, 220]);
+        for x in [-1.6f32, 0.0, 1.8] {
+            for y in [-1.05f32, 0.85] {
+                o.bx(x - 0.45, y, 0.0, x + 0.45, y + 0.2, 0.9, dark);
+            }
+        }
+        o.bx(-2.3, -0.9, 1.8, 0.7, 0.9, 2.0, [232, 180, 36]);
+    } else {
+        // two drums and a cab over a yellow body
+        o.bx(-0.3, -1.0, 0.8, 2.2, 1.0, 1.7, yellow);
+        o.bx(-1.9, -0.9, 0.8, -0.3, 0.9, 2.5, [240, 150, 30]);
+        o.bx(-1.9, -0.8, 2.5, -0.2, 0.8, 2.7, dark);
+        o.bx(1.5, -1.2, 0.0, 2.7, 1.2, 1.1, [150, 150, 156]);
+        o.bx(-2.3, -1.15, 0.0, -1.1, 1.15, 1.05, [150, 150, 156]);
+    }
+    Some(o)
+}
 
 /// Roads and turning bulbs, drawn with dark edges under the surface the way the static scene does.
 pub fn roads_ground(roads: &[(RoadClass, &[Pt])], culs: &[Pt]) -> Mesh {
@@ -199,19 +348,7 @@ pub fn add_roads(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt]) {
         let r = &roads[i];
         let hw = r.class.half_width() as f32;
         if let Some(p) = r.works {
-            for side in [-1.0f32, 1.0] {
-                g.ribbon(r.points, 0.35, side * (hw - 0.6), layer::MARK, CONE_ORANGE);
-            }
-            // fresh surface laid so far, as a dark stripe down the middle
-            if p > 0.5 {
-                g.ribbon(
-                    r.points,
-                    (hw - 1.4).max(0.4),
-                    0.0,
-                    layer::MARK - 0.02,
-                    ASPHALT,
-                );
-            }
+            road_works(g, r, hw, p);
         } else {
             if matches!(r.class, RoadClass::Arterial | RoadClass::Highway) {
                 g.ribbon(r.points, 0.22, 0.0, layer::MARK, YELLOW);

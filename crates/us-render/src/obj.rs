@@ -649,47 +649,223 @@ impl Obj {
 
     /// Rectangle on a south facing wall at y, drawn just outside it.
     pub fn win_s(&mut self, x0: f32, x1: f32, z0: f32, z1: f32, y: f32, color: Rgb) -> &mut Self {
-        let y = y - 0.06;
-        self.poly(
-            &[[x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1]],
-            color,
-            false,
-            true,
-            true,
-        )
+        self.wall_rect([x0, y], [x1, y], [0.0, -1.0], z0, z1, color)
     }
 
     pub fn win_n(&mut self, x0: f32, x1: f32, z0: f32, z1: f32, y: f32, color: Rgb) -> &mut Self {
-        let y = y + 0.06;
-        self.poly(
-            &[[x1, y, z0], [x0, y, z0], [x0, y, z1], [x1, y, z1]],
-            color,
-            false,
-            true,
-            true,
-        )
+        self.wall_rect([x1, y], [x0, y], [0.0, 1.0], z0, z1, color)
     }
 
     pub fn win_w(&mut self, y0: f32, y1: f32, z0: f32, z1: f32, x: f32, color: Rgb) -> &mut Self {
-        let x = x - 0.06;
-        self.poly(
-            &[[x, y1, z0], [x, y0, z0], [x, y0, z1], [x, y1, z1]],
-            color,
-            false,
-            true,
-            true,
-        )
+        self.wall_rect([x, y1], [x, y0], [-1.0, 0.0], z0, z1, color)
     }
 
     pub fn win_e(&mut self, y0: f32, y1: f32, z0: f32, z1: f32, x: f32, color: Rgb) -> &mut Self {
-        let x = x + 0.06;
+        self.wall_rect([x, y0], [x, y1], [1.0, 0.0], z0, z1, color)
+    }
+
+    /// A flat rectangle on a wall, from `a` to `b` along the wall (`out` is the unit outward
+    /// direction, counter-clockwise: `out` = (d.y, -d.x) for travel direction `d`). Windows get a
+    /// frame, a sill and mullions when they are big; doors a frame and steps; signs stripes
+    /// of lettering. All of it is flat colour or stepped tone, no gradients.
+    fn wall_rect(
+        &mut self,
+        a: [f32; 2],
+        b: [f32; 2],
+        out: [f32; 2],
+        z0: f32,
+        z1: f32,
+        color: Rgb,
+    ) -> &mut Self {
+        let q = |s: f32, t: f32, z: f32| -> V3 {
+            // s along the wall from a to b (0 to 1 is the rectangle), t outward in metres
+            [
+                a[0] + (b[0] - a[0]) * s + out[0] * t,
+                a[1] + (b[1] - a[1]) * s + out[1] * t,
+                z,
+            ]
+        };
+        let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2))
+            .sqrt()
+            .max(1e-6);
+        let h = z1 - z0;
+        let is_sign = crate::parts::SIGNS.contains(&color) && h < 1.6 && len > 1.2;
+        let door = z0 < 0.3 && h > 1.7 && len < 2.2;
+        let window = !is_sign && !door && (0.45..=3.2).contains(&h) && (0.3..=6.0).contains(&len);
+        // frame first, behind the glass
+        if window || door {
+            let (m, mz) = (0.1 / len, 0.1);
+            let dark = (color[0] as u32 * 3 + color[1] as u32 * 6 + color[2] as u32) / 10 < 90;
+            let frame = if door {
+                [226, 220, 204]
+            } else if dark {
+                [44, 48, 58]
+            } else {
+                [236, 232, 220]
+            };
+            self.poly(
+                &[
+                    q(-m, 0.025, z0 - mz),
+                    q(1.0 + m, 0.025, z0 - mz),
+                    q(1.0 + m, 0.025, z1 + mz),
+                    q(-m, 0.025, z1 + mz),
+                ],
+                frame,
+                false,
+                false,
+                true,
+            );
+        }
+        // the pane itself, drawn just outside the wall as before
         self.poly(
-            &[[x, y0, z0], [x, y1, z0], [x, y1, z1], [x, y0, z1]],
+            &[
+                q(0.0, 0.06, z0),
+                q(1.0, 0.06, z0),
+                q(1.0, 0.06, z1),
+                q(0.0, 0.06, z1),
+            ],
             color,
             false,
             true,
             true,
-        )
+        );
+        if window {
+            let bar = [236, 232, 220];
+            let bar = if (color[0] as u32 * 3 + color[1] as u32 * 6 + color[2] as u32) / 10 < 90 {
+                [44, 48, 58]
+            } else {
+                bar
+            };
+            // a mullion down big windows, a transom across tall ones
+            if len > 1.7 {
+                let w = 0.04 / len;
+                self.poly(
+                    &[
+                        q(0.5 - w, 0.075, z0),
+                        q(0.5 + w, 0.075, z0),
+                        q(0.5 + w, 0.075, z1),
+                        q(0.5 - w, 0.075, z1),
+                    ],
+                    bar,
+                    false,
+                    false,
+                    true,
+                );
+            }
+            if h > 1.45 && len > 0.8 {
+                let zm = z0 + h * 0.5;
+                self.poly(
+                    &[
+                        q(0.0, 0.075, zm - 0.04),
+                        q(1.0, 0.075, zm - 0.04),
+                        q(1.0, 0.075, zm + 0.04),
+                        q(0.0, 0.075, zm + 0.04),
+                    ],
+                    bar,
+                    false,
+                    false,
+                    true,
+                );
+            }
+            // a stone sill that sticks out under it: top and front faces
+            if z0 > 0.5 {
+                let (m, d) = (0.14 / len, 0.2);
+                let sill = [214, 208, 194];
+                self.poly(
+                    &[
+                        q(-m, 0.0, z0 - 0.02),
+                        q(1.0 + m, 0.0, z0 - 0.02),
+                        q(1.0 + m, d, z0 - 0.02),
+                        q(-m, d, z0 - 0.02),
+                    ]
+                    .iter()
+                    .rev()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                    sill,
+                    false,
+                    false,
+                    false,
+                );
+                self.poly(
+                    &[
+                        q(-m, d, z0 - 0.12),
+                        q(1.0 + m, d, z0 - 0.12),
+                        q(1.0 + m, d, z0 - 0.02),
+                        q(-m, d, z0 - 0.02),
+                    ],
+                    sill,
+                    false,
+                    false,
+                    false,
+                );
+            }
+        }
+        if door {
+            // two steps up to the door
+            let step = [188, 184, 176];
+            for (k, (d, top)) in [(0.35f32, 0.12f32), (0.7, 0.06)].into_iter().enumerate() {
+                let _ = k;
+                let (m, zt) = (0.1 / len, z0 + top);
+                self.poly(
+                    &[
+                        q(-m, d, z0),
+                        q(1.0 + m, d, z0),
+                        q(1.0 + m, d, zt),
+                        q(-m, d, zt),
+                    ],
+                    step,
+                    false,
+                    false,
+                    false,
+                );
+                self.poly(
+                    &[
+                        q(-m, 0.0, zt),
+                        q(1.0 + m, 0.0, zt),
+                        q(1.0 + m, d, zt),
+                        q(-m, d, zt),
+                    ]
+                    .iter()
+                    .rev()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                    step,
+                    false,
+                    false,
+                    false,
+                );
+            }
+        }
+        if is_sign {
+            // simple lettering: short dark and light stripes across the board
+            let ink = [34, 36, 44];
+            let pale = [246, 242, 230];
+            let n = ((len / 0.42) as usize).clamp(3, 14);
+            let (zl0, zl1) = (z0 + h * 0.3, z1 - h * 0.3);
+            let mut i = 0;
+            while i < n {
+                let w = 1 + (i * 7 + n) % 2;
+                let s0 = 0.12 + 0.76 * i as f32 / n as f32;
+                let s1 = (s0 + 0.76 * w as f32 / n as f32 * 0.7).min(0.88);
+                let col = if (i / 3) % 2 == 0 { pale } else { ink };
+                let col = if h < 0.5 { pale } else { col };
+                self.poly(
+                    &[
+                        q(s0, 0.075, zl0),
+                        q(s1, 0.075, zl0),
+                        q(s1, 0.075, zl1),
+                        q(s0, 0.075, zl1),
+                    ],
+                    col,
+                    false,
+                    false,
+                    true,
+                );
+                i += w + 1;
+            }
+        }
+        self
     }
 
     /// Rows of windows on all four walls of a box.
@@ -782,7 +958,15 @@ impl Obj {
                 let (wx, wy) = (x + c * v[0] - s * v[1], y + s * v[0] + c * v[1]);
                 [wx, wy, sit.map_or(v[2], |st| st.place(wx, wy, v[2], v[2]))]
             }));
-            mesh.push_poly(&pts, p.color, false, p.shadow, ID_NONE);
+            // roofs seen from far away read as small coloured marks: lift them toward light so
+            // they stay readable against the green and never turn into dark specks
+            let up = n[2] / (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-6);
+            let color = if p.roof || up > 0.5 {
+                far_roof(p.color)
+            } else {
+                p.color
+            };
+            mesh.push_poly(&pts, color, false, p.shadow, ID_NONE);
         }
     }
 
@@ -824,6 +1008,17 @@ impl Obj {
             mesh.push_poly(&pts, p.color, p.flat, p.shadow, id);
         }
     }
+}
+
+/// A roof colour for the far form: lighter, and never darker than a mid tone.
+fn far_roof(c: Rgb) -> Rgb {
+    let lum = (c[0] as f32 * 0.3 + c[1] as f32 * 0.59 + c[2] as f32 * 0.11).max(1.0);
+    let lift = if lum < 120.0 { 120.0 / lum } else { 1.0 };
+    let f = |v: u8| {
+        let v = (v as f32 * lift).min(255.0);
+        (v + (255.0 - v) * 0.14).round() as u8
+    };
+    [f(c[0]), f(c[1]), f(c[2])]
 }
 
 /// Faces smaller than this many square metres are left out of the far form.
