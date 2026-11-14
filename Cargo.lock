@@ -3552,6 +3552,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "glam",
+ "objc2 0.5.3",
  "pollster",
  "us-gen",
  "us-lakeside",

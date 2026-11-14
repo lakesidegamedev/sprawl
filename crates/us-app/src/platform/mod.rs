@@ -6,6 +6,6 @@ mod desktop;
 mod ios;
 
 #[cfg(not(target_os = "ios"))]
-pub use desktop::tell_user;
+pub use desktop::{safe_insets, tell_user};
 #[cfg(target_os = "ios")]
-pub use ios::tell_user;
+pub use ios::{safe_insets, tell_user};

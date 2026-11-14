@@ -1,0 +1,74 @@
+name: ios
+# Builds the iOS app for the Simulator without signing, runs it on an iPhone and an iPad, and
+# keeps screenshots for a day. No secrets.
+on:
+  pull_request:
+    paths:
+      - "crates/us-app/**"
+      - "crates/us-render/**"
+      - "crates/us-sim/**"
+      - "packaging/ios/**"
+      - "packaging/make-icon.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ios.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/us-app/**"
+      - "crates/us-render/**"
+      - "crates/us-sim/**"
+      - "packaging/ios/**"
+      - "packaging/make-icon.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ios.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  simulator:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+      - name: Tooling
+        run: |
+          brew install xcodegen
+          xcodebuild -version
+          xcrun simctl list devices available
+      - name: Generate the Xcode project
+        run: bash packaging/ios/prepare.sh
+      - name: Build for the Simulator (no signing)
+        run: |
+          xcodebuild \
+            -project packaging/ios/UrbanSprawl.xcodeproj \
+            -scheme UrbanSprawl \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: iPhone screenshots
+        timeout-minutes: 25
+        run: bash packaging/ios/simulator-shots.sh iphone "build/ios/Build/Products/Release-iphonesimulator/Urban Sprawl.app" shots
+      - name: iPad screenshots
+        timeout-minutes: 25
+        run: bash packaging/ios/simulator-shots.sh ipad "build/ios/Build/Products/Release-iphonesimulator/Urban Sprawl.app" shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-simulator-shots
+          path: shots/*.png
+          if-no-files-found: warn
+          retention-days: 1

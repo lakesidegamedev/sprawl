@@ -80,6 +80,23 @@ impl CamCtl {
         self.g_dist = (self.g_dist * 0.88f32.powf(lines)).clamp(70.0, 7000.0);
     }
 
+    /// Pinch: a factor above 1 brings the camera closer.
+    pub fn zoom_by(&mut self, factor: f32) {
+        if factor.is_finite() && factor > 0.0 {
+            self.g_dist = (self.g_dist / factor).clamp(70.0, 7000.0);
+        }
+    }
+
+    /// Two-finger twist: turn the town with the fingers (clockwise degrees on screen).
+    pub fn twist(&mut self, clockwise_deg: f32) {
+        self.g_yaw -= clockwise_deg;
+    }
+
+    /// Two-finger vertical drag: raise or lower the viewing angle.
+    pub fn tilt_by(&mut self, deg: f32) {
+        self.g_tilt = (self.g_tilt + deg).clamp(18.0, 82.0);
+    }
+
     pub fn keys(&mut self, dt: f32, pan: (f32, f32), rot: f32, fast: bool) {
         let speed = self.g_dist * 0.9 * if fast { 2.5 } else { 1.0 };
         self.g_target += (self.forward() * pan.1 + self.right() * pan.0) * speed * dt;

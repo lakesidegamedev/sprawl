@@ -50,3 +50,8 @@ pub fn tell_user(reason: &str) {
         }
     }
 }
+
+/// Desktop windows have no notch or home indicator.
+pub fn safe_insets(_window: &winit::window::Window) -> [f32; 4] {
+    [0.0; 4]
+}

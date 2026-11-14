@@ -9,6 +9,8 @@ description = "Urban Sprawl desktop app: window, menus, camera and the playable 
 
 [lib]
 path = "src/lib.rs"
+# the static library is what the iOS app links; desktop uses the rlib through the binary
+crate-type = ["rlib", "staticlib"]
 
 [[bin]]
 name = "urban-sprawl"
@@ -29,3 +31,6 @@ pollster = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.5"
