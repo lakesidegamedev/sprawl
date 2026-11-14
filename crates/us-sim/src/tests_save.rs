@@ -53,6 +53,18 @@ fn winding_town_round_trips_too() {
 }
 
 #[test]
+fn every_preset_saves_and_loads() {
+    for p in Preset::ALL {
+        let mut s = new_sim(p, Rules::sandbox());
+        for _ in 0..60 {
+            s.step_day();
+        }
+        let bytes = s.save();
+        assert_eq!(Sim::load(&bytes).expect("loads").save(), bytes, "{p:?}");
+    }
+}
+
+#[test]
 fn a_game_in_progress_with_civics_and_events_round_trips() {
     let t = generate(Preset::Grid, 3);
     let mut s = Sim::new(&t, hall_sites(&t)[0], 7);

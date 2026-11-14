@@ -508,10 +508,8 @@ impl Sim {
     pub fn save(&mut self) -> Vec<u8> {
         self.settle_traffic();
         let mut w = W(Vec::new());
-        w.u8(match self.town.preset {
-            Preset::Grid => 0,
-            Preset::Winding => 1,
-        });
+        // the code is the place in `Preset::ALL`, so new presets must be added at the end
+        w.u8(code(&Preset::ALL, self.town.preset));
         w.u64(self.town.seed);
         w.u64(town_hash(&self.town));
         w.u64(self.seed);
@@ -739,11 +737,7 @@ impl Sim {
         }
         let mut r = R { b: body, at: 0 };
         let r = &mut r;
-        let preset = match r.u8()? {
-            0 => Preset::Grid,
-            1 => Preset::Winding,
-            _ => return Err(LoadError::Invalid("preset")),
-        };
+        let preset = decode(&Preset::ALL, r.u8()?, "preset")?;
         let town_seed = r.u64()?;
         let hash = r.u64()?;
         let town = generate(preset, town_seed);
