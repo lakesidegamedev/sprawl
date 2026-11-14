@@ -4,10 +4,11 @@ use crate::calendar::Calendar;
 use crate::ground::{Ground, layer};
 use crate::instances::{self, Car, Instance, Path, Walker};
 use crate::kit;
+use crate::land::Land;
 use crate::levels;
 use crate::live::{self, RoadDraw};
 use crate::mesh::Mesh;
-use crate::obj::{Obj, Rgb};
+use crate::obj::{Obj, Rgb, Sit};
 use crate::overlay::{self, LotInfo, Overlay};
 use crate::parts::Region;
 use crate::rng::Rng;
@@ -82,6 +83,8 @@ struct Placement {
     obj: Obj,
     x: f32,
     y: f32,
+    /// Floor height on hills.
+    z: f32,
     theta: f32,
     chunk: usize,
 }
@@ -137,6 +140,8 @@ pub struct Scene {
     pub uid: u64,
     pub size: f32,
     pub ground: Mesh,
+    /// The lie of the land: heights, water and bridges. Level for scenes without hills.
+    pub land: Land,
     /// Bump when `ground` changes.
     pub ground_rev: u64,
     pub chunks: Vec<Chunk>,
@@ -156,6 +161,7 @@ impl Scene {
             uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
             size,
             ground,
+            land: Land::flat(size.max(1.0)),
             ground_rev: 0,
             chunks: Vec::new(),
             hall,
@@ -163,6 +169,22 @@ impl Scene {
             time: 0.0,
             x: Extras::default(),
         }
+    }
+
+    /// Give a hand-built scene its hills. Call before `set_geometry`, and build the ground,
+    /// roads and buildings with the same land (see `live::*_on` and `Obj::emit_on`).
+    pub fn set_land(&mut self, land: Land) {
+        self.land = land;
+    }
+
+    /// Where the screen point `ndc` meets the ground, hills included.
+    pub fn pick(&self, view: &crate::camera::View, ndc: (f32, f32)) -> Option<Vec3> {
+        crate::camera::pick_terrain(view, ndc, &self.land)
+    }
+
+    /// Ground height in metres at a point.
+    pub fn height_at(&self, x: f32, y: f32) -> f32 {
+        self.land.height(x, y)
     }
 
     pub fn triangles(&self) -> usize {
@@ -184,15 +206,21 @@ impl Scene {
                 works: None,
             })
             .collect();
-        let ground = build_ground(t, &roads);
-        let (td, chunks) = build_chunks(t);
+        let land = Land::from_town(t);
+        let ground = build_ground(t, &roads, &land);
+        let (td, chunks) = build_chunks(t, &land);
         let mut s = Scene {
             uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
             size: t.size as f32,
             ground,
             ground_rev: 0,
             chunks,
-            hall: Vec3::new(t.hall.x as f32, t.hall.y as f32, 0.0),
+            hall: Vec3::new(
+                t.hall.x as f32,
+                t.hall.y as f32,
+                land.sit_height(t.hall.x as f32, t.hall.y as f32),
+            ),
+            land,
             calendar: None,
             time: 0.0,
             x: Extras::default(),
@@ -220,7 +248,7 @@ impl Scene {
     pub fn set_geometry(&mut self, lots: Vec<LotInfo>, roads: Vec<RoadInfo>) {
         self.x.paths = roads
             .iter()
-            .map(|r| Path::new(r.class, &r.points))
+            .map(|r| Path::new_on(r.class, &r.points, &self.land))
             .collect();
         self.x.lot_active = vec![true; lots.len()];
         self.x.lots = lots;
@@ -257,7 +285,8 @@ impl Scene {
             }
             let (s, c) = (libm::sinf(l.theta), libm::cosf(l.theta));
             for [cx, cy, top] in levels::chimneys(l.kind, l.level) {
-                v.push([l.x + c * cx - s * cy, l.y + s * cx + c * cy, top]);
+                let z = self.land.sit_height(l.x, l.y);
+                v.push([l.x + c * cx - s * cy, l.y + s * cx + c * cy, top + z]);
             }
         }
         self.x.chimneys = v;
@@ -362,11 +391,14 @@ impl Scene {
             let lot = &td.town.lots[i];
             let base = match level {
                 None => look.original.clone(),
-                Some(l) => levels::build_lot_level_in(
-                    Region::of(td.town.preset),
-                    lot.kind,
-                    l,
-                    &mut Rng::new(td.town.seed ^ 0x1e7e_1000, i as u64 * 131 + l as u64),
+                Some(l) => kit::fit_to_lot(
+                    levels::build_lot_level_in(
+                        Region::of(td.town.preset),
+                        lot.kind,
+                        l,
+                        &mut Rng::new(td.town.seed ^ 0x1e7e_1000, i as u64 * 131 + l as u64),
+                    ),
+                    lot.radius as f32,
                 ),
             };
             let obj = match state {
@@ -386,7 +418,8 @@ impl Scene {
             self.x.lot_active[i] = state == LotState::Normal;
         }
         for ch in dirty {
-            let (mesh, far, lo, hi) = emit_chunk(&td.placements, &td.chunk_members[ch], ch);
+            let (mesh, far, lo, hi) =
+                emit_chunk(&td.placements, &td.chunk_members[ch], ch, &self.land);
             let c = &mut self.chunks[ch];
             c.mesh = mesh;
             c.far = Some(far);
@@ -414,7 +447,7 @@ impl Scene {
             if r.class != class || r.works != works {
                 r.class = class;
                 r.works = works;
-                self.x.paths[i] = Path::new(class, &r.points);
+                self.x.paths[i] = Path::new_on(class, &r.points, &self.land);
                 any = true;
             }
         }
@@ -422,7 +455,7 @@ impl Scene {
             return;
         }
         if let Some(td) = &self.x.town {
-            self.ground = build_ground(&td.town, &self.x.roads);
+            self.ground = build_ground(&td.town, &self.x.roads, &self.land);
             self.ground_rev += 1;
         }
         self.x.cars = instances::make_cars(&self.x.paths, &self.x.volumes);
@@ -531,6 +564,36 @@ fn in_ring(p: Pt, ring: &[Pt]) -> bool {
     inside
 }
 
+/// Square metres of woods each tree try covers (about one tree in every 60 m²).
+const WOODS_PER_TREE: f64 = 60.0;
+
+/// Whether a park patch lies on steep enough ground to be woods: the mean slope over a spread of
+/// points inside it.
+fn wooded(land: &Land, ring: &[Pt]) -> bool {
+    if land.is_flat() {
+        return false;
+    }
+    let (mut lo, mut hi) = (pt(f64::MAX, f64::MAX), pt(f64::MIN, f64::MIN));
+    for p in ring {
+        lo = pt(lo.x.min(p.x), lo.y.min(p.y));
+        hi = pt(hi.x.max(p.x), hi.y.max(p.y));
+    }
+    let (mut sum, mut n) = (0.0f32, 0u32);
+    for i in 0..6 {
+        for j in 0..6 {
+            let p = pt(
+                lo.x + (hi.x - lo.x) * (i as f64 + 0.5) / 6.0,
+                lo.y + (hi.y - lo.y) * (j as f64 + 0.5) / 6.0,
+            );
+            if in_ring(p, ring) {
+                sum += land.slope(p.x as f32, p.y as f32);
+                n += 1;
+            }
+        }
+    }
+    n > 0 && sum / n as f32 > 0.06
+}
+
 fn trees_for(kind: LotKind, rng: &mut Rng) -> usize {
     match kind {
         LotKind::House => rng.below(4),
@@ -544,19 +607,15 @@ fn trees_for(kind: LotKind, rng: &mut Rng) -> usize {
     }
 }
 
-fn build_ground(t: &Town, roads: &[RoadInfo]) -> Mesh {
-    let mut g = Ground::default();
-    let s = t.size as f32;
-    g.rect(-1500.0, -1500.0, s + 1500.0, s + 1500.0, layer::BASE, GRASS);
+fn build_ground(t: &Town, roads: &[RoadInfo], land: &Land) -> Mesh {
+    let mut g = Ground::on(land);
+    g.terrain(land, 1500.0, GRASS);
     for (ai, a) in t.additions.iter().enumerate() {
         if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, ai) {
             g.polygon(&a.polygon, layer::ZONE, c);
         }
     }
-    for w in &t.water {
-        g.polygon(&Ground::grow(w, 14.0), layer::SAND, SAND);
-        g.polygon(w, layer::WATER, WATER);
-    }
+    live::add_water(&mut g, land, t);
     let draws: Vec<RoadDraw> = roads
         .iter()
         .map(|r| RoadDraw {
@@ -579,6 +638,7 @@ fn emit_chunk(
     placements: &[Placement],
     members: &[usize],
     ordinal: usize,
+    land: &Land,
 ) -> (Mesh, Mesh, Vec3, Vec3) {
     let mut mesh = Mesh::default();
     let mut far = Mesh::default();
@@ -586,19 +646,30 @@ fn emit_chunk(
     let mut next_id = ordinal as u32 * IDS_PER_CHUNK + 1;
     for &pi in members {
         let p = &placements[pi];
-        p.obj.emit(&mut mesh, &mut next_id, p.x, p.y, p.theta, 1.0);
-        p.obj.emit_far(&mut far, p.x, p.y, p.theta);
+        let sit = (!land.is_flat()).then_some(Sit { land, z: p.z });
+        p.obj
+            .emit_on(&mut mesh, &mut next_id, p.x, p.y, p.theta, 1.0, sit);
+        p.obj.emit_far_on(&mut far, p.x, p.y, p.theta, sit);
         let b = p.obj.footprint();
         let reach = b[0].abs().max(b[1].abs()).max(b[2].abs()).max(b[3].abs()) * 1.5 + 1.0;
-        lo = lo.min(Vec3::new(p.x - reach, p.y - reach, 0.0));
-        hi = hi.max(Vec3::new(p.x + reach, p.y + reach, 90.0));
+        lo = lo.min(Vec3::new(
+            p.x - reach,
+            p.y - reach,
+            land.min_height().min(0.0),
+        ));
+        hi = hi.max(Vec3::new(
+            p.x + reach,
+            p.y + reach,
+            land.max_height() + 90.0,
+        ));
     }
     (mesh, far, lo, hi)
 }
 
-fn build_chunks(t: &Town) -> (TownData, Vec<Chunk>) {
+fn build_chunks(t: &Town, land: &Land) -> (TownData, Vec<Chunk>) {
     let region = Region::of(t.preset);
-    let mut raw: Vec<(Obj, f32, f32, f32)> = Vec::new();
+    // (model, x, y, turn, floor height)
+    let mut raw: Vec<(Obj, f32, f32, f32, f32)> = Vec::new();
     // town hall faces the nearest road
     let hall = pt(t.hall.x, t.hall.y);
     let mut best: Option<(f64, Pt)> = None;
@@ -626,6 +697,7 @@ fn build_chunks(t: &Town) -> (TownData, Vec<Chunk>) {
         hall.x as f32,
         hall.y as f32,
         theta,
+        land.sit_height(hall.x as f32, hall.y as f32),
     ));
 
     let green = [kit::TREE, kit::TREE_D];
@@ -633,7 +705,10 @@ fn build_chunks(t: &Town) -> (TownData, Vec<Chunk>) {
     let mut looks = Vec::with_capacity(t.lots.len());
     for (i, lot) in t.lots.iter().enumerate() {
         let mut rng = Rng::new(t.seed ^ 0x5eed_0000, i as u64 * 7919 + 13);
-        let obj = kit::build_lot_in(region, lot.kind, &mut rng);
+        let obj = kit::fit_to_lot(
+            kit::build_lot_in(region, lot.kind, &mut rng),
+            lot.radius as f32,
+        );
         let (x, y) = (lot.centre.x as f32, lot.centre.y as f32);
         let theta = lot.facing as f32;
         lot_place.push(raw.len());
@@ -642,7 +717,7 @@ fn build_chunks(t: &Town) -> (TownData, Vec<Chunk>) {
             level: None,
             state: LotState::Normal,
         });
-        raw.push((obj.clone(), x, y, theta));
+        raw.push((obj.clone(), x, y, theta, land.sit_height(x, y)));
         let n = trees_for(lot.kind, &mut rng);
         if n == 0 {
             continue;
@@ -664,7 +739,7 @@ fn build_chunks(t: &Town) -> (TownData, Vec<Chunk>) {
                 let (rad, h) = (rng.range(1.8, 2.8), rng.range(5.0, 8.0));
                 let (tx, ty) = (x + ct * lx - st * ly, y + st * lx + ct * ly);
                 let col = kit::tree_variant(rng.pick(&green), tx, ty);
-                raw.push((kit::tree(rad, h, col), tx, ty, 0.0));
+                raw.push((kit::tree(rad, h, col), tx, ty, 0.0, land.height(tx, ty)));
                 break;
             }
         }
@@ -673,9 +748,12 @@ fn build_chunks(t: &Town) -> (TownData, Vec<Chunk>) {
     // trees in open park land
     let grid = RoadGrid::new(t);
     for (ai, a) in t.additions.iter().enumerate() {
+        // wooded slopes: the generator marks them as park land on steep ground
+        let woods = a.zone == Zone::Park && a.pattern == Pattern::Park && wooded(land, &a.polygon);
         let per = match (a.zone, a.pattern) {
             (Zone::Park, Pattern::Golf) => 1800.0,
             (Zone::Park, Pattern::Cemetery) => 900.0,
+            (Zone::Park, Pattern::Park) if woods => WOODS_PER_TREE,
             (Zone::Park, _) => 520.0,
             (Zone::Campus, _) => 1600.0,
             _ => continue,
@@ -699,9 +777,14 @@ fn build_chunks(t: &Town) -> (TownData, Vec<Chunk>) {
             if t.lots.iter().any(|l| l.centre.dist(p) < l.radius + 3.0) {
                 continue;
             }
-            let (rad, h) = (rng.range(1.8, 2.8), rng.range(5.0, 8.0));
+            let (rad, h) = if woods {
+                (rng.range(1.9, 3.4), rng.range(6.0, 11.5))
+            } else {
+                (rng.range(1.8, 2.8), rng.range(5.0, 8.0))
+            };
             let col = kit::tree_variant(rng.pick(&green), p.x as f32, p.y as f32);
-            raw.push((kit::tree(rad, h, col), p.x as f32, p.y as f32, 0.0));
+            let (tx, ty) = (p.x as f32, p.y as f32);
+            raw.push((kit::tree(rad, h, col), tx, ty, 0.0, land.height(tx, ty)));
         }
     }
 
@@ -713,10 +796,11 @@ fn build_chunks(t: &Town) -> (TownData, Vec<Chunk>) {
     let chunk_members: Vec<Vec<usize>> = cells.into_values().collect();
     let mut placements: Vec<Placement> = raw
         .into_iter()
-        .map(|(obj, x, y, theta)| Placement {
+        .map(|(obj, x, y, theta, z)| Placement {
             obj,
             x,
             y,
+            z,
             theta,
             chunk: 0,
         })
@@ -730,7 +814,7 @@ fn build_chunks(t: &Town) -> (TownData, Vec<Chunk>) {
         .iter()
         .enumerate()
         .map(|(ci, m)| {
-            let (mesh, far, lo, hi) = emit_chunk(&placements, m, ci);
+            let (mesh, far, lo, hi) = emit_chunk(&placements, m, ci, land);
             Chunk {
                 rev: 0,
                 mesh,
