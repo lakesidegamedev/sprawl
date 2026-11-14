@@ -608,6 +608,11 @@ impl Sim {
         Date::from_days(self.day)
     }
 
+    /// The town this game is played on (a loaded save rebuilds it from its preset and seed).
+    pub fn town(&self) -> &Town {
+        &self.town
+    }
+
     pub fn additions_left(&self) -> usize {
         self.order.len() - self.next_reveal
     }
