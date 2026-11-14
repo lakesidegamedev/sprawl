@@ -273,6 +273,11 @@ fn pick_samples(adapter: &wgpu::Adapter) -> u32 {
     if std::env::var_os("US_NO_MSAA").is_some() {
         return 1;
     }
+    // the iOS simulator's Metal driver ends the app when the 4x targets are created, and no Mac has
+    // been checked yet: Metal keeps the single sample path until it is tested on a device
+    if adapter.get_info().backend == wgpu::Backend::Metal {
+        return 1;
+    }
     if !adapter
         .features()
         .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
