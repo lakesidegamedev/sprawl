@@ -241,6 +241,8 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     info: AdapterSummary,
+    /// Samples per pixel in the scene pass (4, or 1 when the adapter cannot).
+    msaa: u32,
     layout0: wgpu::BindGroupLayout,
     layout1: wgpu::BindGroupLayout,
     module: wgpu::ShaderModule,
@@ -263,6 +265,57 @@ pub struct Renderer {
     inst_bufs: Vec<Option<(wgpu::Buffer, usize)>>,
     /// Map view mesh: scene uid, overlay rev, mesh.
     overlay_gpu: Option<(u64, u64, GpuMesh)>,
+}
+
+/// 4 samples when the adapter can draw the colour, distance and depth targets at 4x and read the
+/// multisampled textures back in a shader; otherwise 1 (the pass then draws as before).
+fn pick_samples(adapter: &wgpu::Adapter) -> u32 {
+    if std::env::var_os("US_NO_MSAA").is_some() {
+        return 1;
+    }
+    // the iOS simulator's Metal driver ends the app when the 4x targets are created, and no Mac has
+    // been checked yet: Metal keeps the single sample path until it is tested on a device
+    if adapter.get_info().backend == wgpu::Backend::Metal {
+        return 1;
+    }
+    if !adapter
+        .features()
+        .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+    {
+        return 1;
+    }
+    let ok = |f: wgpu::TextureFormat| {
+        let ff = adapter.get_texture_format_features(f);
+        ff.flags.sample_count_supported(4)
+            && ff.allowed_usages.contains(
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            )
+    };
+    let shading = adapter
+        .get_downlevel_capabilities()
+        .flags
+        .contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING);
+    if shading && ok(COLOUR_FORMAT) && ok(AUX_FORMAT) && ok(DEPTH_FORMAT) {
+        4
+    } else {
+        1
+    }
+}
+
+/// The shader text with the edge pass set to read `samples` samples per pixel.
+fn shader_source(samples: u32) -> String {
+    let (tex_f, tex_u) = if samples > 1 {
+        (
+            "texture_multisampled_2d<f32>",
+            "texture_multisampled_2d<u32>",
+        )
+    } else {
+        ("texture_2d<f32>", "texture_2d<u32>")
+    };
+    SHADER
+        .replace("COLOUR_TEX_TYPE", tex_f)
+        .replace("AUX_TEX_TYPE", tex_u)
+        .replace("SAMPLE_COUNT", &samples.to_string())
 }
 
 fn vertex_layout() -> (wgpu::VertexBufferLayout<'static>, ()) {
@@ -381,23 +434,39 @@ impl Renderer {
             backend: format!("{:?}", ai.backend),
             device_type: format!("{:?}", ai.device_type),
         };
-        let request = |limits: wgpu::Limits| {
+        let mut msaa = pick_samples(&adapter);
+        let request = |limits: wgpu::Limits, msaa: u32| {
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("us-render"),
-                required_features: wgpu::Features::empty(),
+                // 4x sampling of the distance target needs the adapter specific format flags
+                required_features: if msaa > 1 {
+                    wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+                } else {
+                    wgpu::Features::empty()
+                },
                 required_limits: limits,
                 ..Default::default()
             }))
         };
-        let (device, queue) =
-            match request(wgpu::Limits::default().using_resolution(adapter.limits())) {
-                Ok(d) => d,
-                Err(_) => request(adapter.limits()).map_err(|e| NoAdapter(e.to_string()))?,
-            };
+        let try_all = |msaa: u32| {
+            request(
+                wgpu::Limits::default().using_resolution(adapter.limits()),
+                msaa,
+            )
+            .or_else(|_| request(adapter.limits(), msaa))
+        };
+        let (device, queue) = match try_all(msaa) {
+            Ok(d) => d,
+            Err(_) if msaa > 1 => {
+                msaa = 1;
+                try_all(1).map_err(|e| NoAdapter(e.to_string()))?
+            }
+            Err(e) => return Err(NoAdapter(e.to_string())),
+        };
 
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scene"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(shader_source(msaa).into()),
         });
         let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
             binding,
@@ -437,12 +506,12 @@ impl Renderer {
         let tex_unfilterable = wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: false },
             view_dimension: wgpu::TextureViewDimension::D2,
-            multisampled: false,
+            multisampled: msaa > 1,
         };
         let tex_uint = wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Uint,
             view_dimension: wgpu::TextureViewDimension::D2,
-            multisampled: false,
+            multisampled: msaa > 1,
         };
         let layout1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("edge inputs"),
@@ -509,7 +578,11 @@ impl Renderer {
                 ..Default::default()
             },
             depth_stencil: Some(depth_state(wgpu::DepthBiasState::default())),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: msaa,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: Some("fs_main"),
@@ -571,7 +644,11 @@ impl Renderer {
                 ..Default::default()
             },
             depth_stencil: Some(depth_state(wgpu::DepthBiasState::default())),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: msaa,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: Some("fs_main"),
@@ -624,6 +701,7 @@ impl Renderer {
             device,
             queue,
             info,
+            msaa,
             layout0,
             layout1,
             module,
@@ -813,7 +891,8 @@ impl Renderer {
             return;
         }
         self.targets = None;
-        let make = |label: &str, format, usage| {
+        let msaa = self.msaa;
+        let make_n = |label: &str, format, usage, samples: u32| {
             self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
@@ -822,20 +901,22 @@ impl Renderer {
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
-                sample_count: 1,
+                sample_count: samples,
                 dimension: wgpu::TextureDimension::D2,
                 format,
                 usage,
                 view_formats: &[],
             })
         };
+        let make = |label: &str, format, usage| make_n(label, format, usage, 1);
         let rt = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let colour = make("colour", COLOUR_FORMAT, rt).create_view(&Default::default());
-        let aux = make("aux", AUX_FORMAT, rt).create_view(&Default::default());
-        let depth = make(
+        let colour = make_n("colour", COLOUR_FORMAT, rt, msaa).create_view(&Default::default());
+        let aux = make_n("aux", AUX_FORMAT, rt, msaa).create_view(&Default::default());
+        let depth = make_n(
             "depth",
             DEPTH_FORMAT,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
+            msaa,
         )
         .create_view(&Default::default());
         let out = make(
@@ -1100,7 +1181,12 @@ impl Renderer {
                 style.ink_width as f32,
             ],
             shade: [shadow_tone, 0.2 / range, 0.0, 0.0],
-            screen: [rw as f32, rh as f32, 0.0, 0.0],
+            screen: [
+                rw as f32,
+                rh as f32,
+                2.0 * (camera.fov_deg.to_radians() * 0.5).tan() / rh as f32,
+                0.0,
+            ],
             tone: [tone[0], tone[1], tone[2], lit_windows],
             look: [
                 season_code,

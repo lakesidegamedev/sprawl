@@ -1802,7 +1802,13 @@ pub const LOT_FIT: f32 = 0.97;
 /// Shrink a model, if it needs it, so every part of it (fences, garages and eaves included) lies
 /// inside the lot's circle of `radius` metres around its origin. Neighbouring lots never
 /// overlap by that radius, so neighbouring buildings never touch or clip.
-pub fn fit_to_lot(obj: Obj, radius: f32) -> Obj {
+pub fn fit_to_lot(mut obj: Obj, radius: f32) -> Obj {
+    // finishing detail first, so the fit counts it and never lets it poke past the lot
+    crate::detail::finish(&mut obj);
+    fit_inner(obj, radius)
+}
+
+fn fit_inner(obj: Obj, radius: f32) -> Obj {
     let cap = radius * LOT_FIT;
     let far = obj
         .polys

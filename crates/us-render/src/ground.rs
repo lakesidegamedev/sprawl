@@ -195,6 +195,31 @@ impl Ground {
         }
     }
 
+    /// Ground height under a point (0 on level land).
+    pub fn height_at(&self, x: f32, y: f32) -> f32 {
+        self.land.as_ref().map_or(0.0, |l| l.height(x, y))
+    }
+
+    /// Place a model on the ground at (x, y), turned by `theta`, standing on the land. Outline
+    /// ids come from the bridge range, so they never clash with a building's.
+    pub fn place_prop(&mut self, obj: &crate::obj::Obj, x: f32, y: f32, theta: f32) {
+        let mut id = self.next_bridge_id();
+        let z = self.height_at(x, y);
+        match self.land.clone() {
+            Some(land) => obj.emit_on(
+                &mut self.mesh,
+                &mut id,
+                x,
+                y,
+                theta,
+                1.0,
+                Some(crate::obj::Sit { land: &land, z }),
+            ),
+            None => obj.emit(&mut self.mesh, &mut id, x, y, theta, 1.0),
+        }
+        self.bridge_ids += obj.polys.len() as u32;
+    }
+
     fn vert(&mut self, x: f32, y: f32, z: f32, color: Rgb) -> u32 {
         let (z, normal) = match &self.land {
             Some(l) => (z + l.height(x, y), l.normal(x, y)),

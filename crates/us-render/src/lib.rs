@@ -11,6 +11,7 @@
 mod calendar;
 mod camera;
 pub mod civic;
+mod detail;
 pub mod ground;
 pub mod instances;
 pub mod kit;
@@ -21,6 +22,7 @@ pub mod live;
 mod mesh;
 pub mod obj;
 pub mod overlay;
+pub mod park;
 pub mod parts;
 mod renderer;
 mod rng;

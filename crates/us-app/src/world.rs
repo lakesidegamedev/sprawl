@@ -23,7 +23,7 @@ const IDS_PER_CELL: u32 = 60_000;
 /// Game days a road stays under construction after it is widened or built.
 const WORKS_DAYS: i32 = 40;
 /// Roadworks are redrawn this many times over their length.
-const WORKS_STEPS: i32 = 5;
+const WORKS_STEPS: i32 = 8;
 
 type Cell = (i32, i32);
 /// Which ground chunk a road belongs to: an addition, or `None` for the skeleton and connectors.
@@ -735,6 +735,8 @@ impl LiveScene {
             self.geo_dirty = true;
         }
         for a in revealed {
+            // New streets show their construction stages from the simulation's own street
+            // states (`road_build_state`), street by street; no separate timer here.
             self.add_ground_chunk(sim, a);
         }
         // lots the mayor placed are appended to the simulation's list
@@ -1044,5 +1046,48 @@ mod tests {
         assert!(works, "a road change shows as roadworks");
         assert!(done, "roadworks finish");
         assert_eq!(live.run_work.len(), sim.road_runs().len());
+    }
+
+    /// The streets of a neighbourhood that opens are built in front of the player, not shown
+    /// finished the moment it opens.
+    #[test]
+    fn new_neighbourhood_streets_start_as_roadworks() {
+        let town = Arc::new(generate(Preset::Grid, 1));
+        let hall = hall_sites(&town)[0];
+        let mut sim = Sim::new(&town, hall, 1);
+        let mut live = LiveScene::new(town.clone(), &sim, true);
+        let count = |sim: &Sim| {
+            (0..town.additions.len())
+                .filter(|&a| sim.is_revealed(a))
+                .count()
+        };
+        let mut seen = count(&sim);
+        let mut checked = 0;
+        for _ in 0..2500 {
+            sim.step_day();
+            let before = seen;
+            seen = count(&sim);
+            live.sync(&mut sim, 1.0e9);
+            if seen > before {
+                let day = sim.day;
+                let fresh: Vec<usize> = sim
+                    .road_runs()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| {
+                        r.addition
+                            .is_some_and(|a| sim.is_revealed(a) && !live.scene.chunks.is_empty())
+                    })
+                    .map(|(i, _)| i)
+                    .filter(|&i| live.works_progress(i, day).is_some())
+                    .collect();
+                assert!(
+                    !fresh.is_empty(),
+                    "a new neighbourhood's streets are under construction"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "some neighbourhood opened during the run");
     }
 }
