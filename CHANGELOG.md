@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix (phones): an open panel sheet could cover the bottom bar of panel buttons, so most menus seemed missing; sheets now sit above the bar's real position. The placement hint says tap on touch screens.
 - Fix (iOS): taps landed below where the player touched. The game drew at the safe-area size and iOS stretched the picture to the whole screen; it now draws at the full screen size and keeps the notch and home bar clear with insets.
 - Shown version is 1.0.0 preview 5.
 - Hills in the game (preview 5): the town you play on now stands on the hills the generator made. Ground, roads, fields, shores, buildings, trees and the town hall follow the slope, roads that cross water show a bridge, regional building looks show in play, clicks and the placement ghost land on the real ground (the reach rings sit on the hillside), and the camera follows the ground height. The ground is cut into 256 m tiles with a coarse form for tiles far from the camera, so a whole-town view draws about a sixth of the ground faces of the full form. Game over and election night screens now dim only the town, not their own text. Phone: the bottom bar uses two rows of four buttons on a narrow screen so every label is 11 points or larger, and on iOS the safe area is read from both the view and its window each frame, with a safe default for phones when UIKit reports none.
