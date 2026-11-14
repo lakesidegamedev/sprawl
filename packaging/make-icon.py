@@ -1,30 +1,17 @@
-"""Writes a plain PNG placeholder icon (dark square, light road cross), 256x256 unless a size is
-given. No alpha channel, so it is valid for the App Store. Standard library only.
+"""Writes the Urban Sprawl app icon: a copy of the drawn mark at 1024 or 256 pixels (no alpha
+channel, so it is valid for the App Store). Standard library only.
 
     python3 make-icon.py <out.png> [size]
+
+The PNGs in `icon/` are drawn from `icon/draw-logo.py`:
+    python3 draw-logo.py icon-square.svg --square
+    rsvg-convert -w 1024 -b '#13212F' icon-square.svg | magick - -alpha off icon-1024.png
 """
-import struct
+import pathlib
+import shutil
 import sys
-import zlib
 
-N = int(sys.argv[2]) if len(sys.argv) > 2 else 256
-HALF = max(1, round(14 * N / 256))
-rows = []
-for y in range(N):
-    row = bytearray([0])
-    for x in range(N):
-        road = abs(x - N // 2) < HALF or abs(y - N // 2) < HALF
-        row += bytes((225, 225, 215) if road else (34, 40, 48))
-    rows.append(bytes(row))
-
-
-def chunk(tag, data):
-    body = tag + data
-    return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
-
-
-png = b"\x89PNG\r\n\x1a\n"
-png += chunk(b"IHDR", struct.pack(">IIBBBBB", N, N, 8, 2, 0, 0, 0))
-png += chunk(b"IDAT", zlib.compress(b"".join(rows), 9))
-png += chunk(b"IEND", b"")
-open(sys.argv[1], "wb").write(png)
+size = int(sys.argv[2]) if len(sys.argv) > 2 else 256
+if size not in (1024, 256):
+    sys.exit(f"make-icon.py: only 1024 and 256 are drawn, not {size}")
+shutil.copyfile(pathlib.Path(__file__).parent / "icon" / f"icon-{size}.png", sys.argv[1])

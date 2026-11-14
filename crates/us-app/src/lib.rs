@@ -75,6 +75,10 @@ fn draw_size(window: &Window) -> winit::dpi::PhysicalSize<u32> {
     }
 }
 
+/// The Urban Sprawl mark, 64 by 64 pixels, raw RGBA (drawn by `packaging/icon/draw-logo.py`).
+#[cfg(not(target_os = "ios"))]
+const WINDOW_ICON: &[u8] = include_bytes!("window-icon-64.rgba");
+
 impl App {
     fn init_gfx(&mut self, el: &ActiveEventLoop) {
         let attrs =
@@ -87,6 +91,10 @@ impl App {
                 let (a, b) = v.split_once('x')?;
                 Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))
             });
+            // the town mark in the title bar and task bar (macOS ignores window icons)
+            let attrs = attrs.with_window_icon(
+                winit::window::Icon::from_rgba(WINDOW_ICON.to_vec(), 64, 64).ok(),
+            );
             match forced {
                 Some((w, h)) => attrs
                     .with_inner_size(winit::dpi::LogicalSize::new(w, h))
