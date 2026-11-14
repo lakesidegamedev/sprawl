@@ -93,6 +93,15 @@ fn choice(ui: &mut Ui, on: bool, title: &str, blurb: &str) -> bool {
     r.clicked()
 }
 
+/// "Grid" becomes "Grid town"; "Lake town" stays as it is.
+pub(super) fn town_name(label: &str) -> String {
+    if label.to_lowercase().ends_with("town") {
+        label.to_string()
+    } else {
+        format!("{label} town")
+    }
+}
+
 fn small_button(ui: &mut Ui, text: &str) -> egui::Response {
     let compact = theme::is_compact(ui.ctx());
     ui.add(
@@ -119,6 +128,15 @@ impl State {
                 600.0
             });
             ui.label(heading("NEW TOWN", if compact { 24.0 } else { 32.0 }));
+            ui.horizontal_wrapped(|ui| {
+                if theme::button(ui, "START").clicked() {
+                    self.screen = Screen::Generating;
+                    self.gen_wait = 0;
+                }
+                if theme::button(ui, "BACK").clicked() {
+                    self.screen = Screen::Menu;
+                }
+            });
             label(ui, "HOW YOU PLAY", 14.0);
             for m in Mode::ALL {
                 if choice(ui, self.mode == m, m.label(), m.blurb()) {
@@ -128,12 +146,7 @@ impl State {
             ui.add_space(4.0);
             label(ui, "TOWN TYPE", 14.0);
             for p in Preset::ALL {
-                if choice(
-                    ui,
-                    self.preset == p,
-                    &format!("{} town", p.label()),
-                    p.blurb(),
-                ) {
+                if choice(ui, self.preset == p, &town_name(p.label()), p.blurb()) {
                     self.preset = p;
                 }
             }
@@ -147,16 +160,6 @@ impl State {
                 );
                 if small_button(ui, "RANDOM").clicked() {
                     self.seed_text = super::random_seed().to_string();
-                }
-            });
-            ui.add_space(8.0);
-            ui.horizontal_wrapped(|ui| {
-                if theme::button(ui, "START").clicked() {
-                    self.screen = Screen::Generating;
-                    self.gen_wait = 0;
-                }
-                if theme::button(ui, "BACK").clicked() {
-                    self.screen = Screen::Menu;
                 }
             });
         });
@@ -283,8 +286,8 @@ fn save_row(
                 ui.add(
                     egui::Label::new(
                         RichText::new(format!(
-                            "{} town, {}, {} people{mode}. Saved {}.",
-                            info.town,
+                            "{}, {}, {} people{mode}. Saved {}.",
+                            town_name(&info.town),
                             info.date,
                             info.population,
                             saves::age_text(info.unix)
@@ -367,7 +370,7 @@ impl Game {
             }
         };
         let size = vec2(
-            if compact { 108.0 } else { 168.0 },
+            if compact { 120.0 } else { 168.0 },
             if compact { theme::TOUCH } else { 26.0 },
         );
         let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
@@ -507,7 +510,7 @@ impl Game {
         ];
         let n = items.len() as f32;
         let gap = 3.0;
-        let w = ((ui.available_width() - 8.0 - gap * (n - 1.0)) / n).floor();
+        let w = ((ui.available_width() - 12.0 - gap * (n - 1.0)) / n).floor();
         let font = if w >= 52.0 { 11.0 } else { 9.0 };
         let mut hit: Option<usize> = None;
         ui.spacing_mut().item_spacing.x = gap;

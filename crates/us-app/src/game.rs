@@ -554,7 +554,7 @@ impl State {
         let mut live = LiveScene::new(town.clone(), &sim, false);
         live.sync(&mut sim, 1.0e9);
         let cam = CamCtl::overview(town.size as f32, 1.7);
-        let name = format!("{} town {}", self.preset.label(), seed);
+        let name = format!("{} {}", screens::town_name(self.preset.label()), seed);
         self.game = Some(Game::new(
             town,
             self.preset,
@@ -581,7 +581,7 @@ impl State {
         let mut cam = CamCtl::overview(town.size as f32, 1.7);
         cam.look_at(Vec3::new(sim.hall.x as f32, sim.hall.y as f32, 0.0), 650.0);
         let rules = sim.rules();
-        let name = format!("{} town {}", preset.label(), seed);
+        let name = format!("{} {}", screens::town_name(preset.label()), seed);
         let mut g = Game::new(
             town,
             preset,
@@ -1652,7 +1652,11 @@ impl State {
                 ui.label(heading("PAUSED", 32.0));
                 label(
                     ui,
-                    &format!("{} TOWN, SEED {}", g.preset.label().to_uppercase(), g.seed),
+                    &format!(
+                        "{}, SEED {}",
+                        screens::town_name(g.preset.label()).to_uppercase(),
+                        g.seed
+                    ),
                     12.0,
                 );
                 if g.rules.is_sandbox() {
