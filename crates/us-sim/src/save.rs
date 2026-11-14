@@ -14,7 +14,7 @@ use us_gen::{Preset, generate};
 
 const MAGIC: &[u8; 4] = b"USSV";
 /// The save format this build writes and reads.
-pub const SAVE_VERSION: u16 = 2;
+pub const SAVE_VERSION: u16 = 3;
 const HEADER_LEN: usize = 4 + 2 + 8 + 8;
 /// How many autosave files are kept.
 pub const AUTOSAVE_SLOTS: usize = 3;
@@ -263,7 +263,7 @@ const ROAD_CLASSES: [RoadClass; 6] = [
     RoadClass::Alley,
     RoadClass::Rail,
 ];
-const EVENT_KINDS: [EventKind; 12] = [
+const EVENT_KINDS: [EventKind; 13] = [
     EventKind::Neighborhood,
     EventKind::Milestone,
     EventKind::Budget,
@@ -276,6 +276,7 @@ const EVENT_KINDS: [EventKind; 12] = [
     EventKind::Decline,
     EventKind::Election,
     EventKind::GameOver,
+    EventKind::Limit,
 ];
 
 fn code<T: PartialEq + Copy>(all: &[T], v: T) -> u8 {
@@ -664,6 +665,7 @@ impl Sim {
         w.bool(self.rules.bankruptcy);
         w.bool(self.rules.elections);
         w.bool(self.rules.unlimited_money);
+        w.u8(code(&Difficulty::ALL, self.rules.difficulty));
         w.bool(self.game_over.is_some());
         if let Some(g) = &self.game_over {
             w.i32(g.day);
@@ -706,6 +708,16 @@ impl Sim {
         for &d in &self.fire_days {
             w.i32(d);
         }
+        for c in Class::ALL {
+            w.f64(self.queue.get(c));
+        }
+        for i in 0..4 {
+            w.bool(self.stalled[i]);
+            w.bool(self.warned[i]);
+        }
+        w.bool(self.jobless);
+        w.i32(self.last_kind_street);
+        w.i64(self.growth_spent);
 
         let body = w.0;
         let mut out = Vec::with_capacity(HEADER_LEN + body.len());
@@ -971,6 +983,7 @@ impl Sim {
             bankruptcy: r.bool()?,
             elections: r.bool()?,
             unlimited_money: r.bool()?,
+            difficulty: decode(&Difficulty::ALL, r.u8()?, "difficulty")?,
         };
         s.game_over = if r.bool()? {
             let day = r.i32()?;
@@ -1019,6 +1032,16 @@ impl Sim {
         s.peak_population = r.i64()?;
         let n = r.len(4)?;
         s.fire_days = (0..n).map(|_| r.i32()).collect::<Res<_>>()?;
+        for c in Class::ALL {
+            s.queue.set(c, r.f64()?);
+        }
+        for i in 0..4 {
+            s.stalled[i] = r.bool()?;
+            s.warned[i] = r.bool()?;
+        }
+        s.jobless = r.bool()?;
+        s.last_kind_street = r.i32()?;
+        s.growth_spent = r.i64()?;
 
         // the sizes the rest of the code indexes by
         let nl = s.lots.len();

@@ -87,6 +87,9 @@ fn unlimited_money_never_runs_out() {
 #[test]
 fn a_town_with_no_services_loses_the_first_election() {
     let mut s = new_sim(Rules::standard());
+    // no services and taxes voters grumble about (the town is small now, so the rest of the
+    // pressure on its approval is light)
+    s.set_tax_x10(115);
     assert_eq!(s.next_election_day(), ELECTION_PERIOD_DAYS);
     for _ in 0..ELECTION_PERIOD_DAYS + 40 {
         s.step_day();
@@ -104,7 +107,7 @@ fn a_town_with_no_services_loses_the_first_election() {
     assert_eq!(&e.challenger, challenger);
     assert_eq!(e.issue, *issue);
     assert_eq!(g.summary.years, 4);
-    assert!(g.summary.peak_population > 1000);
+    assert!(g.summary.peak_population > 300);
     assert!(
         s.take_events()
             .iter()

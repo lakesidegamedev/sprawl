@@ -46,6 +46,11 @@ const COVER_COST_SLOPE_PCT: i64 = 50;
 
 const MILESTONES: [i64; 9] = [100, 250, 500, 1000, 2000, 5000, 10_000, 20_000, 50_000];
 
+/// Jobs a workplace of this kind holds at a level.
+pub(crate) fn kind_jobs_at(k: LotKind, level: u8) -> i64 {
+    kind_jobs(k) * level_value_pct(level).min(300) / 100
+}
+
 fn kind_jobs(k: LotKind) -> i64 {
     match k {
         LotKind::Shop => 6,
@@ -268,6 +273,7 @@ impl Sim {
     pub(crate) fn run_month(&mut self) {
         self.step_rival();
         self.recompute_values();
+        self.step_limits();
         self.evolve_buildings();
         let lg = self.compute_ledger();
         let (income, expense) = (lg.income_total(), lg.expense_total());

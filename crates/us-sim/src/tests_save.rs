@@ -94,6 +94,7 @@ fn a_game_in_progress_with_civics_and_events_round_trips() {
 #[test]
 fn a_lost_game_stays_lost_after_loading() {
     let mut s = new_sim(Preset::Grid, Rules::standard());
+    s.set_tax_x10(115);
     for _ in 0..ELECTION_PERIOD_DAYS + 40 {
         s.step_day();
     }

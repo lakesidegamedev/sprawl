@@ -40,6 +40,8 @@ pub struct Rules {
     pub elections: bool,
     /// The treasury never runs out.
     pub unlimited_money: bool,
+    /// How hard growth is.
+    pub difficulty: Difficulty,
 }
 
 impl Rules {
@@ -48,6 +50,7 @@ impl Rules {
             bankruptcy: true,
             elections: true,
             unlimited_money: false,
+            difficulty: Difficulty::Normal,
         }
     }
 
@@ -57,6 +60,7 @@ impl Rules {
             bankruptcy: false,
             elections: false,
             unlimited_money: false,
+            difficulty: Difficulty::Normal,
         }
     }
 
@@ -66,6 +70,11 @@ impl Rules {
             unlimited_money: true,
             ..Rules::sandbox()
         }
+    }
+
+    /// The same rules at another difficulty.
+    pub fn with_difficulty(self, difficulty: Difficulty) -> Rules {
+        Rules { difficulty, ..self }
     }
 
     pub fn is_sandbox(&self) -> bool {
