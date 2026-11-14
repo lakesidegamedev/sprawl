@@ -6,15 +6,51 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use us_gen::{LotKind, Pt, RoadClass, Town, Zone};
-use us_render::live::{abandoned, base_ground, construction, roads_ground, zone_ground};
+use us_render::levels::{building_site, burned};
+use us_render::live::{RoadDraw, abandoned, base_ground, roads_ground_state, zone_ground};
 use us_render::obj::Obj;
-use us_render::{Chunk, LotInfo, Mesh, Rng, RoadInfo, Scene, kit};
-use us_sim::{LotState, Phase, Sim};
+use us_render::{
+    Chunk, CivicModel, LotInfo, Mesh, Rng, RoadInfo, Scene, build_civic, build_lot_level, kit,
+};
+use us_sim::{CivicKind, LotState, Phase, Sim};
 
 const CELL: f32 = 256.0;
 const IDS_PER_CELL: u32 = 60_000;
 
+/// Game days a road stays under construction after it is widened or built.
+const WORKS_DAYS: i32 = 40;
+/// Roadworks are redrawn this many times over their length.
+const WORKS_STEPS: i32 = 5;
+
 type Cell = (i32, i32);
+/// Which ground chunk a road belongs to: an addition, or `None` for the skeleton and connectors.
+type Group = Option<usize>;
+
+/// What one lot looks like right now. A lot's mesh is rebuilt only when this changes.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct Look {
+    /// 0 not drawn, 1 building site, 2 standing, 3 burned, 4 abandoned.
+    pub state: u8,
+    /// Building level 1 to 5 the model is drawn at (the new level while a site).
+    pub level: u8,
+    /// Progress step of a building site, 0 to 4.
+    pub step: u8,
+}
+
+/// Roadworks on one road run.
+#[derive(Clone, Copy, Default)]
+struct RunWork {
+    /// Day the work started.
+    start: Option<i32>,
+    /// The step last drawn.
+    step: u8,
+}
+
+struct PrevRun {
+    class: RoadClass,
+    points: Vec<Pt>,
+    work: RunWork,
+}
 
 pub struct LiveScene {
     pub scene: Scene,
@@ -27,8 +63,16 @@ pub struct LiveScene {
     hall_cell: Cell,
     dirty: HashSet<Cell>,
     queue: VecDeque<Cell>,
-    stage: Vec<u8>,
-    objs: Vec<Option<Obj>>,
+    pub look: Vec<Look>,
+    /// Finished model per lot, with the look and radius it was made for.
+    objs: Vec<Option<(Look, u16, Obj)>>,
+    /// Lots parked off the map in the scene's geometry (not drawn yet).
+    parked: Vec<bool>,
+    road_chunk: HashMap<Group, usize>,
+    road_dirty: Vec<Group>,
+    roads_ver: u32,
+    run_work: Vec<RunWork>,
+    prev_runs: Vec<PrevRun>,
     rev: u64,
     ground_chunks: usize,
     pub triangles: usize,
@@ -44,15 +88,37 @@ fn cell_of(x: f64, y: f64) -> Cell {
     )
 }
 
-fn stage_of(l: &LotState, day: i32) -> u8 {
+fn look_of(l: &LotState, day: i32) -> Look {
+    let level = l.level.clamp(1, 5);
     match l.phase {
-        Phase::Hidden | Phase::Vacant | Phase::Cleared { .. } => 0,
+        Phase::Hidden | Phase::Vacant | Phase::Cleared { .. } => Look::default(),
+        _ if l.fire.is_some() => Look {
+            state: 3,
+            level,
+            step: 0,
+        },
         Phase::Building { start, end } => {
             let p = (day - start) as f32 / (end - start).max(1) as f32;
-            1 + (p * 4.0).clamp(0.0, 3.0) as u8
+            Look {
+                state: 1,
+                level: if l.next_level > 0 {
+                    l.next_level.clamp(1, 5)
+                } else {
+                    level
+                },
+                step: (p * 5.0).clamp(0.0, 4.0) as u8,
+            }
         }
-        Phase::Built { .. } => 10,
-        Phase::Empty { .. } => 20,
+        Phase::Built { .. } => Look {
+            state: 2,
+            level,
+            step: 0,
+        },
+        Phase::Empty { .. } => Look {
+            state: 4,
+            level,
+            step: 0,
+        },
     }
 }
 
@@ -69,10 +135,24 @@ fn trees_for(kind: LotKind, rng: &mut Rng) -> usize {
     }
 }
 
-/// The full model of one lot (building and its trees), local to the lot, facing south.
-fn lot_model(seed: u64, src: usize, kind: LotKind, radius: f64) -> Obj {
-    let mut rng = Rng::new(seed ^ 0x5eed_0000, src as u64 * 7919 + 13);
-    let mut obj = kit::build_lot(kind, &mut rng);
+fn civic_model(c: Option<CivicKind>) -> Option<CivicModel> {
+    match c {
+        Some(CivicKind::Police) => Some(CivicModel::Police),
+        Some(CivicKind::Clinic) => Some(CivicModel::Clinic),
+        Some(CivicKind::Water) => Some(CivicModel::WaterTower),
+        _ => None,
+    }
+}
+
+/// The model of one lot (building and its trees) at a level, local to the lot, facing south.
+fn lot_model(seed: u64, l: &LotState, level: u8) -> Obj {
+    let mut rng = Rng::new(seed ^ 0x5eed_0000, l.src as u64 * 7919 + 13);
+    let mut obj = match civic_model(l.civic) {
+        Some(m) => build_civic(m, &mut rng),
+        None if l.civic.is_some() => kit::build_lot(l.kind, &mut rng),
+        None => build_lot_level(l.kind, level, &mut rng),
+    };
+    let (kind, radius) = (l.kind, l.radius);
     let n = trees_for(kind, &mut rng);
     if n > 0 {
         let fp = obj.footprint();
@@ -99,6 +179,82 @@ fn lot_model(seed: u64, src: usize, kind: LotKind, radius: f64) -> Obj {
     obj
 }
 
+/// The model to draw for a lot in its current look.
+fn look_obj(seed: u64, i: usize, l: &LotState, look: Look) -> Obj {
+    let level = if l.civic.is_some() { 1 } else { look.level };
+    let full = lot_model(seed, l, level);
+    match look.state {
+        1 => building_site(&full, (look.step as f32 + 0.5) / 5.0),
+        3 => burned(&full, &mut Rng::new(seed ^ 0xb0b0, i as u64)),
+        4 => abandoned(&full),
+        _ => full,
+    }
+}
+
+fn dist_seg(p: Pt, a: Pt, b: Pt) -> f64 {
+    let (abx, aby) = (b.x - a.x, b.y - a.y);
+    let l2 = abx * abx + aby * aby;
+    let t = if l2 < 1e-12 {
+        0.0
+    } else {
+        (((p.x - a.x) * abx + (p.y - a.y) * aby) / l2).clamp(0.0, 1.0)
+    };
+    p.dist(us_gen::pt(a.x + abx * t, a.y + aby * t))
+}
+
+/// Segments of the roads as they were, to tell which stretch of a changed road is new.
+struct OldRoads {
+    segs: Vec<(Pt, Pt, RoadClass, RunWork)>,
+    cells: HashMap<(i32, i32), Vec<u32>>,
+}
+
+impl OldRoads {
+    fn new(prev: &[PrevRun]) -> OldRoads {
+        let mut o = OldRoads {
+            segs: Vec::new(),
+            cells: HashMap::new(),
+        };
+        for r in prev {
+            for w in r.points.windows(2) {
+                let id = o.segs.len() as u32;
+                o.segs.push((w[0], w[1], r.class, r.work));
+                let n = (w[0].dist(w[1]) / 16.0).ceil().max(1.0) as usize;
+                let mut last = None;
+                for k in 0..=n {
+                    let t = k as f64 / n as f64;
+                    let c = (
+                        ((w[0].x + (w[1].x - w[0].x) * t) / 32.0).floor() as i32,
+                        ((w[0].y + (w[1].y - w[0].y) * t) / 32.0).floor() as i32,
+                    );
+                    if last != Some(c) {
+                        o.cells.entry(c).or_default().push(id);
+                        last = Some(c);
+                    }
+                }
+            }
+        }
+        o
+    }
+
+    /// The old class and work at a point on a road, if a road was there.
+    fn at(&self, p: Pt) -> Option<(RoadClass, RunWork)> {
+        let (cx, cy) = ((p.x / 32.0).floor() as i32, (p.y / 32.0).floor() as i32);
+        let mut best: Option<(f64, RoadClass, RunWork)> = None;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for &id in self.cells.get(&(cx + dx, cy + dy)).into_iter().flatten() {
+                    let (a, b, c, w) = self.segs[id as usize];
+                    let d = dist_seg(p, a, b);
+                    if d < 1.0 && best.is_none_or(|x| d < x.0) {
+                        best = Some((d, c, w));
+                    }
+                }
+            }
+        }
+        best.map(|b| (b.1, b.2))
+    }
+}
+
 impl LiveScene {
     pub fn new(town: Arc<Town>, sim: &Sim, show_hall: bool) -> LiveScene {
         let farm: Vec<usize> = (0..town.additions.len())
@@ -111,17 +267,10 @@ impl LiveScene {
             ground,
             Vec3::new(hall.x as f32, hall.y as f32, 0.0),
         );
-        // skeleton roads: always there
-        let skel: Vec<(RoadClass, &[Pt])> = sim
-            .road_runs()
-            .iter()
-            .filter(|r| r.addition.is_none())
-            .map(|r| (r.class, r.points.as_slice()))
-            .collect();
-        let mesh = roads_ground(&skel, &[]);
+        // road ground per group; the skeleton and connectors are chunk 0
         scene.chunks.push(Chunk {
             rev: 1,
-            mesh,
+            mesh: Mesh::default(),
             far: None,
             lo: Vec3::new(-100.0, -100.0, 0.0),
             hi: Vec3::new(town.size as f32 + 100.0, town.size as f32 + 100.0, 2.0),
@@ -168,8 +317,22 @@ impl LiveScene {
             hall_cell,
             dirty: HashSet::new(),
             queue: VecDeque::new(),
-            stage: vec![0; n],
-            objs: vec![None; n],
+            look: vec![Look::default(); n],
+            objs: (0..n).map(|_| None).collect(),
+            parked: vec![false; n],
+            road_chunk: HashMap::from([(None, 0)]),
+            road_dirty: Vec::new(),
+            roads_ver: sim.roads_version(),
+            run_work: vec![RunWork::default(); sim.road_runs().len()],
+            prev_runs: sim
+                .road_runs()
+                .iter()
+                .map(|r| PrevRun {
+                    class: r.class,
+                    points: r.points.clone(),
+                    work: RunWork::default(),
+                })
+                .collect(),
             rev: 1,
             ground_chunks: 0,
             triangles: 0,
@@ -179,6 +342,7 @@ impl LiveScene {
         if show_hall {
             ls.mark(hall_cell);
         }
+        ls.rebuild_roads(sim, None);
         ls.ensure_geometry(sim);
         ls
     }
@@ -192,24 +356,32 @@ impl LiveScene {
         self.geo_dirty = false;
         self.geo_at = Instant::now();
         const OFF: f64 = -50_000.0;
+        let day = sim.day;
+        self.parked = sim
+            .lots()
+            .iter()
+            .map(|l| matches!(l.phase, Phase::Hidden | Phase::Cleared { .. }))
+            .collect();
         let lots: Vec<LotInfo> = sim
             .lots()
             .iter()
-            .map(|l| {
-                let gone = matches!(l.phase, Phase::Hidden | Phase::Cleared { .. });
-                LotInfo {
-                    x: if gone { OFF as f32 } else { l.pos.x as f32 },
-                    y: if gone { OFF as f32 } else { l.pos.y as f32 },
-                    theta: l.facing as f32,
-                    kind: l.kind,
-                    level: l.level.clamp(1, 5),
-                }
+            .zip(&self.parked)
+            .map(|(l, &gone)| LotInfo {
+                x: if gone { OFF as f32 } else { l.pos.x as f32 },
+                y: if gone { OFF as f32 } else { l.pos.y as f32 },
+                theta: l.facing as f32,
+                kind: l.kind,
+                level: l.level.clamp(1, 5),
             })
+            .collect();
+        let works: Vec<Option<f32>> = (0..sim.road_runs().len())
+            .map(|i| self.works_progress(i, day))
             .collect();
         let roads: Vec<RoadInfo> = sim
             .road_runs()
             .iter()
-            .map(|r| {
+            .zip(&works)
+            .map(|(r, &w)| {
                 let built = r.addition.is_none_or(|a| sim.is_revealed(a));
                 RoadInfo {
                     class: r.class,
@@ -218,45 +390,207 @@ impl LiveScene {
                     } else {
                         vec![us_gen::pt(OFF, OFF), us_gen::pt(OFF, OFF + 10.0)]
                     },
-                    works: None,
+                    works: w,
                 }
             })
             .collect();
         self.scene.set_geometry(lots, roads);
-        self.scene
-            .set_road_volumes(&sim.road_values(us_sim::MapKind::Traffic));
+        // cars keep off roads under construction
+        let mut vol = sim.road_values(us_sim::MapKind::Traffic);
+        for (v, w) in vol.iter_mut().zip(&works) {
+            if w.is_some() {
+                *v = 0.0;
+            }
+        }
+        self.scene.set_road_volumes(&vol);
+        for (i, k) in self.look.iter().enumerate() {
+            if matches!(k.state, 1 | 3 | 4) {
+                self.scene.set_lot_info(i, k.level, false);
+            }
+        }
+    }
+
+    /// Roadworks progress 0 to 1 of a road run, `None` when no work is going on.
+    fn works_progress(&self, run: usize, day: i32) -> Option<f32> {
+        let start = self.run_work.get(run)?.start?;
+        let p = (day - start) as f32 / WORKS_DAYS as f32;
+        (0.0..1.0).contains(&p).then_some(p)
+    }
+
+    /// Where the first stretch of road works is, for a camera or a test.
+    pub fn works_place(&self, sim: &Sim) -> Option<Pt> {
+        sim.road_runs()
+            .iter()
+            .enumerate()
+            .find(|(i, _)| self.works_progress(*i, sim.day).is_some())
+            .map(|(_, r)| r.points[r.points.len() / 2])
+    }
+
+    /// Redraw the roads of one group (an addition, or the skeleton) from the current runs.
+    fn rebuild_roads(&mut self, sim: &Sim, group: Group) {
+        let day = sim.day;
+        let runs = sim.road_runs();
+        let draws: Vec<RoadDraw> = runs
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.addition == group)
+            .map(|(i, r)| RoadDraw {
+                class: r.class,
+                points: r.points.as_slice(),
+                works: self.works_progress(i, day),
+            })
+            .collect();
+        let culs: Vec<Pt> = match group {
+            Some(a) => self
+                .town
+                .cul_de_sacs
+                .iter()
+                .filter(|c| c.addition == a)
+                .map(|c| c.pos)
+                .collect(),
+            None => Vec::new(),
+        };
+        let mesh = roads_ground_state(&draws, &culs);
+        let (lo, hi) = match group {
+            None => (
+                Vec3::new(-100.0, -100.0, 0.0),
+                Vec3::new(
+                    self.town.size as f32 + 100.0,
+                    self.town.size as f32 + 100.0,
+                    2.0,
+                ),
+            ),
+            Some(_) => {
+                let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+                for d in &draws {
+                    for p in d.points {
+                        lo = lo.min(Vec3::new(p.x as f32 - 30.0, p.y as f32 - 30.0, 0.0));
+                        hi = hi.max(Vec3::new(p.x as f32 + 30.0, p.y as f32 + 30.0, 2.0));
+                    }
+                }
+                for c in &culs {
+                    lo = lo.min(Vec3::new(c.x as f32 - 30.0, c.y as f32 - 30.0, 0.0));
+                    hi = hi.max(Vec3::new(c.x as f32 + 30.0, c.y as f32 + 30.0, 2.0));
+                }
+                (lo, hi)
+            }
+        };
+        self.rev += 1;
+        let chunk = Chunk {
+            rev: self.rev,
+            mesh,
+            far: None,
+            lo,
+            hi,
+        };
+        match self.road_chunk.get(&group) {
+            Some(&ci) => self.scene.chunks[ci] = chunk,
+            None => {
+                self.scene.chunks.push(chunk);
+                self.road_chunk.insert(group, self.scene.chunks.len() - 1);
+            }
+        }
+    }
+
+    fn mark_roads(&mut self, g: Group) {
+        if !self.road_dirty.contains(&g) {
+            self.road_dirty.push(g);
+        }
+    }
+
+    /// Follow road changes: new class or new streets show as roadworks that finish over time.
+    fn sync_roads(&mut self, sim: &Sim) {
+        let day = sim.day;
+        let runs = sim.road_runs();
+        if sim.roads_version() != self.roads_ver || self.run_work.len() != runs.len() {
+            self.roads_ver = sim.roads_version();
+            // the roads as they were drawn last time: same order as the old `run_work`
+            let old_work = std::mem::take(&mut self.run_work);
+            let prev: Vec<PrevRun> = self
+                .prev_runs
+                .drain(..)
+                .zip(old_work.iter())
+                .map(|(mut p, w)| {
+                    p.work = *w;
+                    p
+                })
+                .collect();
+            let old = OldRoads::new(&prev);
+            let mut work = Vec::with_capacity(runs.len());
+            for r in runs {
+                let probe = r.points.windows(2).next().map(|w| w[0].lerp(w[1], 0.5));
+                let was = probe.and_then(|p| old.at(p));
+                let w = match was {
+                    Some((c, w)) if c == r.class => w,
+                    Some(_) | None => {
+                        if r.addition.is_none_or(|a| sim.is_revealed(a)) && !prev.is_empty() {
+                            RunWork {
+                                start: Some(day),
+                                step: 255,
+                            }
+                        } else {
+                            RunWork::default()
+                        }
+                    }
+                };
+                work.push(w);
+            }
+            self.run_work = work;
+            for (i, r) in runs.iter().enumerate() {
+                if self.run_work[i].step == 255 {
+                    self.mark_roads(r.addition);
+                }
+            }
+            self.prev_runs = runs
+                .iter()
+                .map(|r| PrevRun {
+                    class: r.class,
+                    points: r.points.clone(),
+                    work: RunWork::default(),
+                })
+                .collect();
+            self.geo_dirty = true;
+            self.geo_at = Instant::now() - std::time::Duration::from_secs(5);
+        }
+        // advance work in progress, and finish it
+        let mut touched: Vec<Group> = Vec::new();
+        for (i, r) in runs.iter().enumerate().take(self.run_work.len()) {
+            let w = self.run_work[i];
+            let Some(start) = w.start else { continue };
+            let p = (day - start) as f32 / WORKS_DAYS as f32;
+            let step = if p >= 1.0 {
+                254
+            } else {
+                (p.max(0.0) * WORKS_STEPS as f32) as u8
+            };
+            if step != w.step {
+                self.run_work[i].step = step;
+                if step == 254 {
+                    self.run_work[i].start = None;
+                    self.geo_dirty = true;
+                }
+                touched.push(r.addition);
+            }
+        }
+        for g in touched {
+            self.mark_roads(g);
+        }
+        let dirty = std::mem::take(&mut self.road_dirty);
+        for g in dirty {
+            if g.is_none_or(|a| sim.is_revealed(a)) {
+                self.rebuild_roads(sim, g);
+            }
+        }
     }
 
     fn add_ground_chunk(&mut self, sim: &Sim, addition: usize) {
         let town = self.town.clone();
         let a = &town.additions[addition];
-        let mut mesh = zone_ground(&town, addition);
-        let runs: Vec<(RoadClass, &[Pt])> = sim
-            .road_runs()
-            .iter()
-            .filter(|r| r.addition == Some(addition))
-            .map(|r| (r.class, r.points.as_slice()))
-            .collect();
-        let culs: Vec<Pt> = town
-            .cul_de_sacs
-            .iter()
-            .filter(|c| c.addition == addition)
-            .map(|c| c.pos)
-            .collect();
-        let roads = roads_ground(&runs, &culs);
-        append(&mut mesh, roads);
+        let mesh = zone_ground(&town, addition);
         let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-        let mut grow = |p: Pt| {
+        for p in &a.polygon {
             lo = lo.min(Vec3::new(p.x as f32 - 30.0, p.y as f32 - 30.0, 0.0));
             hi = hi.max(Vec3::new(p.x as f32 + 30.0, p.y as f32 + 30.0, 2.0));
-        };
-        for p in &a.polygon {
-            grow(*p);
-        }
-        for (_, pts) in &runs {
-            for p in *pts {
-                grow(*p);
-            }
         }
         self.rev += 1;
         self.scene.chunks.push(Chunk {
@@ -267,6 +601,7 @@ impl LiveScene {
             hi,
         });
         self.ground_chunks += 1;
+        self.rebuild_roads(sim, Some(addition));
     }
 
     fn mark(&mut self, c: Cell) {
@@ -287,27 +622,40 @@ impl LiveScene {
             self.add_ground_chunk(sim, a);
         }
         // lots the mayor placed are appended to the simulation's list
-        if self.stage.len() < sim.lots().len() {
+        if self.look.len() < sim.lots().len() {
             self.geo_dirty = true;
         }
-        while self.stage.len() < sim.lots().len() {
-            let i = self.stage.len();
+        while self.look.len() < sim.lots().len() {
+            let i = self.look.len();
             let l = &sim.lots()[i];
             self.cell_lots
                 .entry(cell_of(l.pos.x, l.pos.y))
                 .or_default()
                 .push(i);
-            self.stage.push(0);
+            self.look.push(Look::default());
             self.objs.push(None);
+            self.parked.push(true);
         }
+        self.sync_roads(sim);
         let day = sim.day;
         for (i, l) in sim.lots().iter().enumerate() {
-            let s = stage_of(l, day);
-            if s != self.stage[i] {
-                self.stage[i] = s;
+            let k = look_of(l, day);
+            if k != self.look[i] {
+                let was = self.look[i];
+                self.look[i] = k;
                 let c = cell_of(l.pos.x, l.pos.y);
                 if self.dirty.insert(c) {
                     self.queue.push_back(c);
+                }
+                let gone = matches!(l.phase, Phase::Hidden | Phase::Cleared { .. });
+                if gone != self.parked[i] {
+                    // appeared or vanished: the scene's lot positions need refreshing
+                    self.geo_dirty = true;
+                } else if i < self.scene.lot_count()
+                    && (was.level != k.level || was.state != k.state)
+                {
+                    self.scene
+                        .set_lot_info(i, k.level, matches!(k.state, 0 | 2));
                 }
             }
         }
@@ -343,24 +691,24 @@ impl LiveScene {
         }
         if let Some(ids) = self.cell_lots.get(&cell) {
             for &i in ids {
-                let st = self.stage[i];
-                if st == 0 {
+                let k = self.look[i];
+                if k.state == 0 {
                     continue;
                 }
                 let l = &sim.lots()[i];
-                if self.objs[i].is_none() {
-                    self.objs[i] = Some(lot_model(seed, l.src, l.kind, l.radius));
+                let r = l.radius as u16;
+                if !matches!(&self.objs[i], Some((lk, lr, _)) if *lk == k && *lr == r) {
+                    self.objs[i] = Some((k, r, look_obj(seed, i, l, k)));
                 }
-                let full = self.objs[i].as_ref().unwrap();
-                let (x, y, th) = (l.pos.x as f32, l.pos.y as f32, l.facing as f32);
-                match st {
-                    1..=4 => {
-                        let o = construction(full, st as f32 / 5.0);
-                        o.emit(&mut mesh, &mut next_id, x, y, th, 1.0);
-                    }
-                    20 => abandoned(full).emit(&mut mesh, &mut next_id, x, y, th, 1.0),
-                    _ => full.emit(&mut mesh, &mut next_id, x, y, th, 1.0),
-                }
+                let obj = &self.objs[i].as_ref().unwrap().2;
+                obj.emit(
+                    &mut mesh,
+                    &mut next_id,
+                    l.pos.x as f32,
+                    l.pos.y as f32,
+                    l.facing as f32,
+                    1.0,
+                );
                 if next_id > base + IDS_PER_CELL - 200 {
                     next_id = base;
                 }
@@ -394,13 +742,6 @@ impl LiveScene {
     }
 }
 
-fn append(dst: &mut Mesh, src: Mesh) {
-    let off = dst.vertices.len() as u32;
-    dst.vertices.extend(src.vertices);
-    dst.cast.extend(src.cast.into_iter().map(|i| i + off));
-    dst.plain.extend(src.plain.into_iter().map(|i| i + off));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,7 +773,37 @@ mod tests {
             sim.step_day();
         }
         live.sync(&mut sim, 1.0e9);
-        assert_eq!(live.stage.len(), sim.lots().len());
-        assert!(live.stage[before] != 0, "the new building is drawn");
+        assert_eq!(live.look.len(), sim.lots().len());
+        assert!(live.look[before].state != 0, "the new building is drawn");
+    }
+
+    /// A widened street shows as roadworks that finish; upgrades and fires change a lot's look.
+    #[test]
+    fn scene_follows_roads_and_lot_looks() {
+        let town = Arc::new(generate(Preset::Grid, 1));
+        let hall = hall_sites(&town)[0];
+        let mut sim = Sim::new(&town, hall, 1);
+        let mut live = LiveScene::new(town, &sim, true);
+        let (mut works, mut site, mut done) = (false, false, false);
+        for _ in 0..2500 {
+            sim.step_day();
+            live.sync(&mut sim, 1.0e9);
+            works |= live.works_place(&sim).is_some();
+            if works && live.works_place(&sim).is_none() {
+                done = true;
+            }
+            site |= sim
+                .lots()
+                .iter()
+                .zip(&live.look)
+                .any(|(l, k)| l.next_level > 0 && k.state == 1 && k.level == l.next_level);
+        }
+        assert!(
+            site,
+            "an upgrade is drawn as a building site at the new level"
+        );
+        assert!(works, "a road change shows as roadworks");
+        assert!(done, "roadworks finish");
+        assert_eq!(live.run_work.len(), sim.road_runs().len());
     }
 }
