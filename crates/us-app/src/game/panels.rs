@@ -99,8 +99,49 @@ fn bar(ui: &mut Ui, width: f32, frac: f32, col: Color32) {
     p.rect_filled(f, 0.0, col);
 }
 
+/// Height the bottom bar takes on a phone, so sheets and cards sit above it.
+pub const DOCK_H: f32 = 52.0;
+
+/// The phone version of a panel: a sheet over the lower half of the screen, above the bottom
+/// bar, with a large close button. Only one sheet is open at a time.
+pub(super) fn sheet(ctx: &Context, title: &str, body: impl FnOnce(&mut Ui)) -> bool {
+    let mut closed = false;
+    let screen = ctx.content_rect();
+    let width = (screen.width() - 12.0).max(240.0);
+    let total = (screen.height() * 0.5).max(240.0) - DOCK_H;
+    egui::Area::new(egui::Id::new("sheet"))
+        .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -(DOCK_H + 4.0)))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            theme::panel()
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.set_width(width - 16.0);
+                    ui.horizontal(|ui| {
+                        ui.label(heading(&title.to_uppercase(), 18.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let b =
+                                egui::Button::new(RichText::new("X").font(pixel(16.0)).color(INK))
+                                    .min_size(vec2(theme::TOUCH, theme::TOUCH));
+                            if ui.add(b).clicked() {
+                                closed = true;
+                            }
+                        });
+                    });
+                    egui::ScrollArea::both()
+                        .max_height((total - theme::TOUCH - 30.0).max(80.0))
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.set_min_width(width - 40.0);
+                            body(ui);
+                        });
+                });
+        });
+    closed
+}
+
 /// The frame and header every movable window shares. Returns true when closed.
-fn window(
+pub(super) fn window(
     ctx: &Context,
     id: &str,
     title: &str,
@@ -109,6 +150,9 @@ fn window(
     body: impl FnOnce(&mut Ui),
 ) -> bool {
     let mut closed = false;
+    if theme::is_compact(ctx) {
+        return sheet(ctx, title, body);
+    }
     // at a large UI scale the screen has fewer points: shrink and scroll rather than overflow
     let screen = ctx.content_rect();
     let width = width.min(screen.width() - 30.0).max(240.0);
@@ -285,7 +329,7 @@ pub struct UiState {
     range: Range,
     hidden: std::collections::HashSet<(usize, usize)>,
     pub events: Vec<Event>,
-    news_seen: usize,
+    pub(super) news_seen: usize,
     ledger: LedgerNow,
     /// Seconds since the view was last pushed to the renderer, and which view it showed.
     ov_age: f32,
@@ -421,6 +465,10 @@ impl Game {
     /// Keys for the mayor's screens. Returns true when the key was used.
     pub(super) fn ui_key(&mut self, code: winit::keyboard::KeyCode) -> bool {
         use winit::keyboard::KeyCode as K;
+        if code == K::KeyV {
+            self.toggle_voters();
+            return true;
+        }
         let u = &mut self.ui;
         match code {
             K::KeyP => u.levers_open = !u.levers_open,
@@ -610,6 +658,22 @@ impl Game {
                     }
                 }
                 "nolevers" => self.ui.levers_open = false,
+                "voters" => self.voters_open = true,
+                "noelection" => {
+                    self.election_seen = self.sim.last_election().map_or(-1, |e| e.day);
+                }
+                "map" => self.map_open = true,
+                "pausemenu" => self.menu_open = true,
+                "saveas" => {
+                    self.menu_open = true;
+                    self.save_as = Some(self.name.clone());
+                }
+                "poor" => {
+                    // run a town with no services until the first vote, for the election screens
+                    for _ in 0..n.max(1) {
+                        self.sim.step_day();
+                    }
+                }
                 _ => {}
             }
         }
@@ -686,147 +750,154 @@ impl Game {
     // ----- taxes -----
 
     pub(super) fn levers_ui(&mut self, ctx: &Context) {
+        if theme::is_compact(ctx) {
+            let mut closed = false;
+            if sheet(ctx, "Taxes", |ui| self.levers_body(ui, ctx, true)) {
+                closed = true;
+            }
+            if closed {
+                self.ui.levers_open = false;
+            }
+            return;
+        }
         egui::Area::new(egui::Id::new("tax"))
             .anchor(Align2::LEFT_BOTTOM, vec2(14.0, -34.0))
             .show(ctx, |ui| {
                 theme::panel().show(ui, |ui| {
                     ui.set_width(320.0);
-                    let open = self.ui.levers_open;
-                    ui.horizontal(|ui| {
-                        ui.label(heading("TAXES", 18.0));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if btn(ui, if open { "-" } else { "+" }, false, 12.0).clicked() {
-                                self.ui.levers_open = !open;
-                            }
-                        });
-                    });
-                    let ledger = self.ui.ledger;
-                    if !open {
-                        let net = self.stats.income - self.stats.expense;
-                        lab(
-                            ui,
-                            format!(
-                                "NET {}{} A MONTH",
-                                if net < 0 { "" } else { "+" },
-                                money(net)
-                            ),
-                            12.0,
-                        );
-                        return;
-                    }
-                    let max_h = (ctx.content_rect().height() - 330.0).max(120.0);
-                    egui::ScrollArea::vertical()
-                        .max_height(max_h)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            for c in Class::ALL {
-                                let rate = self.sim.tax_rates().get(c);
-                                let income = ledger.income.get(c);
-                                let per_point = if rate > 0 {
-                                    income * 10 / rate as i64
-                                } else {
-                                    self.sim
-                                        .history()
-                                        .last()
-                                        .filter(|s| s.tax_x10.get(c) > 0)
-                                        .map_or(0, |s| {
-                                            s.income.get(c) * 10 / s.tax_x10.get(c) as i64
-                                        })
-                                };
-                                ui.horizontal(|ui| {
-                                    let (r, _) =
-                                        ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-                                    ui.painter().rect_filled(r, 0.0, class_color(c));
-                                    lab(ui, c.label(), 14.0);
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            let d = self.sim.class_demand(c);
-                                            lab_c(
-                                                ui,
-                                                format!("DEMAND {:.0}%", d * 100.0),
-                                                11.0,
-                                                if d < 0.3 {
-                                                    BAD
-                                                } else if d < 0.55 {
-                                                    GOLD
-                                                } else {
-                                                    GOOD
-                                                },
-                                            );
-                                        },
-                                    );
-                                });
-                                let mut pct = rate as f32 / 10.0;
-                                let r = ui.add(
-                                    egui::Slider::new(
-                                        &mut pct,
-                                        TAX_MIN_X10 as f32 / 10.0..=TAX_MAX_X10 as f32 / 10.0,
-                                    )
-                                    .step_by(0.5)
-                                    .custom_formatter(|v, _| format!("{v:.1}%")),
-                                );
-                                if r.changed() {
-                                    self.sim.set_tax_class(c, (pct * 10.0).round() as u32);
-                                }
-                                let (msg, col) = if rate > ABANDON_ABOVE_X10 {
-                                    ("Too high: buildings empty out", BAD)
-                                } else if rate >= 100 {
-                                    ("High: growth is slow", ORANGE)
-                                } else if rate <= 40 {
-                                    ("Low: fast growth, thin income", GOOD)
-                                } else {
-                                    ("Balanced", TEXT)
-                                };
-                                ui.horizontal(|ui| {
-                                    lab_c(ui, msg, 12.0, col);
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            lab(ui, format!("{}/MO", money(income)), 12.0);
-                                        },
-                                    );
-                                });
-                                lab_c(
-                                    ui,
-                                    format!("Each point is about {} a month", money(per_point)),
-                                    12.0,
-                                    Color32::from_rgb(170, 176, 196),
-                                );
-                                ui.add_space(2.0);
-                            }
-                        });
-                    ui.separator();
-                    let net = self.stats.income - self.stats.expense;
-                    lab(
-                        ui,
-                        format!(
-                            "TAX IN {}   COSTS {}",
-                            money(self.stats.income),
-                            money(self.stats.expense)
-                        ),
-                        12.0,
-                    );
-                    lab_c(
-                        ui,
-                        format!(
-                            "NET {}{} A MONTH",
-                            if net < 0 { "" } else { "+" },
-                            money(net)
-                        ),
-                        12.0,
-                        if net < 0 { BAD } else { GOOD },
-                    );
-                    lab(
-                        ui,
-                        format!(
-                            "BUILT {}  BUILDING {}  EMPTY {}",
-                            self.stats.built, self.stats.building, self.stats.empty
-                        ),
-                        11.0,
-                    );
+                    self.levers_body(ui, ctx, false);
                 });
             });
+    }
+
+    fn levers_body(&mut self, ui: &mut Ui, ctx: &Context, sheet: bool) {
+        let open = sheet || self.ui.levers_open;
+        if !sheet {
+            ui.horizontal(|ui| {
+                ui.label(heading("TAXES", 18.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if btn(ui, if open { "-" } else { "+" }, false, 12.0).clicked() {
+                        self.ui.levers_open = !open;
+                    }
+                });
+            });
+        }
+        let ledger = self.ui.ledger;
+        if !open {
+            let net = self.stats.income - self.stats.expense;
+            lab(
+                ui,
+                format!(
+                    "NET {}{} A MONTH",
+                    if net < 0 { "" } else { "+" },
+                    money(net)
+                ),
+                12.0,
+            );
+            return;
+        }
+        let max_h = (ctx.content_rect().height() - 330.0).max(120.0);
+        egui::ScrollArea::vertical()
+            .max_height(max_h)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for c in Class::ALL {
+                    let rate = self.sim.tax_rates().get(c);
+                    let income = ledger.income.get(c);
+                    let per_point = if rate > 0 {
+                        income * 10 / rate as i64
+                    } else {
+                        self.sim
+                            .history()
+                            .last()
+                            .filter(|s| s.tax_x10.get(c) > 0)
+                            .map_or(0, |s| s.income.get(c) * 10 / s.tax_x10.get(c) as i64)
+                    };
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                        ui.painter().rect_filled(r, 0.0, class_color(c));
+                        lab(ui, c.label(), 14.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let d = self.sim.class_demand(c);
+                            lab_c(
+                                ui,
+                                format!("DEMAND {:.0}%", d * 100.0),
+                                11.0,
+                                if d < 0.3 {
+                                    BAD
+                                } else if d < 0.55 {
+                                    GOLD
+                                } else {
+                                    GOOD
+                                },
+                            );
+                        });
+                    });
+                    let mut pct = rate as f32 / 10.0;
+                    let r = ui.add(
+                        egui::Slider::new(
+                            &mut pct,
+                            TAX_MIN_X10 as f32 / 10.0..=TAX_MAX_X10 as f32 / 10.0,
+                        )
+                        .step_by(0.5)
+                        .custom_formatter(|v, _| format!("{v:.1}%")),
+                    );
+                    if r.changed() {
+                        self.sim.set_tax_class(c, (pct * 10.0).round() as u32);
+                    }
+                    let (msg, col) = if rate > ABANDON_ABOVE_X10 {
+                        ("Too high: buildings empty out", BAD)
+                    } else if rate >= 100 {
+                        ("High: growth is slow", ORANGE)
+                    } else if rate <= 40 {
+                        ("Low: fast growth, thin income", GOOD)
+                    } else {
+                        ("Balanced", TEXT)
+                    };
+                    ui.horizontal(|ui| {
+                        lab_c(ui, msg, 12.0, col);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            lab(ui, format!("{}/MO", money(income)), 12.0);
+                        });
+                    });
+                    lab_c(
+                        ui,
+                        format!("Each point is about {} a month", money(per_point)),
+                        12.0,
+                        Color32::from_rgb(170, 176, 196),
+                    );
+                    ui.add_space(2.0);
+                }
+            });
+        ui.separator();
+        let net = self.stats.income - self.stats.expense;
+        lab(
+            ui,
+            format!(
+                "TAX IN {}   COSTS {}",
+                money(self.stats.income),
+                money(self.stats.expense)
+            ),
+            12.0,
+        );
+        lab_c(
+            ui,
+            format!(
+                "NET {}{} A MONTH",
+                if net < 0 { "" } else { "+" },
+                money(net)
+            ),
+            12.0,
+            if net < 0 { BAD } else { GOOD },
+        );
+        lab(
+            ui,
+            format!(
+                "BUILT {}  BUILDING {}  EMPTY {}",
+                self.stats.built, self.stats.building, self.stats.empty
+            ),
+            11.0,
+        );
     }
 
     // ----- budget -----

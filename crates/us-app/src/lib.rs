@@ -4,6 +4,7 @@
 mod cam;
 pub(crate) mod game;
 mod platform;
+mod saves;
 mod theme;
 mod world;
 
@@ -64,9 +65,21 @@ impl App {
             Window::default_attributes().with_title(format!("Urban Sprawl {VERSION_LABEL}"));
         // desktop windows open at a set size; a phone or tablet window is the whole screen
         #[cfg(not(target_os = "ios"))]
-        let attrs = attrs
-            .with_inner_size(winit::dpi::LogicalSize::new(1360.0, 820.0))
-            .with_min_inner_size(winit::dpi::LogicalSize::new(900.0, 560.0));
+        let attrs = {
+            // `URBAN_SPRAWL_WINDOW=390x844` opens a small window, to look at the phone layout
+            let forced = std::env::var("URBAN_SPRAWL_WINDOW").ok().and_then(|v| {
+                let (a, b) = v.split_once('x')?;
+                Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))
+            });
+            match forced {
+                Some((w, h)) => attrs
+                    .with_inner_size(winit::dpi::LogicalSize::new(w, h))
+                    .with_min_inner_size(winit::dpi::LogicalSize::new(w.min(300.0), h.min(300.0))),
+                None => attrs
+                    .with_inner_size(winit::dpi::LogicalSize::new(1360.0, 820.0))
+                    .with_min_inner_size(winit::dpi::LogicalSize::new(900.0, 560.0)),
+            }
+        };
         #[cfg(target_os = "ios")]
         let attrs = {
             use winit::platform::ios::WindowAttributesExtIOS;
@@ -159,7 +172,14 @@ impl App {
 
         let mut raw = gfx.egui_state.take_egui_input(&gfx.window);
         // keep the interface out from under the notch, rounded corners and home indicator
-        let [top, left, bottom, right] = platform::safe_insets(&gfx.window);
+        let [mut top, mut left, mut bottom, mut right] = platform::safe_insets(&gfx.window);
+        // `URBAN_SPRAWL_INSETS=top,left,bottom,right` fakes a notch, to check the layout
+        if let Some(v) = std::env::var("URBAN_SPRAWL_INSETS").ok().and_then(|v| {
+            let p: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            (p.len() == 4).then(|| [p[0], p[1], p[2], p[3]])
+        }) {
+            [top, left, bottom, right] = v;
+        }
         if top + left + bottom + right > 0.0 {
             let k = 1.0 / self.st.settings.ui_scale.max(0.1);
             raw.safe_area_insets = Some(egui::SafeAreaInsets(egui::epaint::MarginF32 {
