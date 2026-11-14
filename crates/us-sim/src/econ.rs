@@ -35,14 +35,14 @@ pub(crate) fn level_value_pct(level: u8) -> i64 {
 }
 
 /// General upkeep per taxed building per month in a small town.
-const ADMIN_BASE: i64 = 500;
+const ADMIN_BASE: i64 = 540;
 /// Every this many taxed buildings add one percent to that.
 const ADMIN_SIZE_STEP: i64 = 2000;
 /// Utilities and wear, dollars per month per $10,000 of building value.
-const UTILITY_UPKEEP_PER_10K: i64 = 12;
+const UTILITY_UPKEEP_PER_10K: i64 = 14;
 /// Staffing of a department costs this percent plus the slope times coverage (0 to 1).
-const COVER_COST_BASE_PCT: i64 = 40;
-const COVER_COST_SLOPE_PCT: i64 = 240;
+const COVER_COST_BASE_PCT: i64 = 60;
+const COVER_COST_SLOPE_PCT: i64 = 50;
 
 const MILESTONES: [i64; 9] = [100, 250, 500, 1000, 2000, 5000, 10_000, 20_000, 50_000];
 

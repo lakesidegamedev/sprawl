@@ -90,10 +90,13 @@ pub(crate) fn tend(s: &mut Sim, round: &mut u32) {
     let t = s.tax_x10();
     if i > 0 && e > i && t < 100 {
         s.set_tax_x10(t + 5);
-    } else if i > 0 && (i - e) * 100 > 8 * i && t > 60 {
+    } else if i > 0
+        && ((i - e) * 100 > 8 * i || (s.treasury > 3_000_000 && (i - e) * 100 > i))
+        && t > 60
+    {
         s.set_tax_x10(t - 5);
     }
-    let want = 1 + (s.population() / 2500) as usize;
+    let want = 1 + (s.population() / 4000) as usize;
     *round += 1;
     for kind in [
         CivicKind::Fire,
