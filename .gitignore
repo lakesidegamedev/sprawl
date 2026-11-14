@@ -4,3 +4,4 @@
 /out
 *.png
 !docs/**/*.png
+/packaging/ios/UrbanSprawl.xcodeproj

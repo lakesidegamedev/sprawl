@@ -1,17 +1,19 @@
-"""Writes a plain 256x256 PNG placeholder icon (dark square, light road cross). Standard library only.
+"""Writes a plain PNG placeholder icon (dark square, light road cross), 256x256 unless a size is
+given. No alpha channel, so it is valid for the App Store. Standard library only.
 
-    python3 make-icon.py <out.png>
+    python3 make-icon.py <out.png> [size]
 """
 import struct
 import sys
 import zlib
 
-N = 256
+N = int(sys.argv[2]) if len(sys.argv) > 2 else 256
+HALF = max(1, round(14 * N / 256))
 rows = []
 for y in range(N):
     row = bytearray([0])
     for x in range(N):
-        road = abs(x - N // 2) < 14 or abs(y - N // 2) < 14
+        road = abs(x - N // 2) < HALF or abs(y - N // 2) < HALF
         row += bytes((225, 225, 215) if road else (34, 40, 48))
     rows.append(bytes(row))
 

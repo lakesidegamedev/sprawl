@@ -1,0 +1,161 @@
+name: ios-testflight
+
+# Manual, explicit, protected. Signs the iOS app and uploads it to TestFlight. Pull requests and
+# pushes never run this and never see signing secrets: the job runs in the `appstore` environment,
+# which needs a reviewer's approval and holds the Apple secrets. Untested until the Apple
+# agreement is accepted and the app record exists.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Marketing version, for example 1.0.0"
+        required: true
+      build:
+        description: "Build number, unique and increasing per upload"
+        required: true
+      confirm:
+        description: "Type UPLOAD to sign and upload"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-testflight
+  cancel-in-progress: false
+
+jobs:
+  archive-and-upload:
+    runs-on: macos-26
+    timeout-minutes: 90
+    environment: appstore
+    steps:
+      - name: Refuse accidental uploads
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [[ "$CONFIRM" != "UPLOAD" ]]; then
+            echo "confirmation must be exactly UPLOAD" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+
+      - name: Require signing configuration
+        env:
+          ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          KEY_ID: ${{ secrets.APPLE_API_KEY }}
+          KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+        run: |
+          missing=()
+          [[ -n "$ISSUER" ]] || missing+=("APPLE_API_ISSUER")
+          [[ -n "$KEY_ID" ]] || missing+=("APPLE_API_KEY")
+          [[ -n "$KEY_CONTENT" ]] || missing+=("APPLE_API_KEY_CONTENT")
+          [[ -n "$TEAM" ]] || missing+=("APPLE_DEVELOPMENT_TEAM")
+          if (( ${#missing[@]} )); then
+            printf 'blocked: missing signing secrets: %s\n' "${missing[*]}" >&2
+            echo "This is an explicit blocked outcome, not an upload." >&2
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install tooling
+        run: |
+          brew install xcodegen
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Rust checks
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo test --locked --workspace
+
+      - name: Generate the Xcode project
+        env:
+          BUILD_NUMBER_INPUT: ${{ inputs.build }}
+        run: bash packaging/ios/prepare.sh "$BUILD_NUMBER_INPUT"
+
+      - name: Write the App Store Connect key
+        env:
+          KEY_ID: ${{ secrets.APPLE_API_KEY }}
+          KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          printf '%s' "$KEY_CONTENT" > "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8"
+          chmod 600 "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8"
+
+      - name: Archive (automatic signing)
+        env:
+          TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          KEY_ID: ${{ secrets.APPLE_API_KEY }}
+          ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          VERSION_INPUT: ${{ inputs.version }}
+          BUILD_INPUT: ${{ inputs.build }}
+        run: |
+          xcodebuild \
+            -project packaging/ios/UrbanSprawl.xcodeproj \
+            -scheme UrbanSprawl \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/UrbanSprawl.xcarchive \
+            MARKETING_VERSION="$VERSION_INPUT" \
+            CURRENT_PROJECT_VERSION="$BUILD_INPUT" \
+            DEVELOPMENT_TEAM="$TEAM" \
+            CODE_SIGN_STYLE=Automatic \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8" \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER" \
+            archive
+
+      - name: Export for App Store Connect
+        env:
+          TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          KEY_ID: ${{ secrets.APPLE_API_KEY }}
+          ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          sed "s/__TEAM_ID__/$TEAM/" packaging/ios/ExportOptions.plist.in > "$RUNNER_TEMP/ExportOptions.plist"
+          xcodebuild -exportArchive \
+            -archivePath build/UrbanSprawl.xcarchive \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8" \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER"
+          ls -l "$RUNNER_TEMP/export"
+
+      - name: Record provenance
+        run: shasum -a 256 "$RUNNER_TEMP"/export/*.ipa | tee ipa.sha256
+
+      - name: Upload to App Store Connect
+        env:
+          KEY_ID: ${{ secrets.APPLE_API_KEY }}
+          ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          # altool takes no key path flag: it looks for AuthKey_<key id>.p8 in
+          # ~/.appstoreconnect/private_keys, so stage a copy there.
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          cp "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8" "$HOME/.appstoreconnect/private_keys/"
+          xcrun altool --upload-app \
+            --type ios \
+            --file "$(ls "$RUNNER_TEMP"/export/*.ipa | head -1)" \
+            --apiKey "$KEY_ID" \
+            --apiIssuer "$ISSUER" \
+            --verbose
+
+      - name: Remove the key
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/private_keys" "$HOME/.appstoreconnect/private_keys"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: testflight-provenance
+          path: ipa.sha256
+          retention-days: 1
