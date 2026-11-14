@@ -34,6 +34,16 @@ pub(crate) fn level_value_pct(level: u8) -> i64 {
     }
 }
 
+/// General upkeep per taxed building per month in a small town.
+const ADMIN_BASE: i64 = 540;
+/// Every this many taxed buildings add one percent to that.
+const ADMIN_SIZE_STEP: i64 = 2000;
+/// Utilities and wear, dollars per month per $10,000 of building value.
+const UTILITY_UPKEEP_PER_10K: i64 = 14;
+/// Staffing of a department costs this percent plus the slope times coverage (0 to 1).
+const COVER_COST_BASE_PCT: i64 = 60;
+const COVER_COST_SLOPE_PCT: i64 = 50;
+
 const MILESTONES: [i64; 9] = [100, 250, 500, 1000, 2000, 5000, 10_000, 20_000, 50_000];
 
 fn kind_jobs(k: LotKind) -> i64 {
@@ -114,6 +124,23 @@ impl Sim {
         (self.tax_base() / 5).max(MIN_CREDIT_LIMIT)
     }
 
+    /// Yearly bond interest in tenths of a percent. It climbs as the town borrows against more of
+    /// its credit limit.
+    pub fn bond_rate_x10(&self) -> i64 {
+        BOND_RATE_X10
+            + BOND_RATE_RISK_X10 * self.debt().min(self.credit_limit()) / self.credit_limit()
+    }
+
+    /// Buildings that pay tax now.
+    pub(crate) fn taxed_building_count(&self) -> usize {
+        self.lots
+            .iter()
+            .filter(|l| {
+                matches!(l.phase, Phase::Built { .. }) && !l.exempt && class_of(l.kind).is_some()
+            })
+            .count()
+    }
+
     /// Take one bond of $100,000: cash now, interest and equal principal each month for 48
     /// months.
     pub fn take_loan(&mut self) -> Result<(), LoanError> {
@@ -156,7 +183,11 @@ impl Sim {
     pub(crate) fn compute_ledger(&self) -> econ::Ledger {
         let mut lg = Ledger::default();
         let f = |d: Dept| self.budget[d.index()] as i64;
-        for l in &self.lots {
+        // a bigger town costs more to run per building: more offices, more records, more
+        // everything
+        let taxed = self.taxed_building_count() as i64;
+        let admin_each = ADMIN_BASE * (100 + taxed / ADMIN_SIZE_STEP) / 100;
+        for (i, l) in self.lots.iter().enumerate() {
             if !matches!(l.phase, Phase::Built { .. }) {
                 continue;
             }
@@ -168,9 +199,15 @@ impl Sim {
                     Class::Shops => lg.income.shops += add,
                     Class::Industry => lg.income.industry += add,
                 }
-                lg.admin += 330;
+                lg.admin += admin_each + value * UTILITY_UPKEEP_PER_10K / 10_000;
                 for d in Dept::ALL {
-                    lg.spending[d.index()] += d.staff_cost() * f(d) / 100;
+                    // the better a building is covered, the more the service costs there
+                    let cov = d
+                        .service()
+                        .and_then(|s| self.coverage[s.index()].get(i).copied())
+                        .unwrap_or(0.0);
+                    let factor = COVER_COST_BASE_PCT + (COVER_COST_SLOPE_PCT as f32 * cov) as i64;
+                    lg.spending[d.index()] += d.staff_cost() * f(d) / 100 * factor / 100;
                 }
                 continue;
             }
@@ -190,8 +227,9 @@ impl Sim {
             }
         }
         lg.spending[Dept::Roads.index()] = roads * f(Dept::Roads) / 100;
+        let rate_x10 = self.bond_rate_x10();
         for l in &self.loans {
-            lg.interest += l.principal_left * BOND_RATE_X10 / 1000 / 12;
+            lg.interest += l.principal_left * rate_x10 / 1000 / 12;
             lg.principal += l.monthly_principal.min(l.principal_left);
         }
         lg
@@ -261,6 +299,12 @@ impl Sim {
             empty: self.empty_count() as u32,
             avg_land_value: self.avg_land_value(),
             congestion: self.avg_congestion(),
+            approval: self.compute_approval().total,
+            days_to_election: if self.rules.elections {
+                (self.next_election - self.day).max(0)
+            } else {
+                0
+            },
         };
         self.history.push(sample);
         // budget warnings, once on entering each state
@@ -292,6 +336,7 @@ impl Sim {
                 None,
             );
         }
+        self.pressure_month();
     }
 
     // ----- history and events -----

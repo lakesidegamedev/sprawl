@@ -6,7 +6,7 @@ fn town() -> Town {
 }
 
 fn sim_after(town: &Town, days: i32) -> Sim {
-    let mut s = Sim::new(town, hall_sites(town)[0], 7);
+    let mut s = Sim::new_with_rules(town, hall_sites(town)[0], 7, 2, Rules::sandbox());
     for _ in 0..days {
         s.step_day();
     }

@@ -100,6 +100,9 @@ impl Sim {
         let at = self.lots[i].pos;
         self.lots[i].fire = Some(day);
         self.fires_total += 1;
+        if cov < 0.3 {
+            self.fire_days.push(day);
+        }
         let mut spread = 0;
         if cov < 0.3 {
             for j in 0..self.lots.len() {
@@ -116,6 +119,7 @@ impl Sim {
                 {
                     self.lots[j].fire = Some(day);
                     self.fires_total += 1;
+                    self.fire_days.push(day);
                     spread += 1;
                 }
             }

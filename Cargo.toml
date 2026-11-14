@@ -28,3 +28,7 @@ opt-level = 2
 
 [profile.dev.package.us-grow]
 opt-level = 2
+
+# The simulation tests run decades of game time; keep them quick in debug builds.
+[profile.dev.package.us-sim]
+opt-level = 2

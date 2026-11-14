@@ -1652,6 +1652,8 @@ impl Game {
                             EventKind::Fire => ("Fire", CORAL),
                             EventKind::Rival => ("Rival", ORANGE),
                             EventKind::Decline => ("Decline", CORAL),
+                            EventKind::Election => ("Election", GOLD),
+                            EventKind::GameOver => ("Game over", CORAL),
                         };
                         ui.horizontal(|ui| {
                             lab_c(
