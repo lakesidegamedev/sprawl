@@ -181,7 +181,7 @@ pub fn list(dir: &Path) -> Vec<SaveInfo> {
             Some(info)
         })
         .collect();
-    out.sort_by(|a, b| b.unix.cmp(&a.unix).then(a.name.cmp(&b.name)));
+    out.sort_by(|a, b| b.unix.cmp(&a.unix).then(a.path.cmp(&b.path)));
     out
 }
 
