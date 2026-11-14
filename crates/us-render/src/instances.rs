@@ -2,6 +2,7 @@
 //! people on downtown pavements. Each kind is one small model drawn many times (instanced); the
 //! per-frame positions are worked out here from a time value.
 
+use crate::land::Land;
 use crate::mesh::Mesh;
 use crate::obj::{Obj, Rgb};
 use crate::rng::Rng;
@@ -144,7 +145,7 @@ pub fn lamp_instances(paths: &[Path]) -> Vec<Instance> {
             let side = if k.is_multiple_of(2) { 1.0 } else { -1.0 };
             let (nx, ny) = (-d[1] * side, d[0] * side);
             out.push(Instance {
-                pos: [pt[0] + nx * off, pt[1] + ny * off, 0.0],
+                pos: [pt[0] + nx * off, pt[1] + ny * off, p.z(s)],
                 theta: libm::atan2f(-ny, -nx),
                 scale: 1.0,
                 tint: 0,
@@ -164,10 +165,29 @@ pub struct Path {
     pub pts: Vec<[f32; 2]>,
     /// Distance along the road at each point.
     pub cum: Vec<f32>,
+    /// Height of the road surface at each point (empty on level ground).
+    pub zs: Vec<f32>,
 }
 
 impl Path {
     pub fn new(class: RoadClass, line: &[Pt]) -> Path {
+        Path::from_points(class, line, Vec::new())
+    }
+
+    /// A road on hills: cut into short steps that carry the road's height, bridges included.
+    pub fn new_on(class: RoadClass, line: &[Pt], land: &Land) -> Path {
+        if land.is_flat() {
+            return Path::new(class, line);
+        }
+        let bed = land.bed(line);
+        let zs: Vec<f32> = (0..bed.pts.len())
+            .map(|i| bed.z(land, i, bed.pts[i].x as f32, bed.pts[i].y as f32))
+            .collect();
+        let pts = bed.pts;
+        Path::from_points(class, &pts, zs)
+    }
+
+    fn from_points(class: RoadClass, line: &[Pt], zs: Vec<f32>) -> Path {
         let pts: Vec<[f32; 2]> = line.iter().map(|p| [p.x as f32, p.y as f32]).collect();
         let mut cum = Vec::with_capacity(pts.len());
         let mut s = 0.0;
@@ -177,7 +197,24 @@ impl Path {
             }
             cum.push(s);
         }
-        Path { class, pts, cum }
+        Path {
+            class,
+            pts,
+            cum,
+            zs,
+        }
+    }
+
+    /// Height of the road surface at distance `s`.
+    pub fn z(&self, s: f32) -> f32 {
+        let n = self.pts.len();
+        if self.zs.len() != n || n < 2 {
+            return 0.0;
+        }
+        let i = self.cum.partition_point(|&c| c <= s).clamp(1, n - 1);
+        let seg = (self.cum[i] - self.cum[i - 1]).max(1e-4);
+        let t = ((s - self.cum[i - 1]) / seg).clamp(0.0, 1.0);
+        self.zs[i - 1] + (self.zs[i] - self.zs[i - 1]) * t
     }
 
     pub fn length(&self) -> f32 {
@@ -290,7 +327,7 @@ pub fn car_instances(paths: &[Path], cars: &[Car], time: f32) -> Vec<Instance> {
         let (nx, ny) = (-d[1], d[0]);
         let heading = libm::atan2f(d[1] * c.dir, d[0] * c.dir);
         out.push(Instance {
-            pos: [pt[0] + nx * side, pt[1] + ny * side, 0.0],
+            pos: [pt[0] + nx * side, pt[1] + ny * side, p.z(s)],
             theta: heading,
             scale: 1.0,
             tint: tint(c.colour),
@@ -416,7 +453,7 @@ pub fn walker_instances(paths: &[Path], walkers: &[Walker], time: f32) -> Vec<In
         let (nx, ny) = (-d[1], d[0]);
         let dir = fwd * w.dir.signum() * if w.dir > 0.0 { 1.0 } else { -1.0 };
         out.push(Instance {
-            pos: [pt[0] + nx * off * w.side, pt[1] + ny * off * w.side, 0.0],
+            pos: [pt[0] + nx * off * w.side, pt[1] + ny * off * w.side, p.z(s)],
             theta: libm::atan2f(d[1] * dir, d[0] * dir),
             scale: 1.0,
             tint: tint(w.colour),

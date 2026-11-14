@@ -846,6 +846,7 @@ pub fn shop_floors(region: Region, floors: usize, rng: &mut Rng) -> Obj {
             &[
                 (Roofline::TileFascia, 4),
                 (Roofline::Parapet, 5),
+                (Roofline::Pitched, 1),
                 (Roofline::Mansard, 1),
             ],
         ),
@@ -855,7 +856,7 @@ pub fn shop_floors(region: Region, floors: usize, rng: &mut Rng) -> Obj {
                 (Roofline::Cornice, 4),
                 (Roofline::Parapet, 3),
                 (Roofline::FalseFront, 3),
-                (Roofline::Pitched, 1),
+                (Roofline::Pitched, 3),
                 (Roofline::Mansard, 1),
             ],
         ),
@@ -865,12 +866,12 @@ pub fn shop_floors(region: Region, floors: usize, rng: &mut Rng) -> Obj {
                 (Roofline::Cornice, 3),
                 (Roofline::Parapet, 3),
                 (Roofline::FalseFront, 1),
-                (Roofline::Pitched, 3),
-                (Roofline::Mansard, 1),
+                (Roofline::Pitched, 5),
+                (Roofline::Mansard, 2),
             ],
         ),
     };
-    let roofc = roof_colour(region, rng);
+    let roofc = roof_colour_civic(region, rng);
     let corner = rng.chance(0.3) && line != Roofline::FalseFront && line != Roofline::Pitched;
     let c = 2.6;
     if corner {
@@ -900,7 +901,7 @@ pub fn shop_floors(region: Region, floors: usize, rng: &mut Rng) -> Obj {
                 );
             }
             Roofline::Parapet => {
-                o.parapet(x0, y0, x1, y1, h, 0.9, wall, trim, [100, 98, 96]);
+                o.parapet(x0, y0, x1, y1, h, 0.9, wall, trim, deck_of(wall));
                 o.bx(
                     x0 - 0.1,
                     y0 - 0.2,
@@ -914,7 +915,7 @@ pub fn shop_floors(region: Region, floors: usize, rng: &mut Rng) -> Obj {
             Roofline::FalseFront => {
                 o.bx_top(x0, y0, h, x1, y0 + 0.4, h + 1.4, wall, trim);
                 o.gable(x0, y0, x1, y0 + 0.4, h + 1.4, 1.5, wall, wall, false, 0.0);
-                o.bx_top(x0, y0 + 0.4, h, x1, y1, h + 0.3, wall, [110, 106, 100]);
+                o.bx_top(x0, y0 + 0.4, h, x1, y1, h + 0.3, wall, deck_of(wall));
             }
             Roofline::Mansard => {
                 o.mansard(x0, y0, x1, y1, h, 1.8, 1.2, roofc, shade(roofc, 0.8));
@@ -933,7 +934,7 @@ pub fn shop_floors(region: Region, floors: usize, rng: &mut Rng) -> Obj {
                     rng.pick(&TILES),
                     0.2,
                 );
-                o.parapet(x0, y0 + 2.0, x1, y1, h, 0.7, wall, trim, [110, 106, 100]);
+                o.parapet(x0, y0 + 2.0, x1, y1, h, 0.7, wall, trim, deck_of(wall));
             }
         }
     }
@@ -1126,7 +1127,7 @@ pub fn apartments(region: Region, floors: usize, rng: &mut Rng) -> Obj {
     let (x0, x1, y0, y1) = (-w / 2.0, w / 2.0, -d / 2.0, d / 2.0);
     let plan = rng.below(4);
     // plan 0 slab, 1 U with a front court, 2 L with a side wing, 3 slab with a stair tower
-    let roofc = roof_colour(region, rng);
+    let roofc = roof_colour_civic(region, rng);
     let pat = wpick(
         rng,
         &[
@@ -1297,12 +1298,12 @@ pub fn apartments(region: Region, floors: usize, rng: &mut Rng) -> Obj {
     if plan == 0 || plan == 3 {
         if ridge_roof {
             o.gable(rx0, ry0, rx1, ry1, h, 2.6, roofc, wall, true, 0.4);
-        } else if low && rng.chance(0.4) {
+        } else if low && rng.chance(0.55) {
             o.hip(rx0, ry0, rx1, ry1, h, 2.4, roofc, 0.4);
         } else if floors <= 6 && rng.chance(0.25) {
             o.mansard(rx0, ry0, rx1, ry1, h, 2.0, 1.4, roofc, shade(roofc, 0.8));
         } else {
-            o.parapet(rx0, ry0, rx1, ry1, h, 0.6, wall, trim, [100, 98, 96]);
+            o.parapet(rx0, ry0, rx1, ry1, h, 0.6, wall, trim, deck_of(wall));
             o.bx(-3.0, -2.0, h, 3.0, 2.0, h + 2.4, [150, 146, 140]);
             let n = rng.below(4);
             roof_gear(
@@ -1314,7 +1315,7 @@ pub fn apartments(region: Region, floors: usize, rng: &mut Rng) -> Obj {
             );
         }
     } else {
-        o.parapet(x0, y0, x1, y1, h, 0.5, wall, trim, [100, 98, 96]);
+        o.parapet(x0, y0, x1, y1, h, 0.5, wall, trim, deck_of(wall));
         if plan == 2 {
             o.parapet(
                 x0,
@@ -1325,7 +1326,7 @@ pub fn apartments(region: Region, floors: usize, rng: &mut Rng) -> Obj {
                 0.5,
                 wall,
                 trim,
-                [100, 98, 96],
+                deck_of(wall),
             );
         }
         roof_gear(
@@ -1385,7 +1386,7 @@ pub fn office(region: Region, floors: usize, rng: &mut Rng) -> Obj {
             [70, 74, 82],
         ])
     };
-    let roof = [110, 112, 118];
+    let roof = deck_of(frame);
     let pat = if low {
         wpick(
             rng,
@@ -1638,7 +1639,7 @@ pub fn office(region: Region, floors: usize, rng: &mut Rng) -> Obj {
             );
         }
         3 => {
-            o.parapet(cx0, cy0, cx1, cy1, top_z, 0.8, frame, trim, [100, 98, 96]);
+            o.parapet(cx0, cy0, cx1, cy1, top_z, 0.8, frame, trim, deck_of(frame));
             roof_gear(
                 &mut o,
                 (cx0 + 0.5, cy0 + 0.5, cx1 - 0.5, cy1 - 0.5),
@@ -1793,6 +1794,35 @@ pub fn build_lot_in(region: Region, kind: LotKind, rng: &mut Rng) -> Obj {
         LotKind::FastFood => fast_food(region, rng),
         LotKind::Farm => farm(region, rng),
     }
+}
+
+/// Share of a lot's collision radius a model may use: the rest is the gap between neighbours.
+pub const LOT_FIT: f32 = 0.97;
+
+/// Shrink a model, if it needs it, so every part of it (fences, garages and eaves included) lies
+/// inside the lot's circle of `radius` metres around its origin. Neighbouring lots never
+/// overlap by that radius, so neighbouring buildings never touch or clip.
+pub fn fit_to_lot(obj: Obj, radius: f32) -> Obj {
+    let cap = radius * LOT_FIT;
+    let far = obj
+        .polys
+        .iter()
+        .flat_map(|p| p.pts.iter())
+        .map(|v| v[0].hypot(v[1]))
+        .fold(0.0f32, f32::max);
+    if far <= cap || far < 1e-3 || cap <= 0.0 {
+        return obj;
+    }
+    let k = cap / far;
+    // less height lost than width, so a squeezed building still reads as a building
+    let kz = 0.5 + 0.5 * k;
+    crate::levels::scaled(&obj, k, k, kz)
+}
+
+/// The model for one lot of a town of this preset, in the preset's regional style and fitted to
+/// the lot's collision radius (metres).
+pub fn build_lot_for(preset: us_gen::Preset, kind: LotKind, radius: f32, rng: &mut Rng) -> Obj {
+    fit_to_lot(build_lot_in(Region::of(preset), kind, rng), radius)
 }
 
 pub const ALL_KINDS: [LotKind; 19] = [

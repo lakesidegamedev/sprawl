@@ -1,5 +1,6 @@
 //! Orbit camera in metres: it looks at a target point from a distance, a heading and a tilt.
 
+use crate::land::Land;
 use glam::{Mat4, Vec3, Vec4};
 
 #[derive(Clone, Copy, Debug)]
@@ -75,4 +76,69 @@ pub fn pick_ground(view: &View, ndc: (f32, f32)) -> Option<Vec3> {
 pub fn project(view: &View, p: Vec3) -> Option<(f32, f32)> {
     let c = view.view_proj * p.extend(1.0);
     (c.w > 1e-6).then(|| (c.x / c.w, c.y / c.w))
+}
+
+/// Distance along the ray `a + t * dir` (dir unit length) to where it first meets the ground, up
+/// to `t_max`. Level land is the plane z = 0; on hills the ray is walked in short steps against
+/// the height grid and the hit refined by halving.
+pub fn ray_ground(a: Vec3, dir: Vec3, t_max: f32, land: &Land) -> Option<f32> {
+    if land.is_flat() {
+        if dir.z.abs() < 1e-6 {
+            return None;
+        }
+        let t = -a.z / dir.z;
+        return (t >= 0.0 && t <= t_max).then_some(t);
+    }
+    let above = |t: f32| {
+        let p = a + dir * t;
+        p.z - land.height(p.x, p.y)
+    };
+    let step = 6.0f32;
+    let mut t0 = 0.0f32;
+    let mut h0 = above(t0);
+    if h0 <= 0.0 {
+        return Some(0.0);
+    }
+    let mut t1 = step;
+    while t0 < t_max {
+        let t = t1.min(t_max);
+        let h1 = above(t);
+        if h1 <= 0.0 {
+            let (mut lo, mut hi) = (t0, t);
+            for _ in 0..18 {
+                let mid = 0.5 * (lo + hi);
+                if above(mid) > 0.0 {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            return Some(0.5 * (lo + hi));
+        }
+        t0 = t;
+        h0 = h1;
+        t1 = t + step.max(h0.abs() * 0.25);
+        if t >= t_max {
+            break;
+        }
+    }
+    None
+}
+
+/// Where the screen point `ndc` meets the land: the ground plane on level land, the hills
+/// otherwise.
+pub fn pick_terrain(view: &View, ndc: (f32, f32), land: &Land) -> Option<Vec3> {
+    if land.is_flat() {
+        return pick_ground(view, ndc);
+    }
+    let near = view.inv_view_proj * Vec4::new(ndc.0, ndc.1, 0.0, 1.0);
+    let far = view.inv_view_proj * Vec4::new(ndc.0, ndc.1, 1.0, 1.0);
+    let (a, b) = (near.truncate() / near.w, far.truncate() / far.w);
+    let d = b - a;
+    let len = d.length();
+    if len < 1e-6 {
+        return None;
+    }
+    let dir = d / len;
+    ray_ground(a, dir, len, land).map(|t| a + dir * t)
 }

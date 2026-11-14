@@ -2,6 +2,7 @@
 //! variants (under construction, empty) from the same models the static scene uses.
 
 use crate::ground::{Ground, layer};
+use crate::land::Land;
 use crate::mesh::Mesh;
 use crate::obj::{Obj, Rgb};
 use crate::scene::{
@@ -44,25 +45,44 @@ fn road_rank(c: RoadClass) -> u8 {
 
 /// Grass, the far-off land, farm fields and the river: the ground that is there from day one.
 pub fn base_ground(t: &Town, farm_additions: &[usize]) -> Mesh {
-    let mut g = Ground::default();
-    let s = t.size as f32;
-    g.rect(-1500.0, -1500.0, s + 1500.0, s + 1500.0, layer::BASE, GRASS);
+    base_ground_on(&Land::flat(t.size as f32), t, farm_additions)
+}
+
+/// Like `base_ground`, with the hills: the land is a grid of faces, fields and sand lie on it
+/// and each river band or lake is a flat sheet at its water level.
+pub fn base_ground_on(land: &Land, t: &Town, farm_additions: &[usize]) -> Mesh {
+    let mut g = Ground::on(land);
+    g.terrain(land, 1500.0, GRASS);
     for &ai in farm_additions {
         let a = &t.additions[ai];
         if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, ai) {
             g.polygon(&a.polygon, layer::ZONE, c);
         }
     }
+    add_water(&mut g, land, t);
+    g.mesh
+}
+
+/// Sand around each water body and the water itself, flat at its level.
+pub fn add_water(g: &mut Ground, land: &Land, t: &Town) {
     for w in &t.water {
         g.polygon(&Ground::grow(w, 14.0), layer::SAND, SAND);
-        g.polygon(w, layer::WATER, WATER);
+        if land.is_flat() {
+            g.polygon(w, layer::WATER, WATER);
+        } else {
+            g.polygon_level(w, land.water_level(w) + layer::WATER - layer::BASE, WATER);
+        }
     }
-    g.mesh
 }
 
 /// The paved land of one addition (its zone colour).
 pub fn zone_ground(t: &Town, index: usize) -> Mesh {
-    let mut g = Ground::default();
+    zone_ground_on(&Land::flat(t.size as f32), t, index)
+}
+
+/// Like `zone_ground`, draped on the hills.
+pub fn zone_ground_on(land: &Land, t: &Town, index: usize) -> Mesh {
+    let mut g = Ground::on(land);
     let a = &t.additions[index];
     if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, index) {
         g.polygon(&a.polygon, layer::ZONE, c);
@@ -86,6 +106,11 @@ pub const CONE_ORANGE: Rgb = [238, 132, 40];
 
 /// Roads and turning bulbs, drawn with dark edges under the surface the way the static scene does.
 pub fn roads_ground(roads: &[(RoadClass, &[Pt])], culs: &[Pt]) -> Mesh {
+    roads_ground_on(&Land::flat(1.0), roads, culs)
+}
+
+/// Like `roads_ground`, draped on the hills with bridges over water.
+pub fn roads_ground_on(land: &Land, roads: &[(RoadClass, &[Pt])], culs: &[Pt]) -> Mesh {
     let draws: Vec<RoadDraw> = roads
         .iter()
         .map(|&(class, points)| RoadDraw {
@@ -94,12 +119,17 @@ pub fn roads_ground(roads: &[(RoadClass, &[Pt])], culs: &[Pt]) -> Mesh {
             works: None,
         })
         .collect();
-    roads_ground_state(&draws, culs)
+    roads_ground_state_on(land, &draws, culs)
 }
 
 /// Like `roads_ground`, with roadworks.
 pub fn roads_ground_state(roads: &[RoadDraw], culs: &[Pt]) -> Mesh {
-    let mut g = Ground::default();
+    roads_ground_state_on(&Land::flat(1.0), roads, culs)
+}
+
+/// Like `roads_ground_state`, draped on the hills.
+pub fn roads_ground_state_on(land: &Land, roads: &[RoadDraw], culs: &[Pt]) -> Mesh {
+    let mut g = Ground::on(land);
     add_roads(&mut g, roads, culs);
     g.mesh
 }
@@ -110,6 +140,14 @@ pub fn add_roads(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt]) {
         .filter(|&i| roads[i].class != RoadClass::Rail)
         .collect();
     order.sort_by_key(|&i| (road_rank(roads[i].class), i));
+    for r in roads {
+        let hw = if r.class == RoadClass::Rail {
+            2.6
+        } else {
+            r.class.half_width() as f32
+        };
+        g.bridge(r.points, hw);
+    }
     for &i in &order {
         let r = &roads[i];
         g.ribbon(
