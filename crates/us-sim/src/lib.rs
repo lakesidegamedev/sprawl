@@ -22,6 +22,7 @@ mod model;
 mod pressure;
 mod roadnet;
 mod save;
+mod streets;
 mod traffic;
 mod value;
 
@@ -30,6 +31,7 @@ pub use ledger_view::LedgerNow;
 pub use model::*;
 pub use pressure::*;
 pub use save::{AUTOSAVE_SLOTS, LoadError, SAVE_VERSION, autosave_path};
+pub use streets::{RoadBuildState, RoadStage, StreetState};
 pub use traffic::RoadTraffic;
 
 use us_gen::{LotKind, Pt, RoadClass, Town, Zone, pt};
@@ -143,6 +145,9 @@ pub struct RoadRun {
     pub points: Vec<Pt>,
     /// `None`: part of the old skeleton, always visible.
     pub addition: Option<usize>,
+    /// The street this run belongs to. A street is built as one piece; widening may later cut it
+    /// into several runs that share the id.
+    pub street: u32,
 }
 
 pub struct Why {
@@ -303,6 +308,11 @@ pub struct Sim {
     revealed: Vec<bool>,
     addition_poly: Vec<Vec<Pt>>,
     runs: Vec<RoadRun>,
+    pub(crate) streets: Vec<streets::Street>,
+    /// Per lot: the street it fronts (`streets::NO_STREET` for none).
+    pub(crate) lot_street: Vec<u32>,
+    /// Per addition: its place in the reveal order (`usize::MAX` for farms).
+    pub(crate) order_pos: Vec<usize>,
     /// Revealed road upkeep basis, metres by class weight.
     road_cost_per_month: Vec<i64>,
     vacant: Vec<usize>,
@@ -385,6 +395,9 @@ impl Sim {
             revealed: vec![false; n_add],
             addition_poly,
             runs: Vec::new(),
+            streets: Vec::new(),
+            lot_street: Vec::new(),
+            order_pos: vec![usize::MAX; n_add],
             road_cost_per_month: vec![0; n_add + 1],
             vacant: Vec::new(),
             acc: 0.0,
@@ -448,6 +461,9 @@ impl Sim {
             .collect();
         ord.sort();
         sim.order = ord.into_iter().map(|(_, i)| i).collect();
+        for (pos, &a) in sim.order.iter().enumerate() {
+            sim.order_pos[a] = pos;
+        }
         for (i, &is_farm) in farm.iter().enumerate() {
             if is_farm {
                 sim.revealed[i] = true;
@@ -484,6 +500,7 @@ impl Sim {
             });
         }
         sim.build_runs(town, &farm);
+        sim.build_streets();
         // reveal the first two additions at once so the hall has a street to stand on
         for _ in 0..initial_reveals {
             sim.reveal_next();
@@ -541,6 +558,7 @@ impl Sim {
                     class: r.class,
                     points: r.points.clone(),
                     addition: None,
+                    street: runs.len() as u32,
                 });
                 continue;
             }
@@ -557,6 +575,7 @@ impl Sim {
                             class: r.class,
                             points: std::mem::take(&mut cur),
                             addition: cur_add.unwrap(),
+                            street: runs.len() as u32,
                         });
                     }
                     cur.clear();
@@ -570,22 +589,17 @@ impl Sim {
                     class: r.class,
                     points: cur,
                     addition: cur_add.unwrap_or(None),
+                    street: runs.len() as u32,
                 });
             }
         }
-        // upkeep per addition (index n_add = skeleton): dollars per month
+        // upkeep per addition (index n_add = skeleton): dollars per month. Only the old roads
+        // count now; a street adds its upkeep when it opens.
         let n_add = self.revealed.len();
-        for run in &runs {
+        for run in runs.iter().filter(|r| r.addition.is_none()) {
             let len: f64 = run.points.windows(2).map(|w| w[0].dist(w[1])).sum();
             let per_m = road_cost_per_m(run.class);
-            let slot = run.addition.unwrap_or(n_add);
-            self.road_cost_per_month[slot] += (len * per_m * 6.0) as i64;
-        }
-        // cul-de-sacs add a little
-        for c in &town.cul_de_sacs {
-            if c.addition < n_add {
-                self.road_cost_per_month[c.addition] += 60;
-            }
+            self.road_cost_per_month[n_add] += (len * per_m * 6.0) as i64;
         }
         self.runs = runs;
     }
@@ -613,8 +627,9 @@ impl Sim {
         &self.town
     }
 
+    /// Neighbourhoods the town has not started on yet.
     pub fn additions_left(&self) -> usize {
-        self.order.len() - self.next_reveal
+        self.order.iter().filter(|&&a| !self.revealed[a]).count()
     }
 
     /// Lots and additions that changed since the last call.
@@ -671,6 +686,18 @@ impl Sim {
         for r in &self.runs {
             f(r.class as u64);
             f(r.points.len() as u64);
+            f(r.street as u64);
+        }
+        for st in &self.streets {
+            match st.state {
+                StreetState::Planned => f(1),
+                StreetState::Building { start, end } => {
+                    f(2);
+                    f(start as u64);
+                    f(end as u64)
+                }
+                StreetState::Open => f(3),
+            }
         }
         for l in &self.lots {
             f(l.level as u64 | (l.fire.is_some() as u64) << 8);
@@ -704,28 +731,24 @@ impl Sim {
 
     // ----- the clock -----
 
+    /// Open the nearest neighbourhood in the reveal order with all its streets at once. Only
+    /// the starting town is made this way; after that streets are built one by one.
     fn reveal_next(&mut self) -> bool {
+        while self
+            .order
+            .get(self.next_reveal)
+            .is_some_and(|&a| self.revealed[a])
+        {
+            self.next_reveal += 1;
+        }
         let Some(&a) = self.order.get(self.next_reveal) else {
             return false;
         };
-        self.next_reveal += 1;
-        self.revealed[a] = true;
-        self.newly_revealed.push(a);
-        self.net_dirty = true;
-        if self.day > 0 {
-            let c = self.addition_centre(a);
-            let n = self.order.iter().take(self.next_reveal).count();
-            self.log(
-                EventKind::Neighborhood,
-                format!("A new neighbourhood opened (number {n})."),
-                Some(c),
-            );
-        }
-        for i in 0..self.lots.len() {
-            if self.lots[i].addition == a && self.lots[i].phase == Phase::Hidden {
-                self.lots[i].phase = Phase::Vacant;
-                self.vacant.push(i);
-                self.changed_lots.push(i);
+        self.open_addition(a);
+        for s in 0..self.streets.len() {
+            if self.streets[s].addition == Some(a) && self.streets[s].state == StreetState::Planned
+            {
+                self.open_street(s);
             }
         }
         true
@@ -743,7 +766,8 @@ impl Sim {
             // builders prefer valuable land near the hall, in the class the town wants most
             let lv = self.lot_value.get(li).copied().unwrap_or(0.5) as f64;
             let want = class_of(l.kind).map_or(0.4, |c| self.class_demand.get(c) as f64);
-            let score = l.pos.dist(self.hall) + noise - 260.0 * lv - 180.0 * want;
+            let score =
+                l.pos.dist(self.hall) + noise - 260.0 * lv - 180.0 * want - self.frontage_bonus(li);
             let _ = day;
             if best.is_none_or(|b| score < b.0) {
                 best = Some((score, vi));
@@ -851,19 +875,13 @@ impl Sim {
         // the mood of the market: all three classes together
         let rate = rate * (0.6 + 0.8 * self.mean_demand());
         self.acc += rate;
-        let mut reveals = 0;
-        while self.vacant.len() < RESERVE && reveals < 2 && self.reveal_next() {
-            reveals += 1;
-        }
+        self.step_streets();
         while self.acc >= 1.0 {
             self.acc -= 1.0;
             if !self.start_one() {
                 self.acc = self.acc.min(2.0);
                 break;
             }
-        }
-        if self.vacant.len() < RESERVE && reveals == 0 {
-            self.reveal_next();
         }
 
         // monthly ledger on the first of the month
@@ -887,7 +905,14 @@ impl Sim {
                 title: "Open land".into(),
                 status: "not reached yet".into(),
                 built: None,
-                reason: "The town has not grown out this far yet.".into(),
+                reason: match self.lot_street.get(lot).copied().filter(|&s| s != streets::NO_STREET)
+                {
+                    Some(s) if self.streets[s as usize].state != StreetState::Open => {
+                        "The street to it has not been built yet. The town extends a street when it needs more room."
+                            .into()
+                    }
+                    _ => "The town has not grown out this far yet.".into(),
+                },
             },
             Phase::Vacant => Why {
                 title: "Empty lot".into(),
@@ -1177,3 +1202,6 @@ mod tests_pressure;
 
 #[cfg(test)]
 mod tests_save;
+
+#[cfg(test)]
+mod tests_streets;

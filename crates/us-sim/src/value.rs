@@ -58,10 +58,6 @@ impl Grid {
 }
 
 impl Sim {
-    fn run_visible(&self, r: &RoadRun) -> bool {
-        r.addition.is_none_or(|a| self.revealed[a])
-    }
-
     /// Rebuild the road graph if roads changed, then coverage, land value and demand.
     pub(crate) fn recompute_values(&mut self) {
         self.values_stale = false;
@@ -69,7 +65,7 @@ impl Sim {
             let roads: Vec<(RoadClass, Vec<Pt>)> = self
                 .runs
                 .iter()
-                .filter(|r| self.run_visible(r))
+                .filter(|r| self.street_open(r.street))
                 .map(|r| (r.class, r.points.clone()))
                 .collect();
             self.roadnet = Some(RoadNet::build(&roads));

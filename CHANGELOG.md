@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Growth by streets (simulation): a new neighbourhood no longer appears whole. Each street is built one at a time, starting from roads that already stand and branching outward (a side street waits for the street it leaves), only when the town is running short of building lots. A street takes two to seven weeks and passes through graded, paved and open; its lots can be built on only once it is open, builders favour lots on arterials and collectors, and alleys follow the street they run off. A street costs upkeep only once it is open. New calls: `road_visible`, `road_open`, `road_build_state` (stage and progress for the renderer), `streets_building`, `streets_opened`. Saves are format 2 (older saves can no longer be opened). The town view draws only started streets, with roadworks at the simulation's own progress.
 - Fix (phones): an open panel sheet could cover the bottom bar of panel buttons, so most menus seemed missing; sheets now sit above the bar's real position. The placement hint says tap on touch screens.
 - Fix (iOS): taps landed below where the player touched. The game drew at the safe-area size and iOS stretched the picture to the whole screen; it now draws at the full screen size and keeps the notch and home bar clear with insets.
 - Shown version is 1.0.0 preview 5.

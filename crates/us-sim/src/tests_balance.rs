@@ -33,14 +33,15 @@ fn near_break_even(years: &[Year]) {
     for (n, y) in years.iter().enumerate().skip(9) {
         let r = ratio(y);
         assert!(
-            (-0.10..=0.12).contains(&r),
+            (-0.10..=0.18).contains(&r),
             "year {}: net is {:.1}% of income",
             n + 1,
             r * 100.0
         );
-        // the pile never reaches more than twenty months of income
+        // the pile never reaches more than thirty months of income (streets now cost upkeep only
+        // once they are built, so the early years pile up more)
         assert!(
-            y.1.abs() < 20 * y.2,
+            y.1.abs() < 30 * y.2,
             "year {}: treasury {} against income {}",
             n + 1,
             y.1,

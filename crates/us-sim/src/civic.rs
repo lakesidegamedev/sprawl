@@ -80,7 +80,7 @@ impl Sim {
         }
         let mut near_road: Option<(f64, Pt)> = None;
         for run in &self.runs {
-            let visible = run.addition.is_none_or(|a| self.revealed[a]);
+            let visible = self.street_open(run.street);
             let hw = run.class.half_width();
             for w in run.points.windows(2) {
                 let d = dist_pt_seg(p, w[0], w[1]);
