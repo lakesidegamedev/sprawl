@@ -63,14 +63,14 @@ pub fn safe_insets(window: &winit::window::Window) -> [f32; 4] {
         a.right.max(b.right) as f32,
     ];
     let phone = {
-        let size = window.inner_size();
+        let size = window.outer_size();
         let scale = window.scale_factor() as f32;
         size.width.min(size.height) as f32 / scale < 600.0
     };
     if phone && v.iter().all(|x| *x <= 0.0) {
         // UIKit gave nothing: keep clear of the Dynamic Island, rounded corners and home bar
         // the way a current iPhone needs, so controls are never under them.
-        let size = window.inner_size();
+        let size = window.outer_size();
         let scale = window.scale_factor() as f32;
         let (w, h) = (size.width as f32 / scale, size.height as f32 / scale);
         v = if w < h {
