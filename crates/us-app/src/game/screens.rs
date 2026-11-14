@@ -187,6 +187,20 @@ impl State {
                 &format!("SAVES ARE KEPT IN {}", saves::save_dir().display()),
                 10.0,
             );
+            if self.saves.iter().any(|s| s.pre_streets) {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(
+                            "Towns saved before 1.0.0 preview 6 cannot be opened: towns now grow \
+                             street by street, and the old towns cannot be converted. Start a new \
+                             town. Saves from preview 6 on will keep opening in later versions.",
+                        )
+                        .size(14.0)
+                        .color(BAD),
+                    )
+                    .wrap(),
+                );
+            }
             if !self.load_note.is_empty() {
                 ui.add(
                     egui::Label::new(RichText::new(&self.load_note).size(14.0).color(BAD)).wrap(),

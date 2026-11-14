@@ -47,6 +47,8 @@ pub struct SaveInfo {
     pub auto: bool,
     /// Set when the file cannot be opened by this version, in plain words.
     pub problem: Option<String>,
+    /// Saved by a preview from before street-by-street growth (cannot be converted).
+    pub pre_streets: bool,
 }
 
 fn now_unix() -> u64 {
@@ -108,6 +110,7 @@ fn parse(path: &Path, bytes: &[u8]) -> SaveInfo {
         sandbox: false,
         auto: false,
         problem: None,
+        pre_streets: false,
     };
     if bytes.len() < 6 || &bytes[..4] != b"USSV" {
         info.problem = Some(LoadError::NotASave.to_string());
@@ -123,6 +126,7 @@ fn parse(path: &Path, bytes: &[u8]) -> SaveInfo {
             .to_string(),
         );
     } else if v < SAVE_VERSION {
+        info.pre_streets = v < us_sim::FIRST_LASTING_VERSION;
         info.problem = Some(
             LoadError::TooOld {
                 found: v,

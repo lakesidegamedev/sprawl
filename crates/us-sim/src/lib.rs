@@ -31,7 +31,7 @@ pub use dynamic::Rival;
 pub use ledger_view::LedgerNow;
 pub use model::*;
 pub use pressure::*;
-pub use save::{AUTOSAVE_SLOTS, LoadError, SAVE_VERSION, autosave_path};
+pub use save::{AUTOSAVE_SLOTS, FIRST_LASTING_VERSION, LoadError, SAVE_VERSION, autosave_path};
 pub use streets::{RoadBuildState, RoadStage, StreetState};
 pub use traffic::RoadTraffic;
 
