@@ -6,6 +6,7 @@ use super::{Game, Sel, money};
 use crate::theme::{
     self, ACCENT, BAD, EDGE, GOOD, INK, LINE, PANEL_DARK, RAISED, TEXT, heading, pixel,
 };
+use crate::world::LiveScene;
 use egui::{Align2, Color32, Context, Pos2, RichText, Sense, Stroke, Ui, vec2};
 use glam::Vec3;
 use us_gen::{Pt, pt};
@@ -102,15 +103,34 @@ fn bar(ui: &mut Ui, width: f32, frac: f32, col: Color32) {
 /// Height the bottom bar takes on a phone, so sheets and cards sit above it.
 pub const DOCK_H: f32 = 52.0;
 
+/// Height of the phone dock: one row of eight buttons, or two rows of four on a narrow screen,
+/// so every label can be 11 points or more.
+pub fn dock_h(ctx: &Context) -> f32 {
+    if dock_rows(ctx) == 2 {
+        DOCK_H + 50.0
+    } else {
+        DOCK_H
+    }
+}
+
+/// Rows the phone dock uses at this width.
+pub fn dock_rows(ctx: &Context) -> usize {
+    if ctx.content_rect().width() < 600.0 {
+        2
+    } else {
+        1
+    }
+}
+
 /// The phone version of a panel: a sheet over the lower half of the screen, above the bottom
 /// bar, with a large close button. Only one sheet is open at a time.
 pub(super) fn sheet(ctx: &Context, title: &str, body: impl FnOnce(&mut Ui)) -> bool {
     let mut closed = false;
     let screen = ctx.content_rect();
     let width = (screen.width() - 12.0).max(240.0);
-    let total = (screen.height() * 0.5).max(240.0) - DOCK_H;
+    let total = (screen.height() * 0.5).max(240.0) - dock_h(ctx);
     egui::Area::new(egui::Id::new("sheet"))
-        .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -(DOCK_H + 4.0)))
+        .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -(dock_h(ctx) + 4.0)))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             theme::panel()
@@ -373,11 +393,20 @@ impl Default for UiState {
     }
 }
 
-fn ring_points(view: &View, c: Pt, r: f32, w: u32, h: u32, ppp: f32) -> Vec<Pos2> {
+fn ring_points(
+    live: &LiveScene,
+    view: &View,
+    c: Pt,
+    r: f32,
+    w: u32,
+    h: u32,
+    ppp: f32,
+) -> Vec<Pos2> {
     let mut out = Vec::with_capacity(48);
     for i in 0..48 {
         let a = i as f32 / 48.0 * std::f32::consts::TAU;
-        let p = Vec3::new(c.x as f32 + r * a.cos(), c.y as f32 + r * a.sin(), 0.0);
+        let (x, y) = (c.x as f32 + r * a.cos(), c.y as f32 + r * a.sin());
+        let p = Vec3::new(x, y, live.ground_at(x, y) + 0.3);
         if let Some(s) = project(view, p) {
             out.push(super::to_screen(s, w, h, ppp));
         }
@@ -528,6 +557,61 @@ impl Game {
                 "stats" => {
                     self.ui.stats_open = true;
                     self.ui.tab = n.min(TABS.len() - 1);
+                }
+                "whole" => {
+                    let c = self.town.size as f32 * 0.5;
+                    self.cam
+                        .look_at(Vec3::new(c, c, 0.0), self.town.size as f32 * 1.5);
+                }
+                "bridge" => {
+                    // a road point over water, for a screenshot
+                    let land = self.live.land();
+                    let found = self.sim.road_runs().iter().find_map(|r| {
+                        r.points
+                            .iter()
+                            .copied()
+                            .find(|&p| land.water_at(p).is_some())
+                    });
+                    if let Some(p) = found {
+                        self.cam
+                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 420.0);
+                    }
+                }
+                "hill" => {
+                    // the steepest built lot, for a screenshot
+                    let land = self.live.land();
+                    let best = self
+                        .sim
+                        .lots()
+                        .iter()
+                        .filter(|l| matches!(l.phase, Phase::Built { .. }))
+                        .map(|l| (land.slope(l.pos.x as f32, l.pos.y as f32), l.pos))
+                        .filter(|(sl, _)| sl.is_finite())
+                        .max_by(|a, b| a.0.total_cmp(&b.0));
+                    if let Some((_, p)) = best {
+                        self.cam
+                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 420.0);
+                    }
+                }
+                "slope" => {
+                    // a placement ghost on the steepest vacant lot where the building fits
+                    let kind = self.ui.tool.unwrap_or(CivicKind::School);
+                    let land = self.live.land();
+                    let best = self
+                        .sim
+                        .lots()
+                        .iter()
+                        .filter(|l| l.phase == Phase::Vacant)
+                        .map(|l| l.pos)
+                        .filter(|&p| self.sim.check_civic(kind, p).is_ok())
+                        .map(|p| (land.slope(p.x as f32, p.y as f32), p))
+                        .filter(|(sl, _)| sl.is_finite())
+                        .max_by(|a, b| a.0.total_cmp(&b.0));
+                    if let Some((_, p)) = best {
+                        self.ui.fixed_ghost = Some(p);
+                        self.cam
+                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 420.0);
+                    }
                 }
                 "spot" => {
                     // first empty lot where the chosen building fits, for a screenshot
@@ -1239,14 +1323,21 @@ impl Game {
                 pos.x * ppp / w as f32 * 2.0 - 1.0,
                 1.0 - pos.y * ppp / h as f32 * 2.0,
             );
-            let Some(g) = us_render::pick_ground(view, ndc) else {
+            let Some(g) = self.live.scene.pick(view, ndc) else {
                 return;
             };
             pt(g.x as f64, g.y as f64)
         };
         let pos = match (
             self.ui.fixed_ghost,
-            project(view, Vec3::new(p.x as f32, p.y as f32, 0.0)),
+            project(
+                view,
+                Vec3::new(
+                    p.x as f32,
+                    p.y as f32,
+                    self.live.ground_at(p.x as f32, p.y as f32),
+                ),
+            ),
         ) {
             (Some(_), Some(s)) => super::to_screen(s, w, h, ppp),
             _ => hover.unwrap_or(Pos2::ZERO),
@@ -1254,7 +1345,7 @@ impl Game {
         let verdict = self.sim.check_civic(kind, p);
         let ok = verdict.is_ok();
         let col = if ok { GOOD } else { BAD };
-        let foot = ring_points(view, p, kind.radius() as f32, w, h, ppp);
+        let foot = ring_points(&self.live, view, p, kind.radius() as f32, w, h, ppp);
         if foot.len() > 3 {
             painter.add(egui::Shape::convex_polygon(
                 foot,
@@ -1264,7 +1355,7 @@ impl Game {
         }
         let f = dept_fraction(&self.sim, kind.service());
         let reach = (kind.service().reach_m() * (0.4 + 0.6 * f)) as f32;
-        let ring = ring_points(view, p, reach, w, h, ppp);
+        let ring = ring_points(&self.live, view, p, reach, w, h, ppp);
         if ring.len() > 3 {
             painter.add(egui::Shape::closed_line(ring, Stroke::new(2.0, GOLD)));
         }
@@ -1319,7 +1410,7 @@ impl Game {
         });
         let Some(s) = svc else { return };
         let reach = (s.reach_m() * (0.4 + 0.6 * dept_fraction(&self.sim, s))) as f32;
-        let ring = ring_points(view, l.pos, reach, w, h, ppp);
+        let ring = ring_points(&self.live, view, l.pos, reach, w, h, ppp);
         if ring.len() > 3 {
             painter.add(egui::Shape::closed_line(ring, Stroke::new(2.0, GOLD)));
         }

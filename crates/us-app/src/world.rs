@@ -5,12 +5,15 @@ use glam::Vec3;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
-use us_gen::{LotKind, Pt, RoadClass, Town, Zone};
+use us_gen::{LotKind, Preset, Pt, RoadClass, Town, Zone};
 use us_render::levels::{building_site, burned};
-use us_render::live::{RoadDraw, abandoned, base_ground, roads_ground_state, zone_ground};
-use us_render::obj::Obj;
+use us_render::live::{
+    RoadDraw, abandoned, base_ground_far_on, base_ground_on, roads_ground_state_on, zone_ground_on,
+};
+use us_render::obj::{Obj, Sit};
 use us_render::{
-    Chunk, CivicModel, LotInfo, Mesh, Rng, RoadInfo, Scene, build_civic, build_lot_level, kit,
+    Chunk, CivicModel, Land, LotInfo, Mesh, Rng, RoadInfo, Scene, build_civic, build_lot_level_for,
+    kit,
 };
 use us_sim::{CivicKind, LotState, Phase, Sim};
 
@@ -58,6 +61,8 @@ pub struct LiveScene {
     show_hall: bool,
     hall_theta: f32,
     hall_obj: Obj,
+    /// The hills the town stands on.
+    land: Land,
     cell_chunk: HashMap<Cell, usize>,
     cell_lots: HashMap<Cell, Vec<usize>>,
     hall_cell: Cell,
@@ -65,7 +70,7 @@ pub struct LiveScene {
     queue: VecDeque<Cell>,
     pub look: Vec<Look>,
     /// Finished model per lot, with the look and radius it was made for.
-    objs: Vec<Option<(Look, u16, Obj)>>,
+    objs: Vec<Option<(Look, u16, LotDraw)>>,
     /// Lots parked off the map in the scene's geometry (not drawn yet).
     parked: Vec<bool>,
     road_chunk: HashMap<Group, usize>,
@@ -75,6 +80,8 @@ pub struct LiveScene {
     prev_runs: Vec<PrevRun>,
     rev: u64,
     ground_chunks: usize,
+    /// Chunks 1 to this hold the base ground tiles.
+    ground_tile_count: usize,
     pub triangles: usize,
     /// Lots or roads changed since the scene was last told the geometry.
     geo_dirty: bool,
@@ -144,18 +151,26 @@ fn civic_model(c: Option<CivicKind>) -> Option<CivicModel> {
     }
 }
 
-/// The model of one lot (building and its trees) at a level, local to the lot, facing south.
-fn lot_model(seed: u64, l: &LotState, level: u8) -> Obj {
+/// What one lot is drawn with: the building, and its trees, each standing on the ground under it.
+struct LotDraw {
+    building: Obj,
+    /// Tree models with their place in the lot (local, facing south).
+    trees: Vec<(f32, f32, Obj)>,
+}
+
+/// The model of one lot at a level, local to the lot, facing south.
+fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8) -> LotDraw {
     let mut rng = Rng::new(seed ^ 0x5eed_0000, l.src as u64 * 7919 + 13);
-    let mut obj = match civic_model(l.civic) {
+    let building = match civic_model(l.civic) {
         Some(m) => build_civic(m, &mut rng),
-        None if l.civic.is_some() => kit::build_lot(l.kind, &mut rng),
-        None => build_lot_level(l.kind, level, &mut rng),
+        None if l.civic.is_some() => kit::build_lot_for(preset, l.kind, l.radius as f32, &mut rng),
+        None => build_lot_level_for(preset, l.kind, level, l.radius as f32, &mut rng),
     };
     let (kind, radius) = (l.kind, l.radius);
     let n = trees_for(kind, &mut rng);
+    let mut trees = Vec::new();
     if n > 0 {
-        let fp = obj.footprint();
+        let fp = building.footprint();
         let green = [kit::TREE, kit::TREE_D];
         let mut placed: Vec<[f32; 2]> = Vec::new();
         for _ in 0..n {
@@ -170,25 +185,32 @@ fn lot_model(seed: u64, l: &LotState, level: u8) -> Obj {
                 }
                 placed.push([lx, ly]);
                 let (rad, h) = (rng.range(1.8, 2.8), rng.range(5.0, 8.0));
-                let tree = kit::tree(rad, h, rng.pick(&green));
-                obj.add_placed(&tree, lx, ly, 0.0);
+                trees.push((lx, ly, kit::tree(rad, h, rng.pick(&green))));
                 break;
             }
         }
     }
-    obj
+    LotDraw { building, trees }
 }
 
 /// The model to draw for a lot in its current look.
-fn look_obj(seed: u64, i: usize, l: &LotState, look: Look) -> Obj {
+fn look_obj(preset: Preset, seed: u64, i: usize, l: &LotState, look: Look) -> LotDraw {
     let level = if l.civic.is_some() { 1 } else { look.level };
-    let full = lot_model(seed, l, level);
-    match look.state {
-        1 => building_site(&full, (look.step as f32 + 0.5) / 5.0),
-        3 => burned(&full, &mut Rng::new(seed ^ 0xb0b0, i as u64)),
-        4 => abandoned(&full),
-        _ => full,
+    let mut d = lot_model(preset, seed, l, level);
+    let mut rng = Rng::new(seed ^ 0xb0b0, i as u64);
+    let mut dress = |o: &Obj| match look.state {
+        1 => building_site(o, (look.step as f32 + 0.5) / 5.0),
+        3 => burned(o, &mut rng),
+        4 => abandoned(o),
+        _ => o.clone(),
+    };
+    if look.state != 0 && look.state != 2 {
+        d.building = dress(&d.building);
+        for t in &mut d.trees {
+            t.2 = dress(&t.2);
+        }
     }
+    d
 }
 
 fn dist_seg(p: Pt, a: Pt, b: Pt) -> f64 {
@@ -260,13 +282,24 @@ impl LiveScene {
         let farm: Vec<usize> = (0..town.additions.len())
             .filter(|&i| town.additions[i].zone == Zone::Farm)
             .collect();
-        let ground = base_ground(&town, &farm);
+        // `URBAN_SPRAWL_FLAT=1` draws the town on level ground, to compare frame times
+        let land = if std::env::var("URBAN_SPRAWL_FLAT").is_ok_and(|v| v == "1") {
+            Land::flat(town.size as f32)
+        } else {
+            Land::from_town(&town)
+        };
+        let ground = base_ground_on(&land, &town, &farm);
         let hall = sim.hall;
         let mut scene = Scene::dynamic(
             town.size as f32,
             ground,
-            Vec3::new(hall.x as f32, hall.y as f32, 0.0),
+            Vec3::new(
+                hall.x as f32,
+                hall.y as f32,
+                land.height(hall.x as f32, hall.y as f32),
+            ),
         );
+        scene.set_land(land.clone());
         // road ground per group; the skeleton and connectors are chunk 0
         scene.chunks.push(Chunk {
             rev: 1,
@@ -275,6 +308,15 @@ impl LiveScene {
             lo: Vec3::new(-100.0, -100.0, 0.0),
             hi: Vec3::new(town.size as f32 + 100.0, town.size as f32 + 100.0, 2.0),
         });
+        // the hills in tiles, each with a coarse form for when it is small on screen
+        if !land.is_flat() {
+            let coarse = coarse_land(&land, &town);
+            let far = base_ground_far_on(&land, &coarse, &town, &farm);
+            let near = std::mem::take(&mut scene.ground);
+            scene
+                .chunks
+                .extend(ground_tiles(&near, &far, town.size as f32));
+        }
         let mut cell_lots: HashMap<Cell, Vec<usize>> = HashMap::new();
         for (i, l) in sim.lots().iter().enumerate() {
             cell_lots
@@ -306,12 +348,14 @@ impl LiveScene {
         let hall_obj = kit::town_hall(&mut hrng);
         let hall_cell = cell_of(hall.x, hall.y);
         let n = sim.lots().len();
+        let ground_tile_count = scene.chunks.len() - 1;
         let mut ls = LiveScene {
             scene,
             town,
             show_hall,
             hall_theta,
             hall_obj,
+            land,
             cell_chunk: HashMap::new(),
             cell_lots,
             hall_cell,
@@ -335,6 +379,7 @@ impl LiveScene {
                 .collect(),
             rev: 1,
             ground_chunks: 0,
+            ground_tile_count,
             triangles: 0,
             geo_dirty: true,
             geo_at: Instant::now(),
@@ -417,6 +462,32 @@ impl LiveScene {
         (0.0..1.0).contains(&p).then_some(p)
     }
 
+    /// The hills the town stands on.
+    /// Triangles in the base ground mesh.
+    pub fn ground_triangles(&self) -> usize {
+        self.scene.ground.triangles()
+            + (1..self.ground_tile_count + 1)
+                .map(|i| self.scene.chunks[i].mesh.triangles())
+                .sum::<usize>()
+    }
+
+    pub fn land(&self) -> &Land {
+        &self.land
+    }
+
+    /// The ground height at a point of the town.
+    pub fn ground_at(&self, x: f32, y: f32) -> f32 {
+        self.land.height(x, y)
+    }
+
+    /// Lowest and highest z a chunk of things `above` metres tall can reach on this land.
+    fn z_range(&self, above: f32) -> (f32, f32) {
+        (
+            self.land.min_height().min(0.0),
+            self.land.max_height().max(0.0) + above + 12.0,
+        )
+    }
+
     /// Where the first stretch of road works is, for a camera or a test.
     pub fn works_place(&self, sim: &Sim) -> Option<Pt> {
         sim.road_runs()
@@ -450,27 +521,28 @@ impl LiveScene {
                 .collect(),
             None => Vec::new(),
         };
-        let mesh = roads_ground_state(&draws, &culs);
+        let mesh = roads_ground_state_on(&self.land, &draws, &culs);
+        let (zlo, zhi) = self.z_range(2.0);
         let (lo, hi) = match group {
             None => (
-                Vec3::new(-100.0, -100.0, 0.0),
+                Vec3::new(-100.0, -100.0, zlo),
                 Vec3::new(
                     self.town.size as f32 + 100.0,
                     self.town.size as f32 + 100.0,
-                    2.0,
+                    zhi,
                 ),
             ),
             Some(_) => {
                 let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
                 for d in &draws {
                     for p in d.points {
-                        lo = lo.min(Vec3::new(p.x as f32 - 30.0, p.y as f32 - 30.0, 0.0));
-                        hi = hi.max(Vec3::new(p.x as f32 + 30.0, p.y as f32 + 30.0, 2.0));
+                        lo = lo.min(Vec3::new(p.x as f32 - 30.0, p.y as f32 - 30.0, zlo));
+                        hi = hi.max(Vec3::new(p.x as f32 + 30.0, p.y as f32 + 30.0, zhi));
                     }
                 }
                 for c in &culs {
-                    lo = lo.min(Vec3::new(c.x as f32 - 30.0, c.y as f32 - 30.0, 0.0));
-                    hi = hi.max(Vec3::new(c.x as f32 + 30.0, c.y as f32 + 30.0, 2.0));
+                    lo = lo.min(Vec3::new(c.x as f32 - 30.0, c.y as f32 - 30.0, zlo));
+                    hi = hi.max(Vec3::new(c.x as f32 + 30.0, c.y as f32 + 30.0, zhi));
                 }
                 (lo, hi)
             }
@@ -586,11 +658,12 @@ impl LiveScene {
     fn add_ground_chunk(&mut self, sim: &Sim, addition: usize) {
         let town = self.town.clone();
         let a = &town.additions[addition];
-        let mesh = zone_ground(&town, addition);
+        let mesh = zone_ground_on(&self.land, &town, addition);
+        let (zlo, zhi) = self.z_range(2.0);
         let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
         for p in &a.polygon {
-            lo = lo.min(Vec3::new(p.x as f32 - 30.0, p.y as f32 - 30.0, 0.0));
-            hi = hi.max(Vec3::new(p.x as f32 + 30.0, p.y as f32 + 30.0, 2.0));
+            lo = lo.min(Vec3::new(p.x as f32 - 30.0, p.y as f32 - 30.0, zlo));
+            hi = hi.max(Vec3::new(p.x as f32 + 30.0, p.y as f32 + 30.0, zhi));
         }
         self.rev += 1;
         self.scene.chunks.push(Chunk {
@@ -680,14 +753,13 @@ impl LiveScene {
         let seed = self.town.seed;
         if self.show_hall && cell == self.hall_cell {
             let h = sim.hall;
-            self.hall_obj.emit(
-                &mut mesh,
-                &mut next_id,
-                h.x as f32,
-                h.y as f32,
-                self.hall_theta,
-                1.0,
-            );
+            let (hx, hy) = (h.x as f32, h.y as f32);
+            let sit = (!self.land.is_flat()).then(|| Sit {
+                land: &self.land,
+                z: self.land.sit_height(hx, hy),
+            });
+            self.hall_obj
+                .emit_on(&mut mesh, &mut next_id, hx, hy, self.hall_theta, 1.0, sit);
         }
         if let Some(ids) = self.cell_lots.get(&cell) {
             for &i in ids {
@@ -698,17 +770,26 @@ impl LiveScene {
                 let l = &sim.lots()[i];
                 let r = l.radius as u16;
                 if !matches!(&self.objs[i], Some((lk, lr, _)) if *lk == k && *lr == r) {
-                    self.objs[i] = Some((k, r, look_obj(seed, i, l, k)));
+                    self.objs[i] = Some((k, r, look_obj(self.town.preset, seed, i, l, k)));
                 }
-                let obj = &self.objs[i].as_ref().unwrap().2;
-                obj.emit(
-                    &mut mesh,
-                    &mut next_id,
-                    l.pos.x as f32,
-                    l.pos.y as f32,
-                    l.facing as f32,
-                    1.0,
-                );
+                let draw = &self.objs[i].as_ref().unwrap().2;
+                let (x, y, th) = (l.pos.x as f32, l.pos.y as f32, l.facing as f32);
+                let hills = !self.land.is_flat();
+                let sit = hills.then(|| Sit {
+                    land: &self.land,
+                    z: self.land.sit_height(x, y),
+                });
+                draw.building
+                    .emit_on(&mut mesh, &mut next_id, x, y, th, 1.0, sit);
+                let (st, ct) = (th.sin(), th.cos());
+                for (lx, ly, tree) in &draw.trees {
+                    let (tx, ty) = (x + ct * lx - st * ly, y + st * lx + ct * ly);
+                    let sit = hills.then(|| Sit {
+                        land: &self.land,
+                        z: self.land.height(tx, ty),
+                    });
+                    tree.emit_on(&mut mesh, &mut next_id, tx, ty, 0.0, 1.0, sit);
+                }
                 if next_id > base + IDS_PER_CELL - 200 {
                     next_id = base;
                 }
@@ -717,12 +798,12 @@ impl LiveScene {
         let lo = Vec3::new(
             cell.0 as f32 * CELL - 60.0,
             cell.1 as f32 * CELL - 60.0,
-            0.0,
+            self.z_range(70.0).0,
         );
         let hi = Vec3::new(
             (cell.0 + 1) as f32 * CELL + 60.0,
             (cell.1 + 1) as f32 * CELL + 60.0,
-            70.0,
+            self.z_range(70.0).1,
         );
         self.rev += 1;
         let chunk = Chunk {
@@ -742,8 +823,116 @@ impl LiveScene {
     }
 }
 
+/// How many metres of the land the coarse ground skips per vertex (every fourth grid line).
+const COARSE_STRIDE: usize = 4;
+/// The coarse ground sits this far under the fine one so it never shows through roads or lots.
+const COARSE_SINK: f32 = 0.5;
+
+/// The land on every fourth grid line, lowered a little, for the far form of the ground.
+fn coarse_land(land: &Land, town: &Town) -> Land {
+    let n = (land.n() - 1) / COARSE_STRIDE + 1;
+    let size = land.size();
+    let step = size / (n - 1) as f32;
+    let mut data = Vec::with_capacity(n * n);
+    for j in 0..n {
+        for i in 0..n {
+            let (x, y) = (i as f32 * step, j as f32 * step);
+            data.push(land.height(x, y) - COARSE_SINK);
+        }
+    }
+    Land::from_grid(n, size, data, town.water.clone())
+}
+
+/// Cut the ground into 256 m tiles by where each face lies; the faces that reach past the map
+/// edge go into one more chunk. Each tile carries the matching faces of the coarse ground.
+fn ground_tiles(near: &Mesh, far: &Mesh, size: f32) -> Vec<Chunk> {
+    let tiles = (size / CELL).ceil().max(1.0) as i32;
+    let split = |m: &Mesh| -> HashMap<Cell, Mesh> {
+        let mut out: HashMap<Cell, (Mesh, HashMap<u32, u32>)> = HashMap::new();
+        let inside = |v: &us_render::Vertex| {
+            v.pos[0] >= -0.01
+                && v.pos[1] >= -0.01
+                && v.pos[0] <= size + 0.01
+                && v.pos[1] <= size + 0.01
+        };
+        for tri in m.plain.chunks_exact(3).chain(m.cast.chunks_exact(3)) {
+            let vs = [
+                &m.vertices[tri[0] as usize],
+                &m.vertices[tri[1] as usize],
+                &m.vertices[tri[2] as usize],
+            ];
+            let key = if vs.iter().all(|v| inside(v)) {
+                let cx = (vs[0].pos[0] + vs[1].pos[0] + vs[2].pos[0]) / 3.0;
+                let cy = (vs[0].pos[1] + vs[1].pos[1] + vs[2].pos[1]) / 3.0;
+                (
+                    ((cx / CELL).floor() as i32).clamp(0, tiles - 1),
+                    ((cy / CELL).floor() as i32).clamp(0, tiles - 1),
+                )
+            } else {
+                (-1, -1)
+            };
+            let (dst, remap) = out.entry(key).or_default();
+            for &old in tri {
+                let new = *remap.entry(old).or_insert_with(|| {
+                    dst.vertices.push(m.vertices[old as usize]);
+                    dst.vertices.len() as u32 - 1
+                });
+                dst.plain.push(new);
+            }
+        }
+        out.into_iter().map(|(k, (m, _))| (k, m)).collect()
+    };
+    let mut near = split(near);
+    let mut far = split(far);
+    let mut keys: Vec<Cell> = near.keys().copied().collect();
+    keys.sort();
+    keys.into_iter()
+        .map(|k| {
+            let mesh = near.remove(&k).unwrap_or_default();
+            let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+            for v in &mesh.vertices {
+                let p = Vec3::from(v.pos);
+                lo = lo.min(p);
+                hi = hi.max(p);
+            }
+            // the apron chunk has no coarse form and is never culled by size
+            let far = (k.0 >= 0).then(|| far.remove(&k).unwrap_or_default());
+            Chunk {
+                rev: 1,
+                mesh,
+                far,
+                lo,
+                hi,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ground_tiles_keep_every_face() {
+        use us_render::Vertex;
+        let v = |x: f32, y: f32| Vertex {
+            pos: [x, y, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            color: [0, 255, 0, 255],
+            id: 0,
+        };
+        let mut m = Mesh::default();
+        // one face in tile (0, 0), one in tile (1, 1), one past the map edge
+        for (x, y) in [(10.0, 10.0), (300.0, 300.0), (-50.0, 10.0)] {
+            let b = m.vertices.len() as u32;
+            m.vertices.extend([v(x, y), v(x + 5.0, y), v(x, y + 5.0)]);
+            m.plain.extend([b, b + 1, b + 2]);
+        }
+        let chunks = ground_tiles(&m, &m, 512.0);
+        assert_eq!(chunks.len(), 3);
+        let total: usize = chunks.iter().map(|c| c.mesh.triangles()).sum();
+        assert_eq!(total, 3);
+        assert_eq!(chunks.iter().filter(|c| c.far.is_none()).count(), 1);
+    }
+
     use super::*;
     use us_gen::{Preset, generate};
     use us_sim::{CivicKind, Phase, hall_sites};

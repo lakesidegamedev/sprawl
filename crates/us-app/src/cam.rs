@@ -50,6 +50,16 @@ impl CamCtl {
         self.g_tilt = 48.0;
     }
 
+    /// Keep the camera's target on the ground under it: `z` is the ground height there.
+    pub fn follow_ground(&mut self, z: f32) {
+        self.g_target.z = z;
+    }
+
+    /// Where the camera goal is on the map.
+    pub fn goal_xy(&self) -> (f32, f32) {
+        (self.g_target.x, self.g_target.y)
+    }
+
     fn forward(&self) -> Vec3 {
         let y = self.g_yaw.to_radians();
         Vec3::new(y.sin(), y.cos(), 0.0)
