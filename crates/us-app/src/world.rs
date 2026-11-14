@@ -735,20 +735,8 @@ impl LiveScene {
             self.geo_dirty = true;
         }
         for a in revealed {
-            // the streets of a neighbourhood that opens now are built in front of the player
-            if sim.day > 0
-                && !self.prev_runs.is_empty()
-                && self.run_work.len() == sim.road_runs().len()
-            {
-                for (i, r) in sim.road_runs().iter().enumerate() {
-                    if r.addition == Some(a) && self.run_work[i].start.is_none() {
-                        self.run_work[i] = RunWork {
-                            start: Some(sim.day),
-                            step: 0,
-                        };
-                    }
-                }
-            }
+            // New streets show their construction stages from the simulation's own street
+            // states (`road_build_state`), street by street; no separate timer here.
             self.add_ground_chunk(sim, a);
         }
         // lots the mayor placed are appended to the simulation's list
