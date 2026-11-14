@@ -1,5 +1,7 @@
 //! The studio look: Silkscreen pixel type, solid panels, hard shadows, no glow.
 
+#![allow(deprecated)]
+
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Frame, Margin, Stroke};
 
 // The studio palette shared with Corporate Warfare: dark navy panels, light type, gold for the

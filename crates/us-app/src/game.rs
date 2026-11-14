@@ -739,25 +739,41 @@ impl State {
     }
 
     fn title_block(&self, ui: &mut egui::Ui) {
+        let short = ui.ctx().content_rect().height() < 520.0;
+        let compact = theme::is_compact(ui.ctx());
         ui.vertical_centered(|ui| {
-            ui.label(heading("URBAN SPRAWL", 56.0));
+            ui.label(heading(
+                "URBAN SPRAWL",
+                if short {
+                    28.0
+                } else if compact {
+                    36.0
+                } else {
+                    56.0
+                },
+            ));
             ui.label(
                 RichText::new(crate::VERSION_LABEL.to_uppercase())
-                    .font(pixel(16.0))
+                    .font(pixel(if short { 12.0 } else { 16.0 }))
                     .color(ACCENT),
             );
-            ui.add_space(8.0);
+            ui.add_space(if short { 2.0 } else { 8.0 });
         });
     }
 
     fn menu_ui(&mut self, ctx: &egui::Context) {
-        theme::centered(ctx, "menu", 28, |ui| {
+        let short = ctx.content_rect().height() < 520.0;
+        theme::centered(ctx, "menu", if short { 12 } else { 28 }, |ui| {
+            if short {
+                ui.spacing_mut().item_spacing.y = 4.0;
+            }
             self.title_block(ui);
             // sign-in is desktop only; the App Store keeps the iOS app current
             #[cfg(not(target_os = "ios"))]
             {
                 let status = self.lakeside.status();
-                if let Some(a) = &status.account {
+                if short {
+                } else if let Some(a) = &status.account {
                     ui.vertical_centered(|ui| {
                         label(ui, &format!("SIGNED IN AS {}", a.name.to_uppercase()), 14.0);
                         if status.launcher {
@@ -1531,8 +1547,9 @@ impl State {
                         (y.title, y.status, y.built, y.reason)
                     }
                 };
-                if compact && g.any_sheet() {
-                    // a sheet is open: the phone has room for one
+                let modal = g.menu_open || g.election.is_some() || g.sim.is_game_over();
+                if modal || (compact && g.any_sheet()) {
+                    // a sheet or a modal screen is open: the phone has room for one
                 } else if compact {
                     let mut close = false;
                     let st = status.to_uppercase();
@@ -1957,7 +1974,7 @@ impl Game {
         self.live = live;
         self.placed = true;
         self.speed = 2;
-        self.sel = Some(Sel::Hall);
+        self.sel = if self.compact { None } else { Some(Sel::Hall) };
         self.cam
             .look_at(Vec3::new(site.x as f32, site.y as f32, 0.0), 650.0);
         self.banner = Some((

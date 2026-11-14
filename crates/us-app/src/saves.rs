@@ -270,11 +270,6 @@ pub fn age_text(unix: u64) -> String {
     format!("{n} {unit}s ago")
 }
 
-/// The newest save of any kind that is not marked unreadable, for the Continue button.
-pub fn latest(dir: &Path) -> Option<SaveInfo> {
-    list(dir).into_iter().find(|i| i.problem.is_none())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,7 +318,10 @@ mod tests {
         }
         let n = std::fs::read_dir(&dir).unwrap().count();
         assert_eq!(n, AUTOSAVE_SLOTS);
-        let latest = latest(&dir).unwrap();
+        let latest = list(&dir)
+            .into_iter()
+            .find(|i| i.problem.is_none())
+            .unwrap();
         assert!(latest.auto);
         assert!(latest.path.ends_with("autosave-1.save"));
         // and the plain simulation loader still reads it
@@ -356,9 +354,13 @@ mod tests {
                 .problem
                 .is_some()
         );
-        let e = load(&dir.join("cut.save")).unwrap_err();
+        let e = load(&dir.join("cut.save")).err().unwrap();
         assert!(e.contains("cut short") || e.contains("damaged"), "{e}");
-        assert!(latest(&dir).is_none_or(|i| i.name != "junk"));
+        assert!(
+            l.iter()
+                .filter(|i| i.problem.is_none())
+                .all(|i| i.name != "junk")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

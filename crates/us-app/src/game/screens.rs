@@ -358,10 +358,13 @@ impl Game {
         let when = if self.is_sandbox() {
             "SANDBOX".to_string()
         } else {
-            format!(
-                "VOTE {}",
-                self.sim.next_election_date().text().to_uppercase()
-            )
+            let t = self.sim.next_election_date().text().to_uppercase();
+            if compact {
+                // month and year only: the chip is narrow
+                format!("VOTE {}", t.split_once(' ').map_or(t.as_str(), |x| x.1))
+            } else {
+                format!("VOTE {t}")
+            }
         };
         let size = vec2(
             if compact { 108.0 } else { 168.0 },
@@ -504,7 +507,7 @@ impl Game {
         ];
         let n = items.len() as f32;
         let gap = 3.0;
-        let w = ((ui.available_width() - gap * (n - 1.0)) / n).floor();
+        let w = ((ui.available_width() - 8.0 - gap * (n - 1.0)) / n).floor();
         let font = if w >= 52.0 { 11.0 } else { 9.0 };
         let mut hit: Option<usize> = None;
         ui.spacing_mut().item_spacing.x = gap;
@@ -732,6 +735,23 @@ impl Game {
                     .wrap(),
                 );
             }
+            let buttons = |ui: &mut Ui, nav: &mut Option<Nav>| {
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    if theme::button(ui, "NEW TOWN").clicked() {
+                        *nav = Some(Nav::NewTown);
+                    }
+                    if theme::button(ui, "LOAD A SAVE").clicked() {
+                        *nav = Some(Nav::Load);
+                    }
+                    if theme::button(ui, "MENU").clicked() {
+                        *nav = Some(Nav::Menu);
+                    }
+                });
+            };
+            if compact {
+                buttons(ui, &mut nav);
+            }
             ui.add_space(6.0);
             label(ui, "YOUR CAREER", 14.0);
             let s = &over.summary;
@@ -761,18 +781,9 @@ impl Game {
                         ui.end_row();
                     }
                 });
-            ui.add_space(8.0);
-            ui.horizontal_wrapped(|ui| {
-                if theme::button(ui, "NEW TOWN").clicked() {
-                    nav = Some(Nav::NewTown);
-                }
-                if theme::button(ui, "LOAD A SAVE").clicked() {
-                    nav = Some(Nav::Load);
-                }
-                if theme::button(ui, "MENU").clicked() {
-                    nav = Some(Nav::Menu);
-                }
-            });
+            if !compact {
+                buttons(ui, &mut nav);
+            }
         });
         nav
     }
