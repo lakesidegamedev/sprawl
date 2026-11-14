@@ -59,6 +59,22 @@ fn log(msg: &str) {
     eprintln!("{msg}");
 }
 
+/// The size to draw at, in physical pixels. On iOS winit's `inner_size` is only the safe area
+/// (the screen minus the notch and home bar), while the drawing surface covers the whole screen
+/// and touches are reported relative to the whole screen; drawing at the safe-area size made iOS
+/// stretch the picture, so every tap landed below where the player touched. The safe area is
+/// passed to the interface separately as insets.
+fn draw_size(window: &Window) -> winit::dpi::PhysicalSize<u32> {
+    #[cfg(target_os = "ios")]
+    {
+        window.outer_size()
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        window.inner_size()
+    }
+}
+
 impl App {
     fn init_gfx(&mut self, el: &ActiveEventLoop) {
         let attrs =
@@ -141,7 +157,7 @@ impl App {
 
     fn redraw(&mut self, el: &ActiveEventLoop) {
         let Some(gfx) = self.gfx.as_mut() else { return };
-        let size = gfx.window.inner_size();
+        let size = draw_size(&gfx.window);
         if size.width == 0 || size.height == 0 {
             return;
         }
@@ -171,6 +187,16 @@ impl App {
         self.st.update(dt, w, h);
 
         let mut raw = gfx.egui_state.take_egui_input(&gfx.window);
+        // egui-winit sizes the screen from `inner_size`; on iOS that is only the safe area, so
+        // give the interface the whole screen (the insets below keep it clear of the notch)
+        #[cfg(target_os = "ios")]
+        {
+            let ppp = gfx.egui_ctx.pixels_per_point().max(0.1);
+            raw.screen_rect = Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(w as f32 / ppp, h as f32 / ppp),
+            ));
+        }
         // keep the interface out from under the notch, rounded corners and home indicator
         let [mut top, mut left, mut bottom, mut right] = platform::safe_insets(&gfx.window);
         // `URBAN_SPRAWL_INSETS=top,left,bottom,right` fakes a notch, to check the layout
@@ -296,7 +322,7 @@ impl ApplicationHandler for App {
                 st.cursor_moved(
                     position.x as f32,
                     position.y as f32,
-                    gfx.window.inner_size().height,
+                    draw_size(&gfx.window).height,
                 );
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -351,7 +377,7 @@ impl ApplicationHandler for App {
                     t.location.x as f32,
                     t.location.y as f32,
                     on_ui,
-                    gfx.window.inner_size().height,
+                    draw_size(&gfx.window).height,
                 );
             }
             WindowEvent::Focused(false) => st.release_all(),
