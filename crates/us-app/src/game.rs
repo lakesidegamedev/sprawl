@@ -1344,9 +1344,11 @@ impl State {
         };
 
         if g.placed && compact {
-            egui::Panel::bottom("dock")
+            let dock = egui::Panel::bottom("dock")
                 .frame(theme::bar().inner_margin(egui::Margin::symmetric(4, 3)))
                 .show(ui, |ui| g.dock_ui(ui));
+            // sheets are placed from where the bar really is, so they never cover it
+            panels::set_dock_top(ctx, dock.response.rect.top());
         } else if g.placed {
             egui::Panel::top("tools")
                 .frame(theme::bar())
@@ -1360,7 +1362,11 @@ impl State {
 
         // banner
         let banner = if !g.placed {
-            Some("CLICK A CROSSROADS TO PLACE THE TOWN HALL".to_string())
+            Some(if compact {
+                "TAP A CROSSROADS TO PLACE THE TOWN HALL".to_string()
+            } else {
+                "CLICK A CROSSROADS TO PLACE THE TOWN HALL".to_string()
+            })
         } else {
             g.banner.as_ref().map(|b| b.0.clone())
         };
