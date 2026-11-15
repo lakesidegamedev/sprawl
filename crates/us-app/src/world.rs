@@ -8,7 +8,8 @@ use std::time::Instant;
 use us_gen::{LotKind, Preset, Pt, RoadClass, Town, Zone};
 use us_render::levels::{building_site, burned};
 use us_render::live::{
-    RoadDraw, abandoned, base_ground_far_on, base_ground_on, roads_ground_state_on, zone_ground_on,
+    RoadDraw, abandoned, base_ground_far_on, base_ground_on, roads_ground_state_ctx_on,
+    zone_ground_on,
 };
 use us_render::obj::{Obj, Sit};
 use us_render::{
@@ -573,7 +574,53 @@ impl LiveScene {
                 .collect(),
             None => Vec::new(),
         };
-        let mesh = roads_ground_state_on(&self.land, &draws, &culs);
+        // roads of the skeleton and of the neighbouring additions that meet these ones: they only
+        // decide where junctions are, each is drawn by its own group
+        let context: Vec<RoadDraw> = match group {
+            None => Vec::new(),
+            Some(_) => {
+                let (mut lo, mut hi) = (
+                    Pt {
+                        x: f64::MAX,
+                        y: f64::MAX,
+                    },
+                    Pt {
+                        x: f64::MIN,
+                        y: f64::MIN,
+                    },
+                );
+                for d in &draws {
+                    for p in d.points {
+                        lo = Pt {
+                            x: lo.x.min(p.x),
+                            y: lo.y.min(p.y),
+                        };
+                        hi = Pt {
+                            x: hi.x.max(p.x),
+                            y: hi.y.max(p.y),
+                        };
+                    }
+                }
+                runs.iter()
+                    .enumerate()
+                    .filter(|(i, r)| r.addition != group && sim.road_visible(*i))
+                    .filter(|(_, r)| {
+                        r.points.iter().any(|p| {
+                            p.x > lo.x - 30.0
+                                && p.x < hi.x + 30.0
+                                && p.y > lo.y - 30.0
+                                && p.y < hi.y + 30.0
+                        })
+                    })
+                    .map(|(i, r)| RoadDraw {
+                        class: r.class,
+                        points: r.points.as_slice(),
+                        works: self.works_progress(i, day),
+                    })
+                    .collect()
+            }
+        };
+        let mesh = roads_ground_state_ctx_on(&self.land, &draws, &culs, &context);
         let (zlo, zhi) = self.z_range(2.0);
         let (lo, hi) = match group {
             None => (

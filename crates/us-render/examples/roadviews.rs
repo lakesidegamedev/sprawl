@@ -48,7 +48,13 @@ fn main() {
         }
     }
     let town = found.expect("a town with both");
+    let t0 = std::time::Instant::now();
     let scene = Scene::from_town(&town);
+    eprintln!(
+        "scene build {:.2}s, {} triangles",
+        t0.elapsed().as_secs_f32(),
+        scene.triangles()
+    );
     let mut views: Vec<(String, Vec3, f32, f32, f32)> = Vec::new();
     if let Some(ring) = town.roads.iter().find(|r| is_ring(r)) {
         let (x, y) = centre(&ring.points);

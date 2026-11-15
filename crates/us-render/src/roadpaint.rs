@@ -465,7 +465,11 @@ fn pad_of(n: &Node, fillets: bool) -> Pad {
         ring.push(left[i]);
         ring.extend(arcs[i].iter().copied());
         let ua = n.arms[i].dir;
-        cut.push(((right[i] - n.p).dot(ua)).max((left[i] - n.p).dot(ua)).max(0.0));
+        cut.push(
+            ((right[i] - n.p).dot(ua))
+                .max((left[i] - n.p).dot(ua))
+                .max(0.0),
+        );
     }
     // a pad is always star shaped round its node: ordering by angle keeps it from twisting
     ring.sort_by(|a, b| {
@@ -475,6 +479,7 @@ fn pad_of(n: &Node, fillets: bool) -> Pad {
     Pad { ring, cut }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn quad(g: &mut Ground, c: Pt, along: Pt, across: Pt, la: f64, lc: f64, z: f32, col: Rgb) {
     let (a, b) = (along * la, across * lc);
     g.polygon(&[c - a - b, c + a - b, c + a + b, c - a + b], z, col);
@@ -525,7 +530,8 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
             continue;
         }
         let d = pad.cut[k] + 2.9;
-        if a.avail < d + 4.0 {
+        // room for a crossing at each end of the block, not on top of the next one
+        if a.avail < 2.0 * d + 3.0 {
             continue;
         }
         let across = pt(-a.dir.y, a.dir.x);
@@ -533,7 +539,16 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
         let c = n.p + a.dir * d;
         let mut off = -reach;
         while off <= reach + 1e-6 {
-            quad(g, c + across * off, a.dir, across, 1.5, 0.27, z::ZEBRA, WHITE);
+            quad(
+                g,
+                c + across * off,
+                a.dir,
+                across,
+                1.5,
+                0.27,
+                z::ZEBRA,
+                WHITE,
+            );
             off += 1.1;
         }
     }

@@ -285,7 +285,10 @@ pub fn make_lots(
                 d.line[..32].iter().map(|p| p.x).sum::<f64>() / n,
                 d.line[..32].iter().map(|p| p.y).sum::<f64>() / n,
             );
-            if d.line.iter().all(|p| (p.dist(c) - crate::junctions::RING_R).abs() < 0.3) {
+            if d.line
+                .iter()
+                .all(|p| (p.dist(c) - crate::junctions::RING_R).abs() < 0.3)
+            {
                 h.add(c.x, c.y, crate::junctions::RING_R - 6.0);
             }
         }
