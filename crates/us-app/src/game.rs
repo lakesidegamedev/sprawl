@@ -1060,7 +1060,6 @@ impl State {
             g.one_sheet_only();
         }
         let view = g.cam.camera().view(w as f32 / h as f32);
-        g.paint_weather(ctx);
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Background,
             egui::Id::new("world-overlay"),
@@ -1535,6 +1534,8 @@ impl State {
                 g.views_popover(ctx);
             }
         }
+        // rain and snow over the map only: what the bars, rail and inspector left free
+        g.paint_weather(ctx, ui.available_rect_before_wrap());
 
         let help = if cfg!(target_os = "ios") {
             if compact {

@@ -74,21 +74,24 @@ impl Game {
     }
 
     /// Rain streaks and snowflakes over the map, thicker as the weather gets harder.
-    pub(super) fn paint_weather(&self, ctx: &Context) {
+    pub(super) fn paint_weather(&self, ctx: &Context, map: egui::Rect) {
         let rain = self.sim.rain();
         let snow = self.sim.snowfall();
         if rain <= 0.0 && snow <= 0.0 {
             return;
         }
-        let rect = ctx.content_rect();
+        // only over the map: the panels round it stay dry
+        let rect = map.intersect(ctx.content_rect());
         let (w, h) = (rect.width(), rect.height());
         if w < 10.0 || h < 10.0 {
             return;
         }
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new("weather-fx"),
-        ));
+        let painter = ctx
+            .layer_painter(egui::LayerId::new(
+                egui::Order::Background,
+                egui::Id::new("weather-fx"),
+            ))
+            .with_clip_rect(rect);
         let t = self.live.scene.time;
         let wind = self.sim.wind();
         // wind leans the fall sideways on screen

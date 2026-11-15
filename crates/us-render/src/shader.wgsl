@@ -311,9 +311,8 @@ fn fs_main(v: VOut) -> FOut {
             let reach = g.wx.x * 1.3 - 0.15;
             if (ground) {
                 if (col.g > col.b + 0.08 && col.g > col.r - 0.06) {
-                    let cx = u32(max(v.world.x, 0.0) / 5.0);
-                    let cy = u32(max(v.world.y, 0.0) / 5.0);
-                    let h = f32(hash_u(cx * 7919u + cy * 104729u + 17u) % 1000u) / 1000.0;
+                    // drifts with rounded edges that join up as the cover deepens
+                    let h = vnoise(v.world.xy / 16.0) * 0.7 + vnoise(v.world.xy / 5.0) * 0.3;
                     if (h < reach) {
                         col = vec3<f32>(236.0, 241.0, 247.0) / 255.0;
                     }
