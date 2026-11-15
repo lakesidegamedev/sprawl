@@ -27,6 +27,8 @@ pub enum OverlayKind {
     Demand,
     /// Road value 0 (empty) to 1 (jammed); lots stay neutral.
     Traffic,
+    /// Lot value is a district colour index 0 to 11; anything higher (no district) is grey.
+    District,
 }
 
 const LAND_VALUE: [Rgb; 6] = [
@@ -78,6 +80,24 @@ const TRAFFIC: [Rgb; 5] = [
     [206, 44, 44],
 ];
 
+/// Twelve district colours that stay apart, then grey for land in no district. The game keeps
+/// the same list for its own legend and window swatches.
+const DISTRICT: [Rgb; 13] = [
+    [230, 159, 0],
+    [86, 180, 233],
+    [0, 158, 115],
+    [204, 121, 167],
+    [213, 94, 0],
+    [240, 228, 66],
+    [120, 94, 240],
+    [140, 200, 90],
+    [220, 80, 80],
+    [60, 120, 200],
+    [170, 170, 170],
+    [100, 220, 210],
+    [128, 128, 136],
+];
+
 impl OverlayKind {
     /// The fixed palette of this view, lowest value first.
     pub fn palette(self) -> &'static [Rgb] {
@@ -88,13 +108,14 @@ impl OverlayKind {
             OverlayKind::ServiceCoverage => &COVERAGE,
             OverlayKind::Demand => &DEMAND,
             OverlayKind::Traffic => &TRAFFIC,
+            OverlayKind::District => &DISTRICT,
         }
     }
 
     /// The step colour for a value (a 0 to 1 value, or a category id for `Use`).
     pub fn colour(self, v: f32) -> Rgb {
         let p = self.palette();
-        let i = if self == OverlayKind::Use {
+        let i = if matches!(self, OverlayKind::Use | OverlayKind::District) {
             (v.max(0.0) as usize).min(p.len() - 1)
         } else {
             ((v.clamp(0.0, 1.0) * p.len() as f32) as usize).min(p.len() - 1)

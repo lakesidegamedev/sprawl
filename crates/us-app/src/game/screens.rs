@@ -455,6 +455,9 @@ impl Game {
         u.build_open = false;
         u.stats_open = false;
         u.news_open = false;
+        u.districts_open = false;
+        u.ordinances_open = false;
+        u.paint = None;
         u.tool = None;
         self.voters_open = false;
         self.map_open = false;
@@ -468,6 +471,8 @@ impl Game {
             || u.build_open
             || u.stats_open
             || u.news_open
+            || u.districts_open
+            || u.ordinances_open
             || self.voters_open
             || self.map_open
     }
@@ -483,6 +488,8 @@ impl Game {
             self.ui.loans_open,
             self.ui.budget_open,
             self.ui.levers_open,
+            self.ui.districts_open,
+            self.ui.ordinances_open,
         ];
         let Some(keep) = order.iter().position(|&b| b) else {
             return;
@@ -508,6 +515,11 @@ impl Game {
             self.ui.loans_open = l;
             self.ui.budget_open = bu;
             self.ui.levers_open = lv;
+            self.ui.districts_open = keep == 8;
+            self.ui.ordinances_open = keep == 9;
+            if keep != 8 {
+                self.ui.paint = None;
+            }
         }
     }
 
@@ -519,7 +531,7 @@ impl Game {
         } else {
             "NEWS".to_string()
         };
-        let items: [(&str, bool); 8] = [
+        let items: [(&str, bool); 10] = [
             ("TAXES", self.ui.levers_open),
             ("BUDGET", self.ui.budget_open),
             ("BONDS", self.ui.loans_open),
@@ -528,6 +540,8 @@ impl Game {
             (news.as_str(), self.ui.news_open),
             ("VOTERS", self.voters_open),
             ("MAP", self.map_open),
+            ("DISTRICT", self.ui.districts_open),
+            ("RULES", self.ui.ordinances_open),
         ];
         let rows = super::panels::dock_rows(ui.ctx());
         let per = items.len().div_ceil(rows);
@@ -568,7 +582,9 @@ impl Game {
                     4 => self.ui.stats_open = true,
                     5 => self.ui.news_open = true,
                     6 => self.voters_open = true,
-                    _ => self.map_open = true,
+                    7 => self.map_open = true,
+                    8 => self.ui.districts_open = true,
+                    _ => self.ui.ordinances_open = true,
                 }
             }
         }
@@ -609,6 +625,7 @@ impl Game {
         let when = self.sim.next_election_date().text();
         let last = self.sim.last_election().cloned();
         let won = self.sim.elections_won();
+        let ord_pts = self.sim.ordinance_approval();
         let closed = super::panels::window(ctx, "voters", "Voters", 400.0, pos, |ui| {
             ui.horizontal(|ui| {
                 ui.label(heading(&format!("{}%", a.total), 32.0).color(approval_color(a.total)));
@@ -641,6 +658,22 @@ impl Game {
                 ("Fires", a.fires),
             ] {
                 points_row(ui, name, v);
+            }
+            if !ord_pts.is_empty() {
+                ui.add_space(2.0);
+                let text = ord_pts
+                    .iter()
+                    .map(|(o, p)| format!("{} {:+}", o.label(), p))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("Ordinances inside the lines above: {text}."))
+                            .size(13.0)
+                            .color(MUTED),
+                    )
+                    .wrap(),
+                );
             }
             ui.add_space(4.0);
             ui.add(

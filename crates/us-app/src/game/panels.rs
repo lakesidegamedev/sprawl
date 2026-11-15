@@ -46,7 +46,7 @@ fn dept_color(d: Dept) -> Color32 {
     }
 }
 
-fn lab(ui: &mut Ui, text: impl AsRef<str>, size: f32) {
+pub(super) fn lab(ui: &mut Ui, text: impl AsRef<str>, size: f32) {
     let size = size.max(12.0);
     ui.label(
         RichText::new(text.as_ref().to_uppercase())
@@ -55,7 +55,7 @@ fn lab(ui: &mut Ui, text: impl AsRef<str>, size: f32) {
     );
 }
 
-fn lab_c(ui: &mut Ui, text: impl AsRef<str>, size: f32, col: Color32) {
+pub(super) fn lab_c(ui: &mut Ui, text: impl AsRef<str>, size: f32, col: Color32) {
     let size = size.max(12.0);
     ui.label(
         RichText::new(text.as_ref().to_uppercase())
@@ -64,7 +64,7 @@ fn lab_c(ui: &mut Ui, text: impl AsRef<str>, size: f32, col: Color32) {
     );
 }
 
-fn wrapped(ui: &mut Ui, text: impl AsRef<str>, size: f32, col: Color32) {
+pub(super) fn wrapped(ui: &mut Ui, text: impl AsRef<str>, size: f32, col: Color32) {
     let size = size.max(12.0);
     ui.add(
         egui::Label::new(
@@ -76,7 +76,7 @@ fn wrapped(ui: &mut Ui, text: impl AsRef<str>, size: f32, col: Color32) {
     );
 }
 
-fn btn(ui: &mut Ui, text: &str, on: bool, size: f32) -> egui::Response {
+pub(super) fn btn(ui: &mut Ui, text: &str, on: bool, size: f32) -> egui::Response {
     let size = size.max(12.0);
     ui.add(
         egui::Button::new(
@@ -115,7 +115,7 @@ pub fn dock_h(ctx: &Context) -> f32 {
 
 /// Rows the phone dock uses at this width.
 pub fn dock_rows(ctx: &Context) -> usize {
-    if ctx.content_rect().width() < 600.0 {
+    if ctx.content_rect().width() < 900.0 {
         2
     } else {
         1
@@ -234,10 +234,11 @@ pub enum MapView {
     Coverage(Service),
     Demand(Class),
     Traffic,
+    District,
 }
 
 impl MapView {
-    pub const ALL: [MapView; 14] = [
+    pub const ALL: [MapView; 15] = [
         MapView::Normal,
         MapView::LandValue,
         MapView::Level,
@@ -252,6 +253,7 @@ impl MapView {
         MapView::Demand(Class::Shops),
         MapView::Demand(Class::Industry),
         MapView::Traffic,
+        MapView::District,
     ];
 
     pub fn label(self) -> String {
@@ -263,6 +265,7 @@ impl MapView {
             MapView::Coverage(s) => format!("{} coverage", s.label()),
             MapView::Demand(c) => format!("{} demand", c.label()),
             MapView::Traffic => "Traffic".into(),
+            MapView::District => "Districts".into(),
         }
     }
 
@@ -275,6 +278,7 @@ impl MapView {
             MapView::Coverage(s) => MapKind::Coverage(s),
             MapView::Demand(c) => MapKind::Demand(c),
             MapView::Traffic => MapKind::Traffic,
+            MapView::District => return None,
         })
     }
 
@@ -283,6 +287,7 @@ impl MapView {
         match self {
             MapView::Demand(_) => Some("Other kinds of building stay grey"),
             MapView::Level => Some("Empty land shows as level 1"),
+            MapView::District => Some("Grey land is in no district"),
             _ => None,
         }
     }
@@ -296,6 +301,7 @@ impl MapView {
             MapView::Coverage(_) => OverlayKind::ServiceCoverage,
             MapView::Demand(_) => OverlayKind::Demand,
             MapView::Traffic => OverlayKind::Traffic,
+            MapView::District => OverlayKind::District,
         })
     }
 
@@ -322,6 +328,7 @@ impl MapView {
                 "Very low", "Low", "Soft", "Balanced", "Firm", "High", "Crowded",
             ],
             MapView::Traffic => &["Free", "Light", "Busy", "Heavy", "Jammed"],
+            MapView::District => &[],
         };
         k.palette()
             .iter()
@@ -358,6 +365,14 @@ pub struct UiState {
     pub build_open: bool,
     pub stats_open: bool,
     pub news_open: bool,
+    pub districts_open: bool,
+    pub ordinances_open: bool,
+    /// The district the paint tool works on, while it is on.
+    pub paint: Option<usize>,
+    /// The district chosen in the Districts window.
+    pub dist_sel: Option<usize>,
+    pub dist_stats: Vec<Option<us_sim::DistrictStats>>,
+    pub dist_stats_age: f32,
     pub tool: Option<CivicKind>,
     /// Screenshot hook: hold the ghost at this spot instead of under the cursor.
     fixed_ghost: Option<Pt>,
@@ -389,6 +404,12 @@ impl Default for UiState {
             build_open: false,
             stats_open: false,
             news_open: false,
+            districts_open: false,
+            ordinances_open: false,
+            paint: None,
+            dist_sel: None,
+            dist_stats: Vec::new(),
+            dist_stats_age: 9.0,
             tool: None,
             fixed_ghost: None,
             view: MapView::Normal,
@@ -449,6 +470,7 @@ impl Game {
             self.ui.news_seen = self.ui.events.len();
         }
         self.ui.ledger = self.sim.ledger_now();
+        self.refresh_district_stats(dt);
         self.ui.clock += dt;
         self.live.scene.set_time(self.ui.clock);
         self.ui.ov_age += dt;
@@ -528,6 +550,14 @@ impl Game {
             }
             K::KeyG => u.stats_open = !u.stats_open,
             K::KeyJ => u.news_open = !u.news_open,
+            K::KeyI => {
+                u.districts_open = !u.districts_open;
+                if !u.districts_open {
+                    u.paint = None;
+                }
+            }
+            K::KeyY => u.ordinances_open = !u.ordinances_open,
+            K::KeyZ => u.view = MapView::District,
             K::KeyN => u.view = MapView::Normal,
             K::KeyL => u.view = MapView::LandValue,
             K::KeyV => u.view = MapView::Level,
@@ -758,6 +788,27 @@ impl Game {
                             .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 260.0);
                     }
                 }
+                "districts" | "ordinances" => {
+                    // two districts over the first neighbourhoods, with a few ordinances on
+                    if self.sim.districts().is_empty() {
+                        for _ in 0..2 {
+                            self.sim.create_district();
+                        }
+                        for (k, a) in (0..self.town.additions.len()).take(6).enumerate() {
+                            self.sim.toggle_addition(k % 2, a);
+                        }
+                        self.sim
+                            .set_ordinance_district(0, us_sim::Ordinance::Heritage, true);
+                        self.sim
+                            .set_ordinance_town(us_sim::Ordinance::Recycling, true);
+                    }
+                    if k == "districts" {
+                        self.ui.districts_open = true;
+                        self.ui.view = MapView::District;
+                    } else {
+                        self.ui.ordinances_open = true;
+                    }
+                }
                 "nolevers" => self.ui.levers_open = false,
                 "voters" => self.voters_open = true,
                 "noelection" => {
@@ -802,6 +853,22 @@ impl Game {
                 u.tool = None;
             }
             t(ui, "Graphs", &mut u.stats_open, "Charts over time (G)");
+            let was = u.districts_open;
+            t(
+                ui,
+                "Districts",
+                &mut u.districts_open,
+                "Group neighbourhoods (I)",
+            );
+            if was && !u.districts_open {
+                u.paint = None;
+            }
+            t(
+                ui,
+                "Ordinances",
+                &mut u.ordinances_open,
+                "Town and district policies (Y)",
+            );
             let news = if unread > 0 {
                 format!("News {unread}")
             } else {
@@ -1073,11 +1140,12 @@ impl Game {
             ui.separator();
             let spend: i64 = ledger.spending.iter().sum();
             let income: i64 = ledger.income.homes + ledger.income.shops + ledger.income.industry;
-            let out = spend + ledger.admin + ledger.interest + ledger.principal;
+            let out = spend + ledger.admin + ledger.interest + ledger.principal + ledger.ordinances;
             let rows = [
                 ("Tax income", income, GOOD),
                 ("Departments", -spend, TEXT),
                 ("General upkeep", -ledger.admin, TEXT),
+                ("Ordinances", -ledger.ordinances, TEXT),
                 ("Bond interest", -ledger.interest, TEXT),
                 ("Bond principal", -ledger.principal, TEXT),
             ];
@@ -1480,6 +1548,9 @@ impl Game {
         if !l.exempt && class_of(l.kind).is_some() {
             lab(ui, format!("BUILDING LEVEL {} OF 5", l.level), 12.0);
         }
+        for line in self.sim.ordinance_lines(lot) {
+            wrapped(ui, line, 10.0, GOOD);
+        }
         if let Some(k) = l.civic {
             lab(
                 ui,
@@ -1517,6 +1588,13 @@ impl Game {
         let (lots, roads) = match mv {
             MapView::Normal => return None,
             MapView::Traffic => (Vec::new(), sim.road_values(MapKind::Traffic)),
+            MapView::District => (
+                sim.district_lot_colours()
+                    .iter()
+                    .map(|&c| c as f32)
+                    .collect(),
+                Vec::new(),
+            ),
             MapView::Use => {
                 // the renderer numbers its categories differently from the simulation
                 let v = sim.lot_values(MapKind::Use);
@@ -1563,6 +1641,9 @@ impl Game {
                     .inner_margin(egui::Margin::same(8))
                     .show(ui, |ui| {
                         lab_c(ui, mv.label(), 12.0, ACCENT);
+                        if mv == MapView::District {
+                            self.district_legend(ui);
+                        }
                         ui.horizontal(|ui| {
                             for (col, name) in mv.steps() {
                                 let (r, _) =
