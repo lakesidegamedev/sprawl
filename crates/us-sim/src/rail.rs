@@ -12,9 +12,9 @@ pub const FREIGHT_REACH_M: f64 = 600.0;
 /// People the town needs before the depot counts as served.
 pub const DEPOT_MIN_POP: i64 = 100;
 /// Land value at the depot door, fading to nothing at `DEPOT_REACH_M`.
-pub const W_DEPOT: f64 = 0.06;
+pub const W_DEPOT: f64 = 0.015;
 /// Land value of an industrial lot at the track, fading to nothing at `FREIGHT_REACH_M`.
-pub const W_FREIGHT: f64 = 0.05;
+pub const W_FREIGHT: f64 = 0.02;
 /// Added to the demand for shops while a depot is open.
 pub const SHOP_DEMAND_DEPOT: f32 = 0.04;
 /// Added to the demand for industry while industry stands beside the line.
@@ -169,12 +169,12 @@ impl Sim {
         let b = self.rail_bonus(lot);
         if b.depot > 0.0 {
             Some(format!(
-                " The depot is near, so commuters come by train: land value +{:.0}%.",
+                " The depot is near, so commuters come by train: land value +{:.1}%.",
                 b.depot * 100.0
             ))
         } else if b.freight > 0.0 {
             Some(format!(
-                " The railway is near, so goods move by freight: land value +{:.0}%.",
+                " The railway is near, so goods move by freight: land value +{:.1}%.",
                 b.freight * 100.0
             ))
         } else {

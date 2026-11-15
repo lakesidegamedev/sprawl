@@ -283,6 +283,9 @@ impl MapView {
         match self {
             MapView::Demand(_) => Some("Other kinds of building stay grey"),
             MapView::Level => Some("Empty land shows as level 1"),
+            MapView::LandValue => {
+                Some("Lots near an open depot and industry beside the railway are worth more")
+            }
             _ => None,
         }
     }
@@ -372,6 +375,8 @@ pub struct UiState {
     ov_age: f32,
     ov_view: MapView,
     clock: f32,
+    /// Seconds since the trains were last told what the town offers.
+    rail_age: f32,
     cover: [f32; 6],
     cover_age: f32,
     /// Coverage of the selected lot, by service.
@@ -401,6 +406,7 @@ impl Default for UiState {
             ov_age: 9.0,
             ov_view: MapView::Normal,
             clock: 0.0,
+            rail_age: 1.0,
             cover: [0.0; 6],
             cover_age: 9.0,
             sel_cov: Vec::new(),
@@ -451,6 +457,11 @@ impl Game {
         self.ui.ledger = self.sim.ledger_now();
         self.ui.clock += dt;
         self.live.scene.set_time(self.ui.clock);
+        self.ui.rail_age += dt;
+        if self.ui.rail_age > 1.0 {
+            self.ui.rail_age = 0.0;
+            self.live.set_rail_service(&self.sim);
+        }
         self.ui.ov_age += dt;
         if self.ui.view != self.ui.ov_view
             || (self.ui.view != MapView::Normal && self.ui.ov_age > 0.5)

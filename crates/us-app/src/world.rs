@@ -615,6 +615,30 @@ impl LiveScene {
         }
     }
 
+    /// Tell the trains how often to run and where they stop: open depots, grain elevators and
+    /// the town's size decide it.
+    pub fn set_rail_service(&mut self, sim: &Sim) {
+        let rates = sim.train_rates();
+        let depots = sim
+            .open_depots()
+            .iter()
+            .map(|p| [p.x as f32, p.y as f32])
+            .collect();
+        let elevators = self
+            .town
+            .stations
+            .iter()
+            .filter(|s| s.kind == us_gen::StationKind::Elevator)
+            .map(|s| [s.pos.x as f32, s.pos.y as f32])
+            .collect();
+        self.scene.set_trains(us_render::trains::TrainService {
+            passenger_per_hour: rates.passenger,
+            freight_per_hour: rates.freight,
+            depots,
+            elevators,
+        });
+    }
+
     /// Follow road changes: new class or new streets show as roadworks that finish over time.
     fn sync_roads(&mut self, sim: &Sim) {
         let day = sim.day;
