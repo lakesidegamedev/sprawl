@@ -1,8 +1,9 @@
 //! Saving and loading a whole game.
 //!
 //! A save is a small header (magic, format version, length, checksum) and a compact binary body.
-//! The town itself is not stored: it is generated again from its preset and seed, and a hash of
-//! the result is checked so a changed generator is refused rather than loaded wrongly. Everything
+//! The town itself is not stored: it is generated again from its preset, seed and generator
+//! version, and a hash of the result is checked so a changed generator is refused rather than
+//! loaded wrongly. Everything
 //! else (every lot and road, levers, bonds, history, events, rival, derived caches and the clock)
 //! is stored exactly, so loading and stepping gives the same state as never having saved.
 
@@ -10,11 +11,16 @@ use crate::traffic::{Done, Op, Pending, Work};
 use crate::*;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use us_gen::{Preset, generate};
+use us_gen::{GEN_VERSION, Preset, generate_version};
 
 const MAGIC: &[u8; 4] = b"USSV";
-/// The save format this build writes and reads.
-pub const SAVE_VERSION: u16 = 3;
+/// The save format this build writes. It reads every format from `FIRST_LASTING_VERSION` on.
+///
+/// Format history:
+/// - 3: 1.0.0 preview 6 and 7. The town is generator version 1.
+/// - 4: adds the generator version after the town seed. Converting a format 3 save is reading
+///   it with generator version 1.
+pub const SAVE_VERSION: u16 = 4;
 
 /// The first save format the game promises to keep opening. Formats before it come from the
 /// previews before street-by-street growth (preview 5 and earlier) and cannot be converted. From
@@ -522,6 +528,7 @@ impl Sim {
         // the code is the place in `Preset::ALL`, so new presets must be added at the end
         w.u8(code(&Preset::ALL, self.town.preset));
         w.u64(self.town.seed);
+        w.u8(self.town.gen_version as u8);
         w.u64(town_hash(&self.town));
         w.u64(self.seed);
         w.pt(self.hall);
@@ -745,7 +752,7 @@ impl Sim {
             return Err(LoadError::NotASave);
         }
         let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-        if version < SAVE_VERSION {
+        if version < FIRST_LASTING_VERSION {
             return Err(LoadError::TooOld {
                 found: version,
                 current: SAVE_VERSION,
@@ -774,8 +781,16 @@ impl Sim {
         let r = &mut r;
         let preset = decode(&Preset::ALL, r.u8()?, "preset")?;
         let town_seed = r.u64()?;
+        // format 3 towns were all made by generator version 1
+        let gen_version = if version >= 4 { r.u8()? as u32 } else { 1 };
+        if !(1..=GEN_VERSION).contains(&gen_version) {
+            return Err(LoadError::TooNew {
+                found: version,
+                current: SAVE_VERSION,
+            });
+        }
         let hash = r.u64()?;
-        let town = generate(preset, town_seed);
+        let town = generate_version(preset, town_seed, gen_version);
         if town_hash(&town) != hash {
             return Err(LoadError::TownChanged);
         }

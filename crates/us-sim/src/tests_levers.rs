@@ -147,7 +147,8 @@ fn history_has_one_sample_per_month_for_a_long_game() {
         assert!(b.day > a.day);
     }
     let last = h.last().unwrap();
-    assert!(last.population > 0 && last.jobs > 0 && last.built > 100);
+    // the town stalls without water and a clinic, but stands: central lots hold flats and shops
+    assert!(last.population > 500 && last.jobs > 0 && last.built > 60);
     assert!(last.income_total() > 0 && last.spending_total() > 0);
     assert!(last.avg_land_value > 0.1 && last.avg_land_value < 1.0);
     assert_eq!(last.tax_x10, s.tax_rates());

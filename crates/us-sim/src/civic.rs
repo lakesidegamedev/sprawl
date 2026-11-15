@@ -73,6 +73,14 @@ impl Sim {
         if p.dist(self.hall) < self.town.hall_radius + r + 8.0 {
             return Err(PlaceError::Occupied);
         }
+        if self
+            .town
+            .stations
+            .iter()
+            .any(|st| p.dist(st.pos) < st.radius + r + 4.0)
+        {
+            return Err(PlaceError::Occupied);
+        }
         for ring in &self.town.water {
             if point_in_ring(p, ring) || dist_pt_ring_edge(p, ring) < r {
                 return Err(PlaceError::InWater);

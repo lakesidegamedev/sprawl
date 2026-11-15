@@ -391,14 +391,13 @@ impl Scene {
             let lot = &td.town.lots[i];
             let base = match level {
                 None => look.original.clone(),
-                Some(l) => kit::fit_to_lot(
-                    levels::build_lot_level_in(
-                        Region::of(td.town.preset),
-                        lot.kind,
-                        l,
-                        &mut Rng::new(td.town.seed ^ 0x1e7e_1000, i as u64 * 131 + l as u64),
-                    ),
+                Some(l) => levels::build_lot_level_dense(
+                    td.town.preset,
+                    lot.kind,
+                    l,
                     lot.radius as f32,
+                    lot.density as f32,
+                    &mut Rng::new(td.town.seed ^ 0x1e7e_1000, i as u64 * 131 + l as u64),
                 ),
             };
             let obj = match state {
@@ -699,6 +698,16 @@ fn build_chunks(t: &Town, land: &Land) -> (TownData, Vec<Chunk>) {
         theta,
         land.sit_height(hall.x as f32, hall.y as f32),
     ));
+    for st in &t.stations {
+        let (x, y) = (st.pos.x as f32, st.pos.y as f32);
+        raw.push((
+            crate::rail::station_model(st, t.seed),
+            x,
+            y,
+            st.facing as f32,
+            land.sit_height(x, y),
+        ));
+    }
 
     let green = [kit::TREE, kit::TREE_D];
     let mut lot_place = Vec::with_capacity(t.lots.len());

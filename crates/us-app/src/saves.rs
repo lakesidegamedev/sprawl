@@ -125,8 +125,8 @@ fn parse(path: &Path, bytes: &[u8]) -> SaveInfo {
             }
             .to_string(),
         );
-    } else if v < SAVE_VERSION {
-        info.pre_streets = v < us_sim::FIRST_LASTING_VERSION;
+    } else if v < us_sim::FIRST_LASTING_VERSION {
+        info.pre_streets = true;
         info.problem = Some(
             LoadError::TooOld {
                 found: v,

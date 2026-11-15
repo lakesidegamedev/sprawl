@@ -14,6 +14,7 @@
 //! `(seed, lot, day)`, so the same inputs give the same state on every platform.
 
 mod civic;
+mod density;
 mod dynamic;
 mod econ;
 mod growth;
@@ -27,6 +28,7 @@ mod streets;
 mod traffic;
 mod value;
 
+pub use density::max_level_at;
 pub use dynamic::Rival;
 pub use ledger_view::LedgerNow;
 pub use model::*;
@@ -305,6 +307,8 @@ pub struct Sim {
     pub hall: Pt,
     pub(crate) town: Town,
     lots: Vec<LotState>,
+    /// Neighbours of each of the town's own lots (derived from the town, never saved).
+    pub(crate) near: Vec<Vec<u32>>,
     /// Non-farm additions in reveal order, with whether each has been revealed.
     order: Vec<usize>,
     next_reveal: usize,
@@ -406,6 +410,7 @@ impl Sim {
             hall,
             town: town.clone(),
             lots: Vec::new(),
+            near: Vec::new(),
             order: Vec::new(),
             next_reveal: 0,
             revealed: vec![false; n_add],
@@ -521,6 +526,7 @@ impl Sim {
                 fire: None,
             });
         }
+        sim.near = density::neighbours(&sim.lots);
         sim.build_runs(town, &farm);
         sim.build_streets();
         // reveal the first two additions at once so the hall has a street to stand on
@@ -807,8 +813,11 @@ impl Sim {
             // builders prefer valuable land near the hall, in the class the town wants most
             let lv = self.lot_value.get(li).copied().unwrap_or(0.5) as f64;
             let want = class_of(l.kind).map_or(0.4, |c| self.class_demand.get(c) as f64);
-            let score =
-                l.pos.dist(self.hall) + noise - 260.0 * lv - 180.0 * want - self.frontage_bonus(li);
+            let score = l.pos.dist(self.hall) + noise
+                - 260.0 * lv
+                - 180.0 * want
+                - self.frontage_bonus(li)
+                - self.infill_bonus(li);
             let _ = day;
             if best.is_none_or(|b| score < b.0) {
                 best = Some((score, vi));
@@ -819,7 +828,12 @@ impl Sim {
         };
         let li = self.vacant.swap_remove(vi);
         let kind = self.lots[li].kind;
-        self.take_units(kind, Sim::units_at(kind, 1));
+        let level = self.start_level(li);
+        self.take_units(kind, Sim::units_at(kind, level));
+        if level > 1 {
+            self.lots[li].level = 1;
+            self.lots[li].next_level = level;
+        }
         if class_of(kind).is_some() {
             let cost = self.hookup_cost(kind);
             self.treasury -= cost;
@@ -1223,7 +1237,8 @@ mod tests {
     fn town_keeps_growing_and_pays_something() {
         let town = generate(Preset::Grid, 3);
         let s = run(&town, 70, 1500);
-        assert!(s.built_count() > 80, "built {}", s.built_count());
+        // central lots hold flats and shops, so the same people need fewer buildings
+        assert!(s.built_count() > 60, "built {}", s.built_count());
         assert!(s.population() > 500);
         eprintln!(
             "day {} built {} pop {} treasury {} flow {:?} left {}",

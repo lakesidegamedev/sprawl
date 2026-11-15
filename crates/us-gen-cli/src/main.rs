@@ -1,15 +1,16 @@
 //! `us-gen-cli --preset grid|winding|sunbelt|crossroads|lake --seed N --png out.png --stats out.json`
+//! (`--version V` draws an older generator version, `--density` tints lots by density)
 
 mod font;
 mod render;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use us_gen::{Preset, RoadClass, Town, generate};
+use us_gen::{GEN_VERSION, Preset, RoadClass, Town, generate_version};
 
 fn usage() -> ! {
     eprintln!(
-        "usage: us-gen-cli --preset grid|winding|sunbelt|crossroads|lake --seed N [--png out.png] [--stats out.json]"
+        "usage: us-gen-cli --preset grid|winding|sunbelt|crossroads|lake --seed N [--version V] [--density] [--png out.png] [--stats out.json]"
     );
     std::process::exit(2);
 }
@@ -54,6 +55,9 @@ fn stats_json(t: &Town) -> String {
     let _ = writeln!(s, "  \"cul_de_sacs\": {},", t.cul_de_sacs.len());
     let _ = writeln!(s, "  \"lots\": {},", t.lots.len());
     let _ = writeln!(s, "  \"lot_kinds\": {{ {} }},", obj_u(&lot_kinds));
+    let _ = writeln!(s, "  \"generator_version\": {},", t.gen_version);
+    let _ = writeln!(s, "  \"stations\": {},", t.stations.len());
+    let _ = writeln!(s, "  \"centres\": {},", t.centres.len());
     let _ = writeln!(s, "  \"hall\": [{:.1}, {:.1}]", t.hall.x, t.hall.y);
     s.push('}');
     s.push('\n');
@@ -65,6 +69,8 @@ fn main() {
     let mut seed = None;
     let mut png = None;
     let mut stats = None;
+    let mut version = GEN_VERSION;
+    let mut density = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -78,6 +84,13 @@ fn main() {
             "--seed" => seed = args.next().and_then(|s| s.parse::<u64>().ok()),
             "--png" => png = args.next(),
             "--stats" => stats = args.next(),
+            "--version" => {
+                version = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(|| usage())
+            }
+            "--density" => density = true,
             _ => usage(),
         }
     }
@@ -85,7 +98,7 @@ fn main() {
         usage()
     };
     let start = std::time::Instant::now();
-    let town = generate(preset, seed);
+    let town = generate_version(preset, seed, version);
     eprintln!("generated in {:.2}s", start.elapsed().as_secs_f64());
     if let Some(path) = png {
         let caption = format!("{} town, seed {seed}", preset.label());
@@ -96,7 +109,7 @@ fn main() {
             town.cul_de_sacs.len(),
             town.roads.len()
         );
-        let pm = render::plan_png(&town, &caption, &sub);
+        let pm = render::plan_png(&town, &caption, &sub, density);
         if let Err(e) = pm.save_png(&path) {
             eprintln!("could not write {path}: {e}");
             std::process::exit(1);

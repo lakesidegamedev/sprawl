@@ -303,7 +303,7 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
     if let Some(l) = &lake {
         water.push(l.ring(0.0));
     }
-    let lots = lots::make_lots(
+    let (lots, stations, centres) = lots::make_lots(
         &drafts,
         &culs,
         &additions,
@@ -312,6 +312,8 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
         &water,
         &terrain,
         &mut lot_rng,
+        preset,
+        st.version >= 2,
     );
 
     // output roads: big roads first, then streets by class
@@ -343,6 +345,9 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
         hall,
         hall_radius,
         terrain,
+        gen_version: st.version,
+        stations,
+        centres,
     }
 }
 
@@ -812,7 +817,11 @@ pub fn build(
 
     trim_covered_interiors(&mut drafts);
     add_border_streets(&mut drafts, &additions, &borders_wanted);
-    connect_ends(&mut drafts);
+    connect_ends(&mut drafts, st.version >= 2);
+    if st.version >= 2 {
+        // trimming can leave a stub of a street with no length: it is not a road
+        drafts.retain(|d| !is_street(d) || (d.line.len() >= 2 && length(&d.line) >= 4.0));
+    }
     join_stranded(&mut drafts, &mut additions, river);
     promote_collectors(&mut drafts, st.collector_len);
     Built { drafts, additions }
@@ -888,13 +897,25 @@ fn is_street(d: &Draft) -> bool {
 }
 
 /// Every street end must sit on another road or be a cul-de-sac tip. Snap near misses, extend
-/// short gaps along the street, drop what cannot be tied in.
-fn connect_ends(drafts: &mut Vec<Draft>) {
+/// short gaps along the street, drop what cannot be tied in. From generator version 2 the
+/// railway is not a road: an end on the track crosses it to the road beyond, or, when there is
+/// none, the street stops short of the track in a turning bulb.
+fn connect_ends(drafts: &mut Vec<Draft>, v2: bool) {
     for _pass in 0..6 {
+        // `idx` holds what a street may end on; `all` also holds the railway, which a street
+        // may cross but never run along
         let mut idx = SegIndex::new(S, 64.0);
+        let mut all = SegIndex::new(S, 64.0);
         for (i, d) in drafts.iter().enumerate() {
+            if v2 {
+                all.add_line(&d.line, i as u32);
+                if d.class == RoadClass::Rail {
+                    continue;
+                }
+            }
             idx.add_line(&d.line, i as u32);
         }
+        let all = if v2 { &all } else { &idx };
         let mut changed = false;
         let mut dead: Vec<usize> = Vec::new();
         for i in 0..drafts.len() {
@@ -907,7 +928,7 @@ fn connect_ends(drafts: &mut Vec<Draft>) {
             }
             let ends: [bool; 2] = [true, false];
             let mut line = l.clone();
-            let mut dropped = false;
+            let mut failed: Vec<bool> = Vec::new();
             for &front in &ends {
                 if drafts[i].tag == Tag::Cul && !front {
                     continue;
@@ -930,11 +951,11 @@ fn connect_ends(drafts: &mut Vec<Draft>) {
                     .nearest(e, 12.0, Some(i as u32))
                     .map(|h| h.pt)
                     .or_else(|| {
-                        ray_hit(drafts, i, e, dir, 90.0).filter(|t| {
+                        ray_hit(drafts, i, e, dir, 90.0, v2).filter(|t| {
                             // never run the extension along another road
                             [0.25, 0.5, 0.75]
                                 .iter()
-                                .all(|f| idx.nearest(e.lerp(*t, *f), 1.5, Some(i as u32)).is_none())
+                                .all(|f| all.nearest(e.lerp(*t, *f), 1.5, Some(i as u32)).is_none())
                         })
                     })
                     .or_else(|| idx.nearest(e, 22.0, Some(i as u32)).map(|h| h.pt));
@@ -952,12 +973,24 @@ fn connect_ends(drafts: &mut Vec<Draft>) {
                         }
                         changed = true;
                     }
-                    None => {
-                        dropped = true;
-                    }
+                    None => failed.push(front),
                 }
             }
-            if dropped {
+            let bulb_ok = v2
+                && failed.len() == 1
+                && drafts[i].class == RoadClass::Local
+                && drafts[i].tag != Tag::Cul
+                && length(&line) > 70.0;
+            if bulb_ok {
+                // the loose end becomes a cul-de-sac tip, pulled back clear of the track
+                if failed[0] {
+                    line.reverse();
+                }
+                line = shorten_end(&line, 16.0);
+                drafts[i].line = line;
+                drafts[i].tag = Tag::Cul;
+                changed = true;
+            } else if !failed.is_empty() {
                 dead.push(i);
                 changed = true;
             } else {
@@ -971,6 +1004,23 @@ fn connect_ends(drafts: &mut Vec<Draft>) {
             break;
         }
     }
+}
+
+/// The line with `by` metres cut off its last end.
+fn shorten_end(line: &[Pt], by: f64) -> Vec<Pt> {
+    let keep = (length(line) - by).max(1.0);
+    let mut out: Vec<Pt> = vec![line[0]];
+    let mut acc = 0.0;
+    for w in line.windows(2) {
+        let seg = w[0].dist(w[1]);
+        if acc + seg >= keep {
+            out.push(w[0].lerp(w[1], (keep - acc) / seg.max(1e-9)));
+            return dedup(&out);
+        }
+        acc += seg;
+        out.push(w[1]);
+    }
+    dedup(&out)
 }
 
 /// True when `t` lies on the street itself, near the given end (an overshoot past a crossing road).
@@ -1008,7 +1058,14 @@ fn trim_end_to(line: &[Pt], t: Pt, front: bool) -> Vec<Pt> {
 }
 
 /// First other road met walking from `from` along `dir` for up to `max` metres.
-fn ray_hit(drafts: &[Draft], own: usize, from: Pt, dir: Pt, max: f64) -> Option<Pt> {
+fn ray_hit(
+    drafts: &[Draft],
+    own: usize,
+    from: Pt,
+    dir: Pt,
+    max: f64,
+    skip_rail: bool,
+) -> Option<Pt> {
     let end = from + dir * max;
     let mut best: Option<(f64, Pt)> = None;
     let (lo, hi) = (
@@ -1016,7 +1073,7 @@ fn ray_hit(drafts: &[Draft], own: usize, from: Pt, dir: Pt, max: f64) -> Option<
         pt(from.x.max(end.x) + 1.0, from.y.max(end.y) + 1.0),
     );
     for (j, d) in drafts.iter().enumerate() {
-        if j == own {
+        if j == own || (skip_rail && d.class == RoadClass::Rail) {
             continue;
         }
         let (blo, bhi) = bbox(&d.line);

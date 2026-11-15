@@ -232,7 +232,8 @@ fn fire_stations_cut_the_number_of_fires() {
             assert!(placed >= 6);
         }
         let start = s.fires_total;
-        for _ in 0..700 {
+        // fires are rare (a few a year in a small town), so watch long enough to count them
+        for _ in 0..2500 {
             s.step_day();
         }
         s.fires_total - start

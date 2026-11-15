@@ -177,3 +177,54 @@ fn autosave_keeps_the_three_newest_files() {
     assert_eq!(Sim::load_latest_autosave(&dir).unwrap().day, days[3]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A save from 1.0.0 preview 6 or 7: format 3, no generator version, town from generator 1.
+fn as_format_3(save: &[u8]) -> Vec<u8> {
+    let body = &save[22..];
+    // body: preset (1 byte), town seed (8), generator version (1), then the rest
+    let mut old_body = body[..9].to_vec();
+    old_body.extend_from_slice(&body[10..]);
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for &b in &old_body {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let mut out = b"USSV".to_vec();
+    out.extend_from_slice(&3u16.to_le_bytes());
+    out.extend_from_slice(&(old_body.len() as u64).to_le_bytes());
+    out.extend_from_slice(&h.to_le_bytes());
+    out.extend_from_slice(&old_body);
+    out
+}
+
+#[test]
+fn preview_7_saves_open_on_their_old_town() {
+    let t = us_gen::generate_version(Preset::Winding, 3, 1);
+    let mut s = Sim::new_with_rules(&t, hall_sites(&t)[0], 7, 2, Rules::sandbox());
+    for _ in 0..400 {
+        s.step_day();
+    }
+    let old = as_format_3(&s.save());
+    assert_eq!(u16::from_le_bytes([old[4], old[5]]), 3);
+    let mut loaded = Sim::load(&old).expect("a format 3 save opens");
+    assert_eq!(loaded.town().gen_version, 1);
+    assert!(loaded.town().stations.is_empty());
+    assert_eq!(loaded.fingerprint(), s.fingerprint());
+    for _ in 0..200 {
+        s.step_day();
+        loaded.step_day();
+    }
+    assert_eq!(loaded.fingerprint(), s.fingerprint());
+    // saving again writes the current format and keeps the old town
+    let again = Sim::load(&loaded.save()).unwrap();
+    assert_eq!(again.town().gen_version, 1);
+}
+
+#[test]
+fn new_towns_use_the_newest_generator() {
+    let mut s = new_sim(Preset::Grid, Rules::sandbox());
+    assert_eq!(s.town().gen_version, us_gen::GEN_VERSION);
+    let l = Sim::load(&s.save()).unwrap();
+    assert_eq!(l.town().gen_version, us_gen::GEN_VERSION);
+    assert!(!l.town().stations.is_empty());
+}

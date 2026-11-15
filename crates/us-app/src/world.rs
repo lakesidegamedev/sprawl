@@ -12,8 +12,8 @@ use us_render::live::{
 };
 use us_render::obj::{Obj, Sit};
 use us_render::{
-    Chunk, CivicModel, Land, LotInfo, Mesh, Rng, RoadInfo, Scene, build_civic, build_lot_level_for,
-    kit,
+    Chunk, CivicModel, Land, LotInfo, Mesh, Rng, RoadInfo, Scene, build_civic,
+    build_lot_level_dense, kit,
 };
 use us_sim::{CivicKind, LotState, Phase, Sim};
 
@@ -61,6 +61,8 @@ pub struct LiveScene {
     show_hall: bool,
     hall_theta: f32,
     hall_obj: Obj,
+    /// Railway depots and elevators: model, place, turn and the cell they are drawn in.
+    stations: Vec<(Obj, f32, f32, f32, Cell)>,
     /// The hills the town stands on.
     land: Land,
     cell_chunk: HashMap<Cell, usize>,
@@ -163,12 +165,12 @@ struct LotDraw {
 }
 
 /// The model of one lot at a level, local to the lot, facing south.
-fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8) -> LotDraw {
+fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8, density: f32) -> LotDraw {
     let mut rng = Rng::new(seed ^ 0x5eed_0000, l.src as u64 * 7919 + 13);
     let building = match civic_model(l.civic) {
         Some(m) => build_civic(m, &mut rng),
         None if l.civic.is_some() => kit::build_lot_for(preset, l.kind, l.radius as f32, &mut rng),
-        None => build_lot_level_for(preset, l.kind, level, l.radius as f32, &mut rng),
+        None => build_lot_level_dense(preset, l.kind, level, l.radius as f32, density, &mut rng),
     };
     let (kind, radius) = (l.kind, l.radius);
     let n = trees_for(kind, &mut rng);
@@ -198,9 +200,16 @@ fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8) -> LotDraw {
 }
 
 /// The model to draw for a lot in its current look.
-fn look_obj(preset: Preset, seed: u64, i: usize, l: &LotState, look: Look) -> LotDraw {
+fn look_obj(
+    preset: Preset,
+    seed: u64,
+    i: usize,
+    l: &LotState,
+    look: Look,
+    density: f32,
+) -> LotDraw {
     let level = if l.civic.is_some() { 1 } else { look.level };
-    let mut d = lot_model(preset, seed, l, level);
+    let mut d = lot_model(preset, seed, l, level, density);
     let mut rng = Rng::new(seed ^ 0xb0b0, i as u64);
     let mut dress = |o: &Obj| match look.state {
         1 => building_site(o, (look.step as f32 + 0.5) / 5.0),
@@ -351,6 +360,19 @@ impl LiveScene {
         let mut hrng = Rng::new(town.seed, 0x4a11);
         let hall_obj = kit::town_hall(&mut hrng);
         let hall_cell = cell_of(hall.x, hall.y);
+        let stations: Vec<(Obj, f32, f32, f32, Cell)> = town
+            .stations
+            .iter()
+            .map(|st| {
+                (
+                    us_render::rail::station_model(st, town.seed),
+                    st.pos.x as f32,
+                    st.pos.y as f32,
+                    st.facing as f32,
+                    cell_of(st.pos.x, st.pos.y),
+                )
+            })
+            .collect();
         let n = sim.lots().len();
         let ground_tile_count = scene.chunks.len() - 1;
         let mut ls = LiveScene {
@@ -359,6 +381,7 @@ impl LiveScene {
             show_hall,
             hall_theta,
             hall_obj,
+            stations,
             land,
             cell_chunk: HashMap::new(),
             cell_lots,
@@ -392,6 +415,10 @@ impl LiveScene {
         };
         if show_hall {
             ls.mark(hall_cell);
+        }
+        let station_cells: Vec<Cell> = ls.stations.iter().map(|s| s.4).collect();
+        for c in station_cells {
+            ls.mark(c);
         }
         ls.rebuild_roads(sim, None);
         ls.ensure_geometry(sim);
@@ -806,6 +833,16 @@ impl LiveScene {
             self.hall_obj
                 .emit_on(&mut mesh, &mut next_id, hx, hy, self.hall_theta, 1.0, sit);
         }
+        for (obj, x, y, th, c) in &self.stations {
+            if *c != cell {
+                continue;
+            }
+            let sit = (!self.land.is_flat()).then(|| Sit {
+                land: &self.land,
+                z: self.land.sit_height(*x, *y),
+            });
+            obj.emit_on(&mut mesh, &mut next_id, *x, *y, *th, 1.0, sit);
+        }
         if let Some(ids) = self.cell_lots.get(&cell) {
             for &i in ids {
                 let k = self.look[i];
@@ -815,7 +852,8 @@ impl LiveScene {
                 let l = &sim.lots()[i];
                 let r = l.radius as u16;
                 if !matches!(&self.objs[i], Some((lk, lr, _)) if *lk == k && *lr == r) {
-                    self.objs[i] = Some((k, r, look_obj(self.town.preset, seed, i, l, k)));
+                    let density = sim.lot_density(i) as f32;
+                    self.objs[i] = Some((k, r, look_obj(self.town.preset, seed, i, l, k, density)));
                 }
                 let draw = &self.objs[i].as_ref().unwrap().2;
                 let (x, y, th) = (l.pos.x as f32, l.pos.y as f32, l.facing as f32);
