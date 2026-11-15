@@ -79,7 +79,7 @@ fn us_gen_point_in(p: us_gen::Pt, ring: &[us_gen::Pt]) -> bool {
 
 #[test]
 fn a_storm_floods_the_low_ground_by_the_harbour() {
-    let mut s = grow(Preset::Coast, 2, 10);
+    let mut s = grow(Preset::Coast, 2, 16);
     s.wx.soak = 8.0;
     s.step_day();
     assert!(
@@ -105,4 +105,38 @@ fn saves_of_the_new_styles_reload_and_play_on_the_same() {
         }
         assert_eq!(a.fingerprint(), b.fingerprint(), "{p:?} played on");
     }
+}
+
+#[test]
+fn views_of_the_sea_and_the_rock_raise_land_value_and_say_so() {
+    for (p, seed, word) in [
+        (Preset::Coast, 2, "Sea views"),
+        (Preset::Mesa, 4, "Rock views"),
+    ] {
+        let mut s = grow(p, seed, 16);
+        s.step_day();
+        let with: Vec<usize> = (0..s.lots().len())
+            .filter(|&i| s.scenery_bonus(i) > 0.02)
+            .collect();
+        assert!(
+            with.len() > 20,
+            "{p:?}: only {} lots have a view",
+            with.len()
+        );
+        let i = with
+            .iter()
+            .copied()
+            .find(|&i| !matches!(s.lots()[i].phase, Phase::Hidden) && !s.lots()[i].exempt)
+            .expect("a built lot with a view");
+        assert!(s.why(i).reason.contains(word), "{p:?}: {}", s.why(i).reason);
+        // far from the view there is nothing to say
+        let far = (0..s.lots().len())
+            .find(|&k| s.scenery_bonus(k) == 0.0 && !matches!(s.lots()[k].phase, Phase::Hidden))
+            .expect("a lot with no view");
+        assert!(!s.why(far).reason.contains("views"), "{p:?}");
+    }
+    // the five 1.0 styles have no views at all
+    let town = generate(Preset::Grid, 3);
+    let s = Sim::new_with_rules(&town, hall_sites(&town)[0], 7, 2, Rules::sandbox());
+    assert!((0..s.lots().len()).all(|i| s.scenery_bonus(i) == 0.0));
 }

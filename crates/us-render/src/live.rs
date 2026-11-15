@@ -151,7 +151,7 @@ fn surf_strip(ring: &[Pt], size: f64) -> Option<Vec<Pt>> {
 fn add_water_at(g: &mut Ground, land: &Land, levels: &Land, t: &Town) {
     for w in &t.water {
         // the sea runs off the map: no sand ring, a crisp white surf line along its shore
-        let sea = w.iter().any(|p| p.x > t.size || p.y > t.size);
+        let sea = t.preset == us_gen::Preset::Coast;
         if sea {
             if !land.is_flat()
                 && let Some(strip) = surf_strip(w, t.size as f64)

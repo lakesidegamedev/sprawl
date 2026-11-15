@@ -33,6 +33,7 @@ mod rivals;
 mod roadnet;
 mod save;
 mod save_ext;
+mod scenery;
 mod streets;
 mod traffic;
 mod trams;
@@ -1031,6 +1032,9 @@ impl Sim {
             y.reason = format!("{} {note}", y.reason);
         }
         if let Some(line) = self.fire_why(lot) {
+            y.reason = format!("{} {line}", y.reason);
+        }
+        if let Some(line) = self.scenery_line(lot) {
             y.reason = format!("{} {line}", y.reason);
         }
         y.ordinances = self.ordinance_lines(lot);
