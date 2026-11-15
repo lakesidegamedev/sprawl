@@ -5,7 +5,7 @@ use super::panels::{DOCK_H, MapView};
 use super::{Game, Screen, State, label, money};
 use crate::saves::{self, SaveInfo};
 use crate::theme::{
-    self, ACCENT, BAD, EDGE, GOOD, INK, LINE, PANEL_DARK, RAISED, TEXT, heading, pixel,
+    self, ACCENT, BAD, EDGE, GOOD, INK, LINE, PANEL_DARK, RAISED, TEXT, heading, ui_font,
 };
 use egui::{Align2, Color32, Context, RichText, Sense, Stroke, Ui, vec2};
 use us_gen::Preset;
@@ -75,8 +75,8 @@ fn choice(ui: &mut Ui, on: bool, title: &str, blurb: &str) -> bool {
             ui.set_width(w - 24.0);
             ui.set_min_height(if compact { theme::TOUCH - 12.0 } else { 20.0 });
             ui.label(
-                RichText::new(title.to_uppercase())
-                    .font(pixel(if compact { 14.0 } else { 16.0 }))
+                RichText::new(title.to_string())
+                    .font(ui_font(if compact { 14.0 } else { 16.0 }))
                     .color(if on { ACCENT } else { INK }),
             );
             ui.add(
@@ -105,7 +105,7 @@ pub(super) fn town_name(label: &str) -> String {
 fn small_button(ui: &mut Ui, text: &str) -> egui::Response {
     let compact = theme::is_compact(ui.ctx());
     ui.add(
-        egui::Button::new(RichText::new(text).font(pixel(14.0)).color(INK)).min_size(vec2(
+        egui::Button::new(RichText::new(text).font(ui_font(14.0)).color(INK)).min_size(vec2(
             if compact { 70.0 } else { 0.0 },
             if compact { theme::TOUCH } else { 28.0 },
         )),
@@ -127,45 +127,45 @@ impl State {
             } else {
                 600.0
             });
-            ui.label(heading("NEW TOWN", if compact { 24.0 } else { 32.0 }));
+            ui.label(heading("New town", if compact { 24.0 } else { 32.0 }));
             ui.horizontal_wrapped(|ui| {
-                if theme::button(ui, "START").clicked() {
+                if theme::button(ui, "Start").clicked() {
                     self.screen = Screen::Generating;
                     self.gen_wait = 0;
                 }
-                if theme::button(ui, "BACK").clicked() {
+                if theme::button(ui, "Back").clicked() {
                     self.screen = Screen::Menu;
                 }
             });
-            label(ui, "HOW YOU PLAY", 14.0);
+            label(ui, "How you play", 14.0);
             for m in Mode::ALL {
                 if choice(ui, self.mode == m, m.label(), m.blurb()) {
                     self.mode = m;
                 }
             }
             ui.add_space(4.0);
-            label(ui, "DIFFICULTY", 14.0);
+            label(ui, "Difficulty", 14.0);
             for d in Difficulty::ALL {
                 if choice(ui, self.difficulty == d, d.label(), d.blurb()) {
                     self.difficulty = d;
                 }
             }
             ui.add_space(4.0);
-            label(ui, "TOWN TYPE", 14.0);
+            label(ui, "Town type", 14.0);
             for p in Preset::ALL {
                 if choice(ui, self.preset == p, &town_name(p.label()), p.blurb()) {
                     self.preset = p;
                 }
             }
             ui.add_space(4.0);
-            label(ui, "SEED", 14.0);
+            label(ui, "Seed", 14.0);
             ui.horizontal(|ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.seed_text)
                         .desired_width(150.0)
-                        .font(pixel(16.0)),
+                        .font(ui_font(16.0)),
                 );
-                if small_button(ui, "RANDOM").clicked() {
+                if small_button(ui, "Random").clicked() {
                     self.seed_text = super::random_seed().to_string();
                 }
             });
@@ -181,10 +181,10 @@ impl State {
                 640.0
             };
             ui.set_width(w);
-            ui.label(heading("LOAD A GAME", if compact { 24.0 } else { 32.0 }));
+            ui.label(heading("Load a game", if compact { 24.0 } else { 32.0 }));
             label(
                 ui,
-                &format!("SAVES ARE KEPT IN {}", saves::save_dir().display()),
+                &format!("Saves are kept in {}", saves::save_dir().display()),
                 10.0,
             );
             if self.saves.iter().any(|s| s.pre_streets) {
@@ -296,8 +296,8 @@ fn save_row(
         .show(ui, |ui| {
             ui.set_width(w - 24.0);
             ui.label(
-                RichText::new(info.name.to_uppercase())
-                    .font(pixel(if compact { 14.0 } else { 16.0 }))
+                RichText::new(info.name.to_string())
+                    .font(ui_font(if compact { 14.0 } else { 16.0 }))
                     .color(if info.problem.is_some() { MUTED } else { INK }),
             );
             if let Some(p) = &info.problem {
@@ -321,7 +321,7 @@ fn save_row(
             }
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(info.problem.is_none(), |ui| {
-                    let b = egui::Button::new(RichText::new("LOAD").font(pixel(14.0)).color(INK))
+                    let b = egui::Button::new(RichText::new("LOAD").font(ui_font(14.0)).color(INK))
                         .min_size(vec2(86.0, if compact { theme::TOUCH } else { 28.0 }));
                     if ui.add(b).clicked() {
                         *open = Some(info.path.clone());
@@ -382,7 +382,7 @@ impl Game {
         let when = if self.is_sandbox() {
             "SANDBOX".to_string()
         } else {
-            let t = self.sim.next_election_date().text().to_uppercase();
+            let t = self.sim.next_election_date().text().to_string();
             if compact {
                 // month and year only: the chip is narrow
                 format!("VOTE {}", t.split_once(' ').map_or(t.as_str(), |x| x.1))
@@ -392,7 +392,7 @@ impl Game {
         };
         // wide enough for its own words at the font it draws them in
         let text_w = |t: &str, size: f32| {
-            ui.fonts_mut(|f| f.layout_no_wrap(t.to_string(), pixel(size), INK).size().x)
+            ui.fonts_mut(|f| f.layout_no_wrap(t.to_string(), ui_font(size), INK).size().x)
         };
         // in the compact meter the words shrink to fit the room the bar has: first the word
         // VOTE goes, then the type steps down, and last only the share is shown
@@ -435,14 +435,14 @@ impl Game {
                 rect.center_top() + vec2(0.0, 7.0),
                 Align2::CENTER_TOP,
                 &head,
-                pixel(fs),
+                ui_font(fs),
                 INK,
             );
             p.text(
                 rect.center_bottom() - vec2(0.0, 7.0),
                 Align2::CENTER_BOTTOM,
                 &when,
-                pixel(fs),
+                ui_font(fs),
                 INK,
             );
         } else {
@@ -450,7 +450,7 @@ impl Game {
                 rect.center(),
                 Align2::CENTER_CENTER,
                 format!("APPROVAL {pct}%"),
-                pixel(13.0),
+                ui_font(13.0),
                 INK,
             );
         }
@@ -458,7 +458,7 @@ impl Game {
         let when_w = if compact {
             0.0
         } else {
-            ui.fonts_mut(|f| f.layout_no_wrap(when.clone(), pixel(13.0), INK).size().x)
+            ui.fonts_mut(|f| f.layout_no_wrap(when.clone(), ui_font(13.0), INK).size().x)
         };
         let show_when =
             !compact && ui.available_width() >= when_w + 2.0 * ui.spacing().item_spacing.x;
@@ -471,7 +471,7 @@ impl Game {
             self.toggle_voters();
         }
         if show_when {
-            ui.label(RichText::new(when).font(pixel(13.0)).color(INK));
+            ui.label(RichText::new(when).font(ui_font(13.0)).color(INK));
         }
     }
 
@@ -599,7 +599,7 @@ impl Game {
                 for (j, (name, on)) in row.1.iter().enumerate() {
                     let i = row.0 * per + j;
                     let b =
-                        egui::Button::new(RichText::new(*name).font(pixel(font)).color(if *on {
+                        egui::Button::new(RichText::new(*name).font(ui_font(font)).color(if *on {
                             LINE
                         } else {
                             INK
@@ -641,8 +641,8 @@ impl Game {
                 for v in MapView::ALL {
                     let on = self.ui.view == v;
                     let b = egui::Button::new(
-                        RichText::new(v.label().to_uppercase())
-                            .font(pixel(12.0))
+                        RichText::new(v.label().to_string())
+                            .font(ui_font(12.0))
                             .color(if on { LINE } else { INK }),
                     )
                     .fill(if on { ACCENT } else { RAISED })
@@ -679,12 +679,13 @@ impl Game {
                     } else {
                         format!(
                             "NEXT ELECTION {} ({})",
-                            when.to_uppercase(),
-                            distance_text(days).to_uppercase()
+                            when.to_string(),
+                            distance_text(days).to_string()
                         )
                     };
                     ui.add(
-                        egui::Label::new(RichText::new(msg).font(pixel(12.0)).color(MUTED)).wrap(),
+                        egui::Label::new(RichText::new(msg).font(ui_font(12.0)).color(MUTED))
+                            .wrap(),
                     );
                 });
             });
@@ -879,11 +880,11 @@ impl Game {
                         ("Approval at the end", format!("{}%", s.approval)),
                     ] {
                         ui.label(
-                            RichText::new(k.to_uppercase())
-                                .font(pixel(12.0))
+                            RichText::new(k.to_string())
+                                .font(ui_font(12.0))
                                 .color(MUTED),
                         );
-                        ui.label(RichText::new(v).font(pixel(14.0)).color(INK));
+                        ui.label(RichText::new(v).font(ui_font(14.0)).color(INK));
                         ui.end_row();
                     }
                 });
@@ -918,8 +919,8 @@ fn points_row(ui: &mut Ui, name: &str, v: i32) {
     ui.horizontal(|ui| {
         ui.allocate_ui(vec2(92.0, 18.0), |ui| {
             ui.label(
-                RichText::new(name.to_uppercase())
-                    .font(pixel(12.0))
+                RichText::new(name.to_string())
+                    .font(ui_font(12.0))
                     .color(TEXT),
             );
         });
@@ -947,7 +948,7 @@ fn points_row(ui: &mut Ui, name: &str, v: i32) {
         );
         ui.label(
             RichText::new(format!("{v:+}"))
-                .font(pixel(13.0))
+                .font(ui_font(13.0))
                 .color(if v >= 0 { GOOD } else { BAD }),
         );
     });
@@ -971,14 +972,14 @@ fn vote_bars(ui: &mut Ui, r: &ElectionResult) {
         rect.left_center() + vec2(8.0, 0.0),
         Align2::LEFT_CENTER,
         format!("YOU {}%", r.share),
-        pixel(13.0),
+        ui_font(13.0),
         LINE,
     );
     p.text(
         rect.right_center() - vec2(8.0, 0.0),
         Align2::RIGHT_CENTER,
-        format!("{} {}%", r.challenger.to_uppercase(), 100 - r.share),
-        pixel(13.0),
+        format!("{} {}%", r.challenger.to_string(), 100 - r.share),
+        ui_font(13.0),
         LINE,
     );
     p.rect_stroke(rect, 0.0, Stroke::new(2.0, EDGE), egui::StrokeKind::Inside);
@@ -1012,7 +1013,7 @@ impl Game {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label(heading(t.name, 20.0).color(TEXT));
-                    label(ui, &t.personality.label().to_uppercase(), 11.0);
+                    label(ui, &t.personality.label().to_string(), 11.0);
                 });
                 let trend = if t.trend > 0 {
                     format!("up {} this year", t.trend)
