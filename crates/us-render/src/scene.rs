@@ -121,6 +121,8 @@ struct Extras {
     walkers: Vec<Walker>,
     lamps: Vec<Instance>,
     trains: crate::trains::Trains,
+    vehicles: Vec<crate::emergency::EmVehicle>,
+    blazes: Vec<crate::emergency::EmBlaze>,
     centre: [f32; 2],
     overlay: Option<OverlayState>,
     overlay_rev: u64,
@@ -135,6 +137,9 @@ pub struct FrameInstances {
     pub people: Vec<Instance>,
     pub lamps: Vec<Instance>,
     pub trains: crate::trains::TrainInstances,
+    /// Fire engines, police cars and ambulances.
+    pub rigs: [Vec<Instance>; 3],
+    pub flames: Vec<Instance>,
 }
 
 pub struct Scene {
@@ -367,6 +372,17 @@ impl Scene {
         self.x.trains = crate::trains::Trains::plan(&self.x.paths, service);
     }
 
+    /// Fire engines, police cars, ambulances and burning buildings to draw (replaces the last
+    /// set). Call each frame with where they are now.
+    pub fn set_emergency(
+        &mut self,
+        vehicles: Vec<crate::emergency::EmVehicle>,
+        blazes: Vec<crate::emergency::EmBlaze>,
+    ) {
+        self.x.vehicles = vehicles;
+        self.x.blazes = blazes;
+    }
+
     pub fn set_calendar(&mut self, c: Option<Calendar>) {
         self.calendar = c;
     }
@@ -376,12 +392,19 @@ impl Scene {
         if self.x.overlay.is_some() {
             return FrameInstances::default();
         }
+        let z = |x: f32, y: f32| self.land.height(x, y);
+        let rigs = crate::emergency::vehicle_instances(&self.x.vehicles, &z, self.time);
+        let (flames, smoke) = crate::emergency::blaze_instances(&self.x.blazes, &z, self.time);
+        let mut puffs = instances::puff_instances(&self.x.chimneys, self.time);
+        puffs.extend(smoke);
         FrameInstances {
             cars: instances::car_instances(&self.x.paths, &self.x.cars, self.time),
-            puffs: instances::puff_instances(&self.x.chimneys, self.time),
+            puffs,
             people: instances::walker_instances(&self.x.paths, &self.x.walkers, self.time),
             lamps: self.x.lamps.clone(),
             trains: self.x.trains.instances(&self.x.paths, self.time),
+            rigs,
+            flames,
         }
     }
 

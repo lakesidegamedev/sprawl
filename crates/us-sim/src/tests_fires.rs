@@ -54,7 +54,7 @@ fn an_unanswered_fire_burns_out_and_the_building_is_lost() {
     assert!(s.why(i).reason.contains("no fire station"));
     let at = s.blazes_at(t as f64 + 3.0 * 3600.0);
     assert!(at.iter().any(|b| b.lot == i && b.stage == 2));
-    assert_eq!(s.blazes_at(t as f64 - 10.0).len(), 0);
+    assert!(s.blazes_at(t as f64 - 10.0).iter().all(|b| b.stage == 0));
 }
 
 #[test]

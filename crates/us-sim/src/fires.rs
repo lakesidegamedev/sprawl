@@ -658,13 +658,17 @@ impl Sim {
 
     // ----- what the viewer reads -----
 
-    /// Fires burning at `now_s` seconds into the game.
+    /// Fires on today's map. The viewer's clock runs on its own, so a fire that has not started
+    /// yet at `now_s` shows at its first stage rather than not at all; one that has burned out
+    /// for the day shows at its last.
     pub fn blazes_at(&self, now_s: f64) -> Vec<BlazeView> {
-        let t = now_s as i64;
+        let day_start = self.day as i64 * DAY_S;
         self.fx
             .blazes
             .iter()
+            .filter(|b| b.out_s >= day_start)
             .filter_map(|b| {
+                let t = (now_s as i64).clamp(b.start_s, (b.out_s - 1).max(b.start_s));
                 Self::stage_at(b, t).map(|stage| BlazeView {
                     lot: b.lot as usize,
                     pos: self.lots[b.lot as usize].pos,
