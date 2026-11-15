@@ -1,6 +1,6 @@
 //! The Tram window: pick transit stops in order, see what the line costs, build it, and close
 //! lines that are no use. Everything here reads and changes the simulation through its public
-//! API. Wanted key: M (not bound; the lead assigns keys).
+//! API. Wanted key: F, the only letter left (not bound; the lead assigns keys).
 
 use super::panels::{lab, lab_c, window, wrapped};
 use super::{Game, money};
