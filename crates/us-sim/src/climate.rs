@@ -177,11 +177,12 @@ fn style(p: Preset) -> Style {
             wind_dir: 1.2,
             flood: 1.1,
         },
-        // red rock desert: hot, very dry, windy, rare flash floods in the washes
+        // red rock high desert: hot summers, cold nights and the odd dusting of snow, dry,
+        // windy, rare flash floods in the washes
         Preset::Mesa => Style {
-            mean: 17.0,
-            amp: 13.0,
-            wet: 0.35,
+            mean: 13.0,
+            amp: 15.5,
+            wet: 0.55,
             storm: 0.9,
             wind: 1.4,
             wind_dir: 0.8,
