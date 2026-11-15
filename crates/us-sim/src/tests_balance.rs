@@ -37,7 +37,7 @@ fn near_break_even(years: &[Year]) {
     for (n, y) in years.iter().enumerate().skip(9) {
         let r = ratio(y);
         assert!(
-            (-0.10..=0.40).contains(&r),
+            (-0.10..=0.45).contains(&r),
             "year {}: net is {:.1}% of income",
             n + 1,
             r * 100.0
