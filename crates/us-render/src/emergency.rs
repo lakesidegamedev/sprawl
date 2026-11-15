@@ -248,23 +248,27 @@ pub fn blaze_instances(
                 id: FLAME_ID_BASE + flames.len() as u32 * ID_STRIDE,
             });
         }
-        let n_puffs = 4 + f.stage as usize * 3;
-        let period = 7.0;
+        // a column: small dark puffs leave the roof, rise, spread a little, lean downwind and
+        // lighten as they climb; many small puffs read as one column, not as loose blocks
+        let n_puffs = 8 + f.stage as usize * 5;
+        let period = 9.0;
         for k in 0..n_puffs {
             if smoke.len() >= MAX_SMOKE {
                 break;
             }
             let ph = (time / period + k as f32 / n_puffs as f32 + hash(seed) * 0.5).rem_euclid(1.0);
             let grey = greys[((ph * 3.0) as usize).min(2)];
-            let rise = 8.0 + 26.0 * (f.stage as f32 * 0.5 + 0.5);
+            let rise = 18.0 + 22.0 * f.stage as f32;
+            let lean = ph * ph * (6.0 + 4.0 * f.stage as f32);
+            let wobble = libm::sinf(ph * 9.0 + seed as f32 + k as f32) * (0.4 + ph);
             smoke.push(Instance {
                 pos: [
-                    f.pos[0] + ph * 14.0,
-                    f.pos[1] + ph * 4.0 + libm::sinf(ph * 6.0 + seed as f32) * 1.2,
-                    ground + f.top + ph * rise,
+                    f.pos[0] + lean + wobble * 0.5,
+                    f.pos[1] + lean * 0.3 + wobble,
+                    ground + f.top.max(3.0) + 0.5 + ph * rise,
                 ],
                 theta: ph * 2.0 + bi as f32,
-                scale: 1.0 + ph * (1.4 + f.stage as f32 * 0.8),
+                scale: 0.45 + ph * (0.9 + 0.35 * f.stage as f32),
                 tint: tint(grey),
                 id: PUFF_ID_BASE + 400_000 + smoke.len() as u32 * ID_STRIDE,
             });

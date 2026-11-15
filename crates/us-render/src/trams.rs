@@ -19,7 +19,7 @@ use us_gen::{Pt, RoadClass, pt};
 pub const SECTION_LEN: f32 = 9.0;
 const JOINT_LEN: f32 = 1.0;
 /// Sideways distance of a track from the middle of the street, metres.
-pub const TRACK_OFFSET: f32 = 1.9;
+pub const TRACK_OFFSET: f32 = 2.2;
 const RAIL_GAUGE_HALF: f32 = 0.72;
 /// Height of the wire above the street, metres.
 const WIRE_Z: f32 = 4.9;
