@@ -224,29 +224,36 @@ pub fn ramps(drafts: &mut Vec<Draft>, terrain: &Terrain, wet: &[Vec<Pt>]) {
             let (pos, _, _) = project(&hline, al[0]);
             let (_, ad) = interpolate(&al, 0.0);
             for side in [-1.0f64, 1.0] {
-                let hp = pos + side * 170.0;
+                let hp = pos + side * 240.0;
                 if hp < 30.0 || hp > hlen - 30.0 {
                     continue;
                 }
                 let (hpt, ht) = interpolate(&hline, hp);
                 let (apt, _) = interpolate(&al, 95.0);
                 let toward = ht * (-side);
+                // the side of the highway the arterial leaves on
+                let mut nrm = pt(-ht.y, ht.x);
+                if nrm.dot(ad) < 0.0 {
+                    nrm = nrm * -1.0;
+                }
+                // a slip lane: it joins the highway on its centre line (so the network is one
+                // piece), tapers out to the edge, runs alongside, then curves off to the arterial
                 let p0 = hpt;
-                let p1 = hpt + toward * 70.0 + ad * 12.0;
-                let p2 = apt - toward * 55.0;
+                let q1 = hpt + toward * 60.0 + nrm * 14.0;
+                let q2 = hpt + toward * 125.0 + nrm * 16.0;
+                let c1 = q2 + toward * 55.0;
+                let c2 = apt - toward * 45.0;
                 let p3 = apt;
-                let mut line: Vec<Pt> = (0..=14)
-                    .map(|k| {
-                        let t = k as f64 / 14.0;
-                        let u = 1.0 - t;
-                        let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
-                        pt(
-                            w[0] * p0.x + w[1] * p1.x + w[2] * p2.x + w[3] * p3.x,
-                            w[0] * p0.y + w[1] * p1.y + w[2] * p2.y + w[3] * p3.y,
-                        )
-                    })
-                    .collect();
-                line[0] = p0;
+                let mut line: Vec<Pt> = vec![p0, q1];
+                for k in 0..=12 {
+                    let t = k as f64 / 12.0;
+                    let u = 1.0 - t;
+                    let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+                    line.push(pt(
+                        w[0] * q2.x + w[1] * c1.x + w[2] * c2.x + w[3] * p3.x,
+                        w[0] * q2.y + w[1] * c1.y + w[2] * c2.y + w[3] * p3.y,
+                    ));
+                }
                 let last = line.len() - 1;
                 line[last] = p3;
                 let mut clear = true;
