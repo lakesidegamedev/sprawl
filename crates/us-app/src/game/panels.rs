@@ -75,14 +75,15 @@ pub(super) fn btn(ui: &mut Ui, text: &str, on: bool, size: f32) -> egui::Respons
 
 /// A solid horizontal bar from 0 to 1.
 fn bar(ui: &mut Ui, width: f32, frac: f32, col: Color32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 12.0), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 12.0), Sense::hover());
+    let frac = theme::ease(ui.ctx(), (resp.id, "bar"), frac.clamp(0.0, 1.0), 0.25);
     let p = ui.painter();
-    p.rect_filled(rect, 0.0, EDGE);
+    p.rect_filled(rect, 3.0, EDGE);
     let inner = rect.shrink(2.0);
-    p.rect_filled(inner, 0.0, PANEL_DARK);
+    p.rect_filled(inner, 3.0, PANEL_DARK);
     let mut f = inner;
     f.set_width(inner.width() * frac.clamp(0.0, 1.0));
-    p.rect_filled(f, 0.0, col);
+    p.rect_filled(f, 3.0, col);
 }
 
 /// Height the bottom bar takes on a phone, so sheets and cards sit above it.
@@ -1056,7 +1057,7 @@ impl Game {
                     };
                     ui.horizontal(|ui| {
                         let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-                        ui.painter().rect_filled(r, 0.0, class_color(c));
+                        ui.painter().rect_filled(r, 3.0, class_color(c));
                         lab(ui, c.label(), 14.0);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let d = self.sim.class_demand(c);
@@ -1167,7 +1168,7 @@ impl Game {
                         let mut pct = self.sim.budget_pct(d);
                         ui.horizontal(|ui| {
                             let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-                            ui.painter().rect_filled(r, 0.0, dept_color(d));
+                            ui.painter().rect_filled(r, 3.0, dept_color(d));
                             lab(ui, d.label(), 12.0);
                         });
                         let r = ui.add(
@@ -1786,8 +1787,8 @@ impl Game {
     fn label_at(&self, painter: &egui::Painter, at: Pos2, text: &str, col: Color32) {
         let galley = painter.layout_no_wrap(text.to_string(), ui_font(11.0), INK);
         let r = egui::Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 3.0));
-        painter.rect_filled(r, 0.0, PANEL_DARK);
-        painter.rect_stroke(r, 0.0, Stroke::new(2.0, col), egui::StrokeKind::Inside);
+        painter.rect_filled(r, 3.0, PANEL_DARK);
+        painter.rect_stroke(r, 3.0, Stroke::new(1.5, col), egui::StrokeKind::Inside);
         painter.galley(at, galley, INK);
     }
 
@@ -1897,8 +1898,8 @@ impl Game {
         let at = pos + vec2(18.0, 18.0);
         let galley = painter.layout_no_wrap(text, ui_font(11.0), INK);
         let r = egui::Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 3.0));
-        painter.rect_filled(r, 0.0, PANEL_DARK);
-        painter.rect_stroke(r, 0.0, Stroke::new(2.0, col), egui::StrokeKind::Inside);
+        painter.rect_filled(r, 3.0, PANEL_DARK);
+        painter.rect_stroke(r, 3.0, Stroke::new(1.5, col), egui::StrokeKind::Inside);
         painter.galley(at, galley, INK);
     }
 
@@ -2084,10 +2085,10 @@ impl Game {
                             for (col, name) in mv.steps() {
                                 let (r, _) =
                                     ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-                                ui.painter().rect_filled(r, 0.0, col);
+                                ui.painter().rect_filled(r, 3.0, col);
                                 ui.painter().rect_stroke(
                                     r,
-                                    0.0,
+                                    3.0,
                                     Stroke::new(1.0, LINE),
                                     egui::StrokeKind::Inside,
                                 );

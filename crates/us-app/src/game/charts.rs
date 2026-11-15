@@ -112,8 +112,8 @@ const MARGIN_L: f32 = 78.0;
 pub fn draw(ui: &mut Ui, size: egui::Vec2, c: &Chart) {
     let (resp, painter) = ui.allocate_painter(size, Sense::hover());
     let rect = resp.rect;
-    painter.rect_filled(rect, 0.0, PANEL_DARK);
-    painter.rect_stroke(rect, 0.0, Stroke::new(2.0, EDGE), egui::StrokeKind::Inside);
+    painter.rect_filled(rect, 3.0, PANEL_DARK);
+    painter.rect_stroke(rect, 3.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
     let n = c.days.len();
     let shown: Vec<usize> = (0..c.series.len())
         .filter(|&i| c.visible.get(i).copied().unwrap_or(true))
@@ -348,7 +348,7 @@ pub fn draw(ui: &mut Ui, size: egui::Vec2, c: &Chart) {
             for &s in &shown {
                 ui.horizontal(|ui| {
                     let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-                    ui.painter().rect_filled(r, 0.0, c.series[s].color);
+                    ui.painter().rect_filled(r, 3.0, c.series[s].color);
                     ui.label(
                         egui::RichText::new(format!(
                             "{}  {}",
@@ -368,8 +368,8 @@ pub fn draw(ui: &mut Ui, size: egui::Vec2, c: &Chart) {
 pub fn spark(ui: &mut Ui, size: egui::Vec2, vals: &[f64], color: Color32, tip: &str) {
     let (resp, painter) = ui.allocate_painter(size, Sense::hover());
     let r = resp.rect;
-    painter.rect_filled(r, 0.0, PANEL_DARK);
-    painter.rect_stroke(r, 0.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
+    painter.rect_filled(r, 3.0, PANEL_DARK);
+    painter.rect_stroke(r, 3.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
     if vals.len() >= 2 {
         let lo = vals.iter().copied().fold(f64::MAX, f64::min);
         let hi = vals.iter().copied().fold(f64::MIN, f64::max);

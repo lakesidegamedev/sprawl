@@ -13,9 +13,9 @@ const MUTED: Color32 = Color32::from_rgb(170, 176, 196);
 fn swatch(ui: &mut Ui, rgb: [u8; 3]) {
     let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), egui::Sense::hover());
     ui.painter()
-        .rect_filled(r, 0.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+        .rect_filled(r, 3.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
     ui.painter()
-        .rect_stroke(r, 0.0, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+        .rect_stroke(r, 3.0, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
 }
 
 /// A toggle button that is big enough to touch on a phone.

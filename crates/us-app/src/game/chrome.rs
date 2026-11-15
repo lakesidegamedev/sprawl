@@ -156,6 +156,36 @@ pub(super) fn dock_button(
     resp
 }
 
+/// The menu button (three bars icon).
+pub(super) fn menu_button(ui: &mut Ui, size: egui::Vec2) -> egui::Response {
+    ui.add(egui::Button::new(theme::icon_text(icon::MENU, 20.0, INK)).min_size(size))
+        .on_hover_text("Menu")
+}
+
+/// A speed button: pause icon for 0, "1x" "3x" "8x" otherwise. Gold when on.
+pub(super) fn speed_button(ui: &mut Ui, i: usize, on: bool, size: egui::Vec2) -> egui::Response {
+    let col = if on { theme::LINE } else { INK };
+    let content = if i == 0 {
+        theme::icon_text(icon::PAUSE, 17.0, col)
+    } else {
+        RichText::new(SPEED_LABELS[i])
+            .font(ui_font(13.0))
+            .color(col)
+    };
+    let tips = [
+        "Pause (Space)",
+        "Normal speed (1)",
+        "Fast (2)",
+        "Fastest (3)",
+    ];
+    ui.add(
+        egui::Button::new(content)
+            .fill(if on { ACCENT } else { RAISED_FILL })
+            .min_size(size),
+    )
+    .on_hover_text(tips[i])
+}
+
 fn rail_gap(ui: &mut Ui) {
     ui.add_space(4.0);
     let r = ui.available_rect_before_wrap();
@@ -249,39 +279,12 @@ impl Game {
                 let who = who.clone();
                 let right = move |ui: &mut Ui, g: &mut Game| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new(icon::MENU).font(icon_font(18.0)).color(INK),
-                            )
-                            .min_size(vec2(36.0, 30.0)),
-                        )
-                        .on_hover_text("Menu")
-                        .clicked()
-                    {
+                    if menu_button(ui, vec2(36.0, 30.0)).clicked() {
                         g.menu_open = true;
                     }
                     if g.placed {
-                        let tips = [
-                            "Pause (Space)",
-                            "Normal speed (1)",
-                            "Fast (2)",
-                            "Fastest (3)",
-                        ];
                         for i in (0..4).rev() {
-                            let on = g.speed == i;
-                            let col = if on { theme::LINE } else { INK };
-                            let content = if i == 0 {
-                                RichText::new(icon::PAUSE).font(icon_font(16.0)).color(col)
-                            } else {
-                                RichText::new(SPEED_LABELS[i])
-                                    .font(ui_font(13.0))
-                                    .color(col)
-                            };
-                            let b = egui::Button::new(content)
-                                .fill(if on { ACCENT } else { RAISED_FILL })
-                                .min_size(vec2(38.0, 30.0));
-                            if ui.add(b).on_hover_text(tips[i]).clicked() {
+                            if speed_button(ui, i, g.speed == i, vec2(38.0, 30.0)).clicked() {
                                 g.speed = i;
                             }
                         }

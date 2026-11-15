@@ -69,7 +69,8 @@ fn choice(ui: &mut Ui, on: bool, title: &str, blurb: &str) -> bool {
         } else {
             RAISED
         })
-        .stroke(Stroke::new(2.0, if on { ACCENT } else { EDGE }))
+        .stroke(Stroke::new(1.0, if on { ACCENT } else { EDGE }))
+        .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
             ui.set_width(w - 24.0);
@@ -291,7 +292,8 @@ fn save_row(
     let compact = theme::is_compact(ui.ctx());
     egui::Frame::new()
         .fill(RAISED)
-        .stroke(Stroke::new(2.0, EDGE))
+        .stroke(Stroke::new(1.0, EDGE))
+        .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
             ui.set_width(w - 24.0);
@@ -420,14 +422,20 @@ impl Game {
         let size = vec2(width, if compact { theme::TOUCH } else { 26.0 });
         let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
         let p = ui.painter();
-        p.rect_filled(rect, 0.0, PANEL_DARK);
+        p.rect_filled(rect, 3.0, PANEL_DARK);
         let mut f = rect.shrink(2.0);
-        f.set_width(f.width() * (pct.clamp(0, 100) as f32 / 100.0));
-        p.rect_filled(f, 0.0, approval_color(pct).gamma_multiply(0.55));
+        let shown = theme::ease(
+            ui.ctx(),
+            (resp.id, "approval"),
+            pct.clamp(0, 100) as f32,
+            0.3,
+        );
+        f.set_width(f.width() * (shown / 100.0));
+        p.rect_filled(f, 3.0, approval_color(pct).gamma_multiply(0.55));
         p.rect_stroke(
             rect,
-            0.0,
-            Stroke::new(2.0, if self.voters_open { ACCENT } else { EDGE }),
+            3.0,
+            Stroke::new(1.0, if self.voters_open { ACCENT } else { EDGE }),
             egui::StrokeKind::Inside,
         );
         if compact {
@@ -918,7 +926,7 @@ fn points_row(ui: &mut Ui, name: &str, v: i32) {
         });
         let (rect, _) = ui.allocate_exact_size(vec2(150.0, 14.0), Sense::hover());
         let p = ui.painter();
-        p.rect_filled(rect, 0.0, PANEL_DARK);
+        p.rect_filled(rect, 3.0, PANEL_DARK);
         let mid = rect.center().x;
         let half = rect.width() / 2.0 - 2.0;
         let len = (v.abs() as f32 / 30.0).min(1.0) * half;
@@ -933,7 +941,7 @@ fn points_row(ui: &mut Ui, name: &str, v: i32) {
                 egui::pos2(mid, rect.bottom() - 2.0),
             )
         };
-        p.rect_filled(r, 0.0, if v >= 0 { GOOD } else { BAD });
+        p.rect_filled(r, 3.0, if v >= 0 { GOOD } else { BAD });
         p.line_segment(
             [egui::pos2(mid, rect.top()), egui::pos2(mid, rect.bottom())],
             Stroke::new(1.0, EDGE),
@@ -951,15 +959,15 @@ fn vote_bars(ui: &mut Ui, r: &ElectionResult) {
     let w = ui.available_width().min(420.0);
     let (rect, _) = ui.allocate_exact_size(vec2(w, 30.0), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 0.0, PANEL_DARK);
+    p.rect_filled(rect, 3.0, PANEL_DARK);
     let mine = r.share.clamp(0, 100) as f32 / 100.0;
     let mut a = rect.shrink(2.0);
     let total = a.width();
     a.set_width(total * mine);
-    p.rect_filled(a, 0.0, GOLD);
+    p.rect_filled(a, 3.0, GOLD);
     let mut b = rect.shrink(2.0);
     b.min.x = b.max.x - total * (1.0 - mine);
-    p.rect_filled(b, 0.0, Color32::from_rgb(120, 140, 170));
+    p.rect_filled(b, 3.0, Color32::from_rgb(120, 140, 170));
     p.text(
         rect.left_center() + vec2(8.0, 0.0),
         Align2::LEFT_CENTER,
@@ -974,7 +982,7 @@ fn vote_bars(ui: &mut Ui, r: &ElectionResult) {
         ui_font(13.0),
         LINE,
     );
-    p.rect_stroke(rect, 0.0, Stroke::new(2.0, EDGE), egui::StrokeKind::Inside);
+    p.rect_stroke(rect, 3.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
     let _ = DOCK_H;
 }
 

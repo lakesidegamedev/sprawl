@@ -1174,24 +1174,20 @@ impl State {
                         };
                         split_row(ui, theme::TOUCH, g, chip, |ui, g| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            let b = egui::Button::new(
-                                RichText::new("Menu").font(ui_font(12.0)).color(INK),
-                            )
-                            .min_size(vec2(48.0, theme::TOUCH));
-                            if ui.add(b).clicked() {
+                            if chrome::menu_button(ui, vec2(48.0, theme::TOUCH)).clicked() {
                                 g.menu_open = true;
                             }
                             if g.placed {
                                 for i in (0..4).rev() {
                                     let on = g.speed == i;
-                                    let b = egui::Button::new(
-                                        RichText::new(SPEED_LABELS[i])
-                                            .font(ui_font(12.0))
-                                            .color(if on { theme::LINE } else { INK }),
+                                    if chrome::speed_button(
+                                        ui,
+                                        i,
+                                        on,
+                                        vec2(theme::TOUCH, theme::TOUCH),
                                     )
-                                    .fill(if on { ACCENT } else { theme::RAISED })
-                                    .min_size(vec2(theme::TOUCH, theme::TOUCH));
-                                    if ui.add(b).clicked() {
+                                    .clicked()
+                                    {
                                         g.speed = i;
                                     }
                                 }
@@ -1208,24 +1204,20 @@ impl State {
                                 row1(ui, g);
                             },
                             |ui, g| {
-                                let b = egui::Button::new(
-                                    RichText::new("Menu").font(ui_font(12.0)).color(INK),
-                                )
-                                .min_size(vec2(48.0, theme::TOUCH));
-                                if ui.add(b).clicked() {
+                                if chrome::menu_button(ui, vec2(48.0, theme::TOUCH)).clicked() {
                                     g.menu_open = true;
                                 }
                                 if g.placed {
                                     for i in (0..4).rev() {
                                         let on = g.speed == i;
-                                        let b = egui::Button::new(
-                                            RichText::new(SPEED_LABELS[i])
-                                                .font(ui_font(12.0))
-                                                .color(if on { theme::LINE } else { INK }),
+                                        if chrome::speed_button(
+                                            ui,
+                                            i,
+                                            on,
+                                            vec2(theme::TOUCH, theme::TOUCH),
                                         )
-                                        .fill(if on { ACCENT } else { theme::RAISED })
-                                        .min_size(vec2(theme::TOUCH, theme::TOUCH));
-                                        if ui.add(b).clicked() {
+                                        .clicked()
+                                        {
                                             g.speed = i;
                                         }
                                     }
@@ -1360,7 +1352,7 @@ impl State {
                         }
                         egui::Frame::new()
                             .fill(Color32::from_rgba_unmultiplied(11, 22, 34, 215))
-                            .stroke(Stroke::new(2.0, theme::EDGE))
+                            .stroke(Stroke::new(1.0, theme::EDGE))
                             .inner_margin(egui::Margin::symmetric(8, 4))
                             .show(ui, |ui| {
                                 ui.label(RichText::new(goal_text).font(ui_font(12.0)).color(INK));
