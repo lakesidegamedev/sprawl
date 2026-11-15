@@ -1083,15 +1083,23 @@ impl Sim {
         s.jobless = r.bool()?;
         s.last_kind_street = r.i32()?;
         s.growth_spent = r.i64()?;
+        let mut had_mile = false;
         if version >= 5 {
             let n = r.len(12)?;
             for _ in 0..n {
                 let tag: [u8; 4] = r.take(4)?.try_into().unwrap();
+                had_mile |= &tag == b"MILE";
                 let len = r.len(1)?;
                 let bytes = r.take(len)?;
                 crate::save_ext::load_section(&mut s, tag, bytes)?;
             }
         }
+
+        // a save from before unlocks: open what the town's size has already earned, quietly
+        if !had_mile {
+            s.unlock_silently();
+        }
+        s.rebuild_fx_sites();
 
         // the sizes the rest of the code indexes by
         let nl = s.lots.len();

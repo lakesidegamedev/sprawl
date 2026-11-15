@@ -273,6 +273,7 @@ impl Sim {
     pub(crate) fn run_month(&mut self) {
         self.step_rival();
         self.recompute_values();
+        self.step_unlocks();
         self.step_limits();
         self.evolve_buildings();
         let lg = self.compute_ledger();

@@ -65,6 +65,11 @@ impl Sim {
 
     /// Validate a placement. Returns the nearest point on the road and the lots it takes over.
     fn civic_plan(&self, kind: CivicKind, p: Pt) -> Result<(Pt, Vec<usize>), PlaceError> {
+        if !self.is_unlocked(kind) {
+            return Err(PlaceError::Locked {
+                people: kind.unlock_at(),
+            });
+        }
         let r = kind.radius();
         let size = self.town.size;
         if p.x < 20.0 || p.y < 20.0 || p.x > size - 20.0 || p.y > size - 20.0 {

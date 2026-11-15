@@ -52,7 +52,9 @@ impl Sim {
                 Some(CivicKind::Water) => water += 1,
                 Some(CivicKind::Power) => power += 1,
                 Some(CivicKind::School) => seats += 1,
+                Some(CivicKind::HighSchool) => seats += milestones::HIGH_SCHOOL_SEATS,
                 Some(CivicKind::Clinic) => clinics += 1,
+                Some(CivicKind::Hospital) => clinics += milestones::HOSPITAL_CLINICS,
                 Some(_) => {}
                 None => match l.kind {
                     LotKind::Water => water += 1,
@@ -136,6 +138,7 @@ impl Sim {
             * libm::pow(1.0 + POOL_GROWTH_PER_YEAR, years)
             * self.rules.difficulty.arrival_pct() as f64
             / 100.0
+            * self.arrival_bonus()
     }
 
     /// Dollars paid so far for new streets and utility connections, before the taxes they bring.
@@ -169,7 +172,14 @@ impl Sim {
             };
             self.warned[i] = st.ratio() >= WARN_AT;
             if self.stalled[i] && !was[i] {
-                news.push((st.capacity.stall_text(), None));
+                news.push((
+                    format!(
+                        "{}{}",
+                        st.capacity.stall_text(),
+                        self.bigger_hint(st.capacity)
+                    ),
+                    None,
+                ));
             } else if !self.stalled[i] && was[i] {
                 news.push((
                     format!("{} has room again: growth can resume.", st.capacity.label()),
@@ -178,10 +188,11 @@ impl Sim {
             } else if self.warned[i] && !was_warn[i] && !self.stalled[i] {
                 news.push((
                     format!(
-                        "{} is {}% used. {}",
+                        "{} is {}% used. {}{}",
                         st.capacity.label(),
                         (st.ratio() * 100.0) as i64,
-                        st.capacity.build_hint()
+                        st.capacity.build_hint(),
+                        self.bigger_hint(st.capacity)
                     ),
                     None,
                 ));
@@ -232,7 +243,8 @@ impl Sim {
         if pop >= 200.0 && ratio < LEAVE_BELOW_RATIO {
             // nobody moves in while there is no work
             self.queue.homes = 0.0;
-            let n = (((LEAVE_BELOW_RATIO - ratio) * pop / 40.0).ceil() as usize)
+            let n = (((LEAVE_BELOW_RATIO - ratio) * pop / 40.0 * self.leaver_factor()).ceil()
+                as usize)
                 .clamp(1, 12 + pop as usize / 200);
             let mut gone = 0;
             let mut at = None;

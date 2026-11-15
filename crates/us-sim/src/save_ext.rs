@@ -22,17 +22,16 @@ pub(crate) fn sections(s: &Sim) -> Vec<([u8; 4], Vec<u8>)> {
     };
     // features add their sections here, one line each, in the order they were added:
     // push(b"EXMP", &|s, w| s.save_example(w));
-    let _ = &mut push;
+    push(b"MILE", &|s, w| s.save_mile(w));
     out
 }
 
 /// Read one section into the game. Unknown tags are skipped.
-#[allow(clippy::match_single_binding)]
 pub(crate) fn load_section(s: &mut Sim, tag: [u8; 4], bytes: &[u8]) -> Res<()> {
     let mut r = R::new(bytes);
     let r = &mut r;
     match &tag {
-        // b"EXMP" => s.load_example(r)?,
+        b"MILE" => s.load_mile(r)?,
         _ => {
             let _ = (s, r.left());
         }

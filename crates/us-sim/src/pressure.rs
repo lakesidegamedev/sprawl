@@ -339,7 +339,7 @@ impl Sim {
             .map(|s| if n > 0.0 { s / n } else { 0.5 })
             .collect();
         let mean = means.iter().sum::<f64>() / 5.0;
-        let services = (mean - 0.45) * 40.0;
+        let services = (mean - 0.45) * 40.0 + self.stadium_approval();
         let mut weakest = 0;
         for k in 1..5 {
             if means[k] < means[weakest] {
@@ -355,7 +355,7 @@ impl Sim {
         } else {
             0.0
         };
-        let traffic = -(self.avg_cong as f64) * 25.0;
+        let traffic = -self.civic_adjusted_congestion(self.avg_cong as f64) * 25.0;
         let limit = self.credit_limit().max(1);
         let mut debt = -(self.debt() as f64 / limit as f64) * 15.0;
         if self.treasury < 0 {

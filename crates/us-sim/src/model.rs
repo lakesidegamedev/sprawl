@@ -216,10 +216,23 @@ pub enum CivicKind {
     /// Supplies power; a town cannot grow past the plants it has built. Until the renderer has a
     /// model it is drawn with the sports field look.
     Power,
+    // The kinds below unlock as the town grows (see `unlock_at`). Only ever append.
+    /// Raises land value and school cover nearby.
+    Library,
+    /// Big school capacity and cover; a little more shop and office demand.
+    HighSchool,
+    /// Big health capacity and wide health cover; fewer people leave.
+    Hospital,
+    /// Eases traffic and raises land value nearby; a few more arrivals.
+    Transit,
+    /// Approval, shop demand nearby, and extra traffic around it.
+    Stadium,
+    /// Land value and office demand across town, more arrivals; needs a wide site.
+    University,
 }
 
 impl CivicKind {
-    pub const ALL: [CivicKind; 7] = [
+    pub const ALL: [CivicKind; 13] = [
         CivicKind::School,
         CivicKind::Police,
         CivicKind::Fire,
@@ -227,6 +240,12 @@ impl CivicKind {
         CivicKind::Park,
         CivicKind::Water,
         CivicKind::Power,
+        CivicKind::Library,
+        CivicKind::HighSchool,
+        CivicKind::Hospital,
+        CivicKind::Transit,
+        CivicKind::Stadium,
+        CivicKind::University,
     ];
 
     pub fn label(self) -> &'static str {
@@ -238,6 +257,12 @@ impl CivicKind {
             CivicKind::Park => "Park",
             CivicKind::Water => "Water tower",
             CivicKind::Power => "Power plant",
+            CivicKind::Library => "Library",
+            CivicKind::HighSchool => "High school",
+            CivicKind::Hospital => "Hospital",
+            CivicKind::Transit => "Transit stop",
+            CivicKind::Stadium => "Stadium",
+            CivicKind::University => "University",
         }
     }
 
@@ -251,6 +276,12 @@ impl CivicKind {
             CivicKind::Park => 30_000,
             CivicKind::Water => 60_000,
             CivicKind::Power => 250_000,
+            CivicKind::Library => 140_000,
+            CivicKind::HighSchool => 260_000,
+            CivicKind::Hospital => 420_000,
+            CivicKind::Transit => 90_000,
+            CivicKind::Stadium => 600_000,
+            CivicKind::University => 900_000,
         }
     }
 
@@ -264,6 +295,12 @@ impl CivicKind {
             CivicKind::Park => 400,
             CivicKind::Water => 800,
             CivicKind::Power => 4000,
+            CivicKind::Library => 2600,
+            CivicKind::HighSchool => 6000,
+            CivicKind::Hospital => 9000,
+            CivicKind::Transit => 3000,
+            CivicKind::Stadium => 10_000,
+            CivicKind::University => 14_000,
         }
     }
 
@@ -276,6 +313,72 @@ impl CivicKind {
             CivicKind::Park => Service::Parks,
             // a utility: it covers nothing, only adds capacity (see `Capacity`)
             CivicKind::Water | CivicKind::Power => Service::Water,
+            CivicKind::Library | CivicKind::HighSchool => Service::Schools,
+            CivicKind::Hospital => Service::Health,
+            CivicKind::Stadium => Service::Parks,
+            // paid from the general fund; they cover no service
+            CivicKind::Transit | CivicKind::University => Service::Water,
+        }
+    }
+
+    /// The service this building gives cover for, if any.
+    pub fn covers(self) -> Option<Service> {
+        match self {
+            CivicKind::Power | CivicKind::Transit | CivicKind::University => None,
+            c => Some(c.service()),
+        }
+    }
+
+    /// How far its cover reaches compared with the service's usual reach.
+    pub fn reach_mult(self) -> f64 {
+        match self {
+            CivicKind::Library => 0.7,
+            CivicKind::Hospital => 1.6,
+            _ => 1.0,
+        }
+    }
+
+    /// Road travel distance in metres it covers at a funding fraction (1.0 is full), or 0 when it
+    /// covers nothing.
+    pub fn reach_at(self, funding: f64) -> f64 {
+        self.covers().map_or(0.0, |s| {
+            s.reach_m() * self.reach_mult() * (0.4 + 0.6 * funding)
+        })
+    }
+
+    /// Population at which the mayor may build it; 0 for the kinds there from the start.
+    pub fn unlock_at(self) -> i64 {
+        match self {
+            CivicKind::Library => 1_500,
+            CivicKind::HighSchool => 3_000,
+            CivicKind::Hospital => 5_000,
+            CivicKind::Transit => 6_000,
+            CivicKind::Stadium => 9_000,
+            CivicKind::University => 14_000,
+            _ => 0,
+        }
+    }
+
+    /// One plain line on what it does, for the Build window.
+    pub fn effect_text(self) -> &'static str {
+        match self {
+            CivicKind::Library => "Raises land value and school cover nearby.",
+            CivicKind::HighSchool => {
+                "Big school capacity and cover. A little more demand for shops and offices."
+            }
+            CivicKind::Hospital => {
+                "Big health capacity and wide health cover. Fewer people leave town."
+            }
+            CivicKind::Transit => {
+                "Eases traffic and raises land value nearby. A few more people move in."
+            }
+            CivicKind::Stadium => {
+                "Voters like it and shops nearby do well. More traffic around it."
+            }
+            CivicKind::University => {
+                "Raises land value and office demand across town. More people move in."
+            }
+            _ => "",
         }
     }
 
@@ -289,6 +392,12 @@ impl CivicKind {
             CivicKind::Park => 14.0,
             CivicKind::Water => 7.0,
             CivicKind::Power => 16.0,
+            CivicKind::Library => 11.0,
+            CivicKind::HighSchool => 16.0,
+            CivicKind::Hospital => 15.0,
+            CivicKind::Transit => 6.0,
+            CivicKind::Stadium => 30.0,
+            CivicKind::University => 26.0,
         }
     }
 
@@ -302,6 +411,10 @@ impl CivicKind {
             CivicKind::Park => LotKind::Park,
             CivicKind::Water => LotKind::Water,
             CivicKind::Power => LotKind::Sports,
+            CivicKind::Library | CivicKind::HighSchool | CivicKind::University => LotKind::School,
+            CivicKind::Hospital => LotKind::Church,
+            CivicKind::Transit => LotKind::Parking,
+            CivicKind::Stadium => LotKind::Sports,
         }
     }
 }
@@ -332,6 +445,10 @@ pub enum PlaceError {
     InWater,
     /// Overlaps a building, a construction site or the town hall.
     Occupied,
+    /// The town is not big enough yet: people needed.
+    Locked {
+        people: i64,
+    },
 }
 
 impl PlaceError {
@@ -343,6 +460,9 @@ impl PlaceError {
             PlaceError::OnRoad => "That spot is on a road.".into(),
             PlaceError::InWater => "That spot is in the water.".into(),
             PlaceError::Occupied => "Something already stands there.".into(),
+            PlaceError::Locked { people } => {
+                format!("Unlocks at {} people.", crate::milestones::group(people))
+            }
         }
     }
 }

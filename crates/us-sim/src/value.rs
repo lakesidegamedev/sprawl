@@ -61,6 +61,7 @@ impl Sim {
     /// Rebuild the road graph if roads changed, then coverage, land value and demand.
     pub(crate) fn recompute_values(&mut self) {
         self.values_stale = false;
+        self.rebuild_fx_sites();
         if self.net_dirty || self.roadnet.is_none() {
             let roads: Vec<(RoadClass, Vec<Pt>)> = self
                 .runs
@@ -99,13 +100,13 @@ impl Sim {
                         continue;
                     }
                     let svc = match l.civic {
-                        Some(CivicKind::Power) => None,
-                        Some(c) => Some(c.service()),
+                        Some(c) => c.covers(),
                         None => service_of_kind(l.kind),
                     };
                     if svc != Some(s) {
                         continue;
                     }
+                    let reach = reach * l.civic.map_or(1.0, CivicKind::reach_mult);
                     let Some((src, off)) = self.lot_node[i] else {
                         continue;
                     };
@@ -157,8 +158,11 @@ impl Sim {
             let taxf = (growth_mult(self.tax.get(c) as f64 / 10.0) / 1.6).clamp(0.0, 1.0);
             let season = self.season_pct(c) as f64 / 100.0;
             let pull = 1.0 - self.rival_pull(c);
-            let d =
+            let mut d =
                 base(c).clamp(0.0, 1.0) * taxf * (1.0 - 0.7 * empty_share.min(1.0)) * season * pull;
+            if c == Class::Shops {
+                d += self.shop_demand_bonus() * taxf;
+            }
             out.set(
                 c,
                 if land_left {
@@ -228,6 +232,7 @@ impl Sim {
             let rate = class.map_or(0.0, |c| self.tax.get(c) as f64 / 10.0);
             let burden = (rate - 7.0) * TAX_BURDEN_PER_PCT;
             let traffic = self.lot_traffic(i);
+            let near = self.civic_near(l.pos, class == Some(Class::Shops));
             let v = BASE
                 + W_ACCESS * access
                 + W_JOBS * jobs_near
@@ -237,7 +242,8 @@ impl Sim {
                 - W_INDUSTRY * industry
                 - W_TRAFFIC * traffic
                 - 0.06 * (1.0 - road_f)
-                - burden;
+                - burden
+                + near.value;
             out[i] = v.clamp(0.0, 1.0) as f32;
         }
         self.lot_value = out;

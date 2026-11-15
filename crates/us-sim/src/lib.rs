@@ -20,6 +20,7 @@ mod econ;
 mod growth;
 mod ledger_view;
 mod limits;
+mod milestones;
 mod model;
 mod pressure;
 mod roadnet;
@@ -370,6 +371,10 @@ pub struct Sim {
     pub(crate) queue: ByClass<f64>,
     /// Per `Capacity`: full, so growth that needs it is held back.
     pub(crate) stalled: [bool; 4],
+    /// Bit per `CivicKind::ALL` position: the buildings the town has unlocked.
+    pub(crate) unlocked: u32,
+    /// Standing new civic buildings with their places, rebuilt with the land values.
+    pub(crate) fx_sites: Vec<(CivicKind, Pt)>,
     /// Per `Capacity`: past the warning level.
     pub(crate) warned: [bool; 4],
     /// Families are leaving for lack of jobs.
@@ -472,6 +477,8 @@ impl Sim {
             fire_days: Vec::new(),
             queue: ByClass::all(0.0),
             stalled: [false; 4],
+            unlocked: 0,
+            fx_sites: Vec::new(),
             warned: [false; 4],
             jobless: false,
             last_kind_street: -1000,
@@ -717,6 +724,7 @@ impl Sim {
         for st in self.stalled {
             f(st as u64);
         }
+        f(self.unlocked as u64);
         f(self.runs.len() as u64);
         for r in &self.runs {
             f(r.class as u64);
@@ -1276,3 +1284,6 @@ mod tests_streets;
 
 #[cfg(test)]
 mod tests_limits;
+
+#[cfg(test)]
+mod tests_milestones;
