@@ -145,7 +145,7 @@ fn title_row(ui: &mut Ui, title: &str) {
     if let Some(g) = title_icon(title) {
         ui.label(theme::icon_text(g, 20.0, ACCENT));
     }
-    ui.label(heading(title, 17.0));
+    ui.label(heading(title, 24.0));
 }
 
 /// Fade out on close: the first click starts it, the close is reported when it has finished.
@@ -944,6 +944,7 @@ impl Game {
                     self.election_seen = self.sim.last_election().map_or(-1, |e| e.day);
                 }
                 "map" => self.map_open = true,
+                "views" => self.ui.views_open = true,
                 "pausemenu" => self.menu_open = true,
                 "saveas" => {
                     self.menu_open = true;
@@ -1512,7 +1513,7 @@ impl Game {
                     );
                 }
                 if !k.effect_text().is_empty() {
-                    wrapped(ui, k.effect_text().to_string(), 10.0, TEXT);
+                    wrapped(ui, k.effect_text(), 10.0, TEXT);
                 }
                 lab(ui, "Takes 40 to 70 days to build", 10.0);
                 if btn(ui, "Stop placing", false, 11.0).clicked() {
@@ -1577,7 +1578,7 @@ impl Game {
                         lab(ui, format!("{} empty lots given up", p.lots_taken), 10.0);
                     }
                 }
-                Err(e) => lab_c(ui, e.text().to_string(), 11.0, BAD),
+                Err(e) => lab_c(ui, e.text(), 11.0, BAD),
             }
         }
         lab(ui, "Takes 3 to 12 weeks to build", 10.0);
@@ -1994,11 +1995,11 @@ impl Game {
                 10.0,
             );
             if !k.effect_text().is_empty() {
-                wrapped(ui, k.effect_text().to_string(), 10.0, TEXT);
+                wrapped(ui, k.effect_text(), 10.0, TEXT);
             }
         }
         for note in self.sim.civic_notes(lot) {
-            wrapped(ui, note.to_string(), 10.0, TEXT);
+            wrapped(ui, &note, 10.0, TEXT);
         }
         if matches!(l.phase, Phase::Built { .. }) && class_of(l.kind).is_some() && !l.exempt {
             let mut parts = String::new();

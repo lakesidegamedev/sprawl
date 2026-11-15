@@ -814,7 +814,7 @@ impl State {
                 if short {
                 } else if let Some(a) = &status.account {
                     ui.vertical_centered(|ui| {
-                        label(ui, &format!("Signed in as {}", a.name.to_string()), 14.0);
+                        label(ui, &format!("Signed in as {}", a.name), 14.0);
                         if status.launcher {
                             label(
                                 ui,
@@ -1276,7 +1276,7 @@ impl State {
                         if compact {
                             ui.set_max_width(ctx.content_rect().width() - 40.0);
                             ui.add(
-                                egui::Label::new(heading(&b, 14.0)).wrap(),
+                                egui::Label::new(RichText::new(&b).font(ui_font(14.0)).color(INK)).wrap(),
                             );
                             if !g.placed {
                                 ui.add(
@@ -1290,7 +1290,10 @@ impl State {
                             }
                             return;
                         }
-                        ui.label(heading(&b, 18.0));
+                        ui.set_max_width(440.0);
+                        ui.add(
+                            egui::Label::new(RichText::new(&b).font(ui_font(16.0)).color(INK)).wrap(),
+                        );
                         if !g.placed {
                             label(ui, "The white squares are old crossroads. The one nearest your cursor glows orange. Your main street will run to the highway.", 12.0);
                         }
@@ -1318,13 +1321,10 @@ impl State {
                 None
             };
             let pop = g.stats.pop;
-            let unlock_hint = g.sim.next_unlock().map(|(k, n)| {
-                format!(
-                    "Next: {} at {} people",
-                    k.label().to_string(),
-                    charts::group(n)
-                )
-            });
+            let unlock_hint = g
+                .sim
+                .next_unlock()
+                .map(|(k, n)| format!("Next: {} at {} people", k.label(), charts::group(n)));
             let mut hide_tip = false;
             if compact {
                 // one short stack: the goal on one line, then up to two news toasts
@@ -1347,7 +1347,12 @@ impl State {
                                 .inner_margin(egui::Margin::symmetric(8, 4))
                                 .show(ui, |ui| {
                                     ui.set_max_width(wmax - 20.0);
-                                    ui.add(egui::Label::new(heading(b, 12.0)).wrap());
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(b).font(ui_font(12.0)).color(INK),
+                                        )
+                                        .wrap(),
+                                    );
                                 });
                         }
                         egui::Frame::new()
@@ -1386,11 +1391,14 @@ impl State {
                     .show(ctx, |ui| {
                         theme::panel().show(ui, |ui| {
                             ui.set_width(320.0);
+                            let goal_text =
+                                |s: String| RichText::new(s).font(ui_font(16.0)).color(INK);
                             label(ui, "Goal", 12.0);
                             match goal {
-                                Some(n) => ui
-                                    .label(heading(&format!("Reach {n} people ({pop} now)"), 16.0)),
-                                None => ui.label(heading("Keep your town growing", 16.0)),
+                                Some(n) => {
+                                    ui.label(goal_text(format!("Reach {n} people ({pop} now)")))
+                                }
+                                None => ui.label(goal_text("Keep your town growing".to_string())),
                             };
                             if let Some(u) = &unlock_hint {
                                 label(ui, u, 11.0);
@@ -1495,8 +1503,8 @@ impl State {
                     // a sheet or a modal screen is open: the phone has room for one
                 } else if compact {
                     let mut close = false;
-                    let st = status.clone();
-                    let bl = built.clone();
+                    let st = chrome::sentence(&status);
+                    let bl = built.as_deref().map(chrome::sentence);
                     close |= panels::sheet(ctx, &title, |ui| {
                         ui.label(RichText::new(&st).font(ui_font(12.5)).color(ACCENT));
                         if let Some(b) = &bl {
@@ -1550,8 +1558,18 @@ impl State {
                 .show(ctx, |ui| {
                     egui::Frame::new()
                         .fill(Color32::from_rgba_unmultiplied(11, 22, 34, 190))
-                        .inner_margin(egui::Margin::symmetric(8, 3))
+                        .corner_radius(6)
+                        .inner_margin(egui::Margin::symmetric(10, 4))
                         .show(ui, |ui| {
+                            if !compact {
+                                ui.set_max_width(
+                                    (ctx.content_rect().width()
+                                        - chrome::RAIL_W
+                                        - chrome::INSPECTOR_W
+                                        - 40.0)
+                                        .max(300.0),
+                                );
+                            }
                             ui.add(
                                 egui::Label::new(
                                     RichText::new(help)
@@ -1577,11 +1595,7 @@ impl State {
                 ui.label(heading("Paused", 32.0));
                 label(
                     ui,
-                    &format!(
-                        "{}, seed {}",
-                        screens::town_name(g.preset.label()).to_string(),
-                        g.seed
-                    ),
+                    &format!("{}, seed {}", screens::town_name(g.preset.label()), g.seed),
                     12.0,
                 );
                 if g.rules.is_sandbox() {
@@ -1596,7 +1610,7 @@ impl State {
                     );
                 }
                 if let Some(n) = &who {
-                    label(ui, &format!("Signed in as {}", n.to_string()), 12.0);
+                    label(ui, &format!("Signed in as {}", n), 12.0);
                 }
                 if !g.menu_note.is_empty() {
                     ui.add(

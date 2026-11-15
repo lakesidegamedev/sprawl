@@ -12,7 +12,6 @@ pub const LINE: Color32 = Color32::from_rgb(11, 22, 34);
 pub const EDGE: Color32 = Color32::from_rgb(34, 54, 74);
 /// Type on controls and headings.
 pub const INK: Color32 = Color32::from_rgb(232, 238, 245);
-pub const PANEL: Color32 = Color32::from_rgb(19, 33, 47);
 pub const PANEL_DARK: Color32 = Color32::from_rgb(11, 22, 34);
 pub const RAISED: Color32 = Color32::from_rgb(26, 43, 60);
 pub const ACCENT: Color32 = Color32::from_rgb(226, 176, 74);
@@ -41,19 +40,12 @@ pub mod icon {
     pub const STORM: &str = "\u{e1b2}";
     pub const WIND: &str = "\u{e5d2}";
     pub const PAUSE: &str = "\u{e39e}";
-    pub const PLAY: &str = "\u{e3d0}";
-    pub const FAST: &str = "\u{e6a6}";
     pub const MENU: &str = "\u{e2f0}";
     pub const CLOSE: &str = "\u{e4f6}";
     pub const PEOPLE: &str = "\u{e4d6}";
     pub const CALENDAR: &str = "\u{e10a}";
     pub const TREND_UP: &str = "\u{e4ae}";
     pub const TREND_DOWN: &str = "\u{e4ac}";
-    pub const SETTINGS: &str = "\u{e270}";
-    pub const INFO: &str = "\u{e2ce}";
-    pub const HOUSE: &str = "\u{e2c2}";
-    pub const CARET: &str = "\u{e13a}";
-    pub const EYE: &str = "\u{e220}";
 }
 
 /// Text as written: sentence case. Kept so call sites read the same everywhere.
@@ -207,7 +199,7 @@ pub fn install(ctx: &egui::Context) {
     }
     w.noninteractive.bg_fill = FILL;
     w.noninteractive.weak_bg_fill = FILL;
-    w.inactive.bg_fill = RAISED_FILL;
+    w.inactive.bg_fill = Color32::from_rgb(52, 76, 102);
     w.inactive.weak_bg_fill = RAISED_FILL;
     w.hovered.bg_fill = Color32::from_rgb(40, 64, 88);
     w.hovered.weak_bg_fill = Color32::from_rgb(40, 64, 88);
@@ -261,6 +253,8 @@ pub fn bar() -> Frame {
 
 /// A heading in the pixel face. Headings are the one place text is upper case.
 pub fn heading(text: &str, size: f32) -> egui::RichText {
+    // the pixel face is drawn on an 8 px grid: other sizes blur its steps
+    let size = ((size / 8.0).round().max(1.0)) * 8.0;
     egui::RichText::new(text.to_uppercase())
         .font(pixel_face(size))
         .color(INK)

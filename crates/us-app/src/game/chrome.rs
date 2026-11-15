@@ -197,6 +197,15 @@ fn rail_gap(ui: &mut Ui) {
     ui.add_space(5.0);
 }
 
+/// First letter in upper case.
+pub(super) fn sentence(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
 /// A small caption over a block of the inspector.
 pub(super) fn section(ui: &mut Ui, title: &str) {
     ui.add_space(8.0);
@@ -215,7 +224,7 @@ impl Game {
         who: &Option<String>,
         fps: f32,
     ) -> egui::InnerResponse<()> {
-        let narrow = ui.ctx().content_rect().width() < 1280.0;
+        let narrow = ui.ctx().content_rect().width() < 1500.0;
         egui::Panel::top("hud")
             .frame(theme::bar().inner_margin(egui::Margin::symmetric(14, 7)))
             .show(ui, |ui| {
@@ -237,7 +246,7 @@ impl Game {
                         INK,
                         "Today's date",
                     );
-                    let pop = theme::count_to(&ctx, "fig-pop", g.stats.pop as i64);
+                    let pop = theme::count_to(&ctx, "fig-pop", g.stats.pop);
                     stat(ui, icon::PEOPLE, pop.to_string(), INK, "People in town");
                     let tre = theme::count_to(&ctx, "fig-tre", g.sim.treasury);
                     stat(
@@ -261,9 +270,6 @@ impl Game {
                         "Income minus spending, per month",
                     );
                     g.approval_chip(ui, false);
-                    if !narrow {
-                        g.sparks_ui(ui);
-                    }
                     let (gl, word, col) = weather(&g.sim);
                     let r = ui
                         .horizontal(|ui| {
@@ -275,6 +281,9 @@ impl Game {
                         })
                         .response;
                     r.on_hover_text(format!("Weather: {}", word.to_lowercase()));
+                    if !narrow {
+                        g.sparks_ui(ui);
+                    }
                 };
                 let who = who.clone();
                 let right = move |ui: &mut Ui, g: &mut Game| {
@@ -581,9 +590,13 @@ impl Game {
                         }
                     });
                 });
-                ui.label(RichText::new(status).font(ui_font(12.5)).color(ACCENT));
+                ui.label(
+                    RichText::new(sentence(&status))
+                        .font(ui_font(12.5))
+                        .color(ACCENT),
+                );
                 if let Some(b) = built {
-                    ui.label(RichText::new(b).font(ui_font(12.5)).color(MUTED));
+                    ui.label(RichText::new(sentence(&b)).font(ui_font(12.5)).color(MUTED));
                 }
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])

@@ -64,9 +64,9 @@ impl Game {
         let was = self.sim.district_of_addition(a);
         let now = self.sim.toggle_addition(d, a);
         let text = if now {
-            format!("Added to {}.", name.to_string())
+            format!("Added to {}.", name)
         } else if was == Some(d) {
-            format!("Taken out of {}.", name.to_string())
+            format!("Taken out of {}.", name)
         } else {
             "Farmland cannot join a district.".to_string()
         };
@@ -158,7 +158,7 @@ impl Game {
                                     self.banner = Some((
                                         format!(
                                             "Painting {}: click a neighbourhood to add or remove it.",
-                                            name.to_string()
+                                            name
                                         ),
                                         6.0,
                                     ));

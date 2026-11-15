@@ -677,11 +677,7 @@ impl Game {
                     let msg = if sandbox {
                         "SANDBOX: NOBODY CAN VOTE YOU OUT".to_string()
                     } else {
-                        format!(
-                            "NEXT ELECTION {} ({})",
-                            when.to_string(),
-                            distance_text(days).to_string()
-                        )
+                        format!("NEXT ELECTION {} ({})", when, distance_text(days))
                     };
                     ui.add(
                         egui::Label::new(RichText::new(msg).font(ui_font(12.0)).color(MUTED))
@@ -978,7 +974,7 @@ fn vote_bars(ui: &mut Ui, r: &ElectionResult) {
     p.text(
         rect.right_center() - vec2(8.0, 0.0),
         Align2::RIGHT_CENTER,
-        format!("{} {}%", r.challenger.to_string(), 100 - r.share),
+        format!("{} {}%", r.challenger, 100 - r.share),
         ui_font(13.0),
         LINE,
     );
@@ -1013,7 +1009,7 @@ impl Game {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label(heading(t.name, 20.0).color(TEXT));
-                    label(ui, &t.personality.label().to_string(), 11.0);
+                    label(ui, t.personality.label(), 11.0);
                 });
                 let trend = if t.trend > 0 {
                     format!("up {} this year", t.trend)
