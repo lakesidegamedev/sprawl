@@ -441,6 +441,22 @@ fn version_one_towns_are_unchanged() {
 }
 
 #[test]
+fn version_two_towns_are_unchanged() {
+    // saves from 1.0.0 and 1.0.1 rebuild their town with generator version 2
+    let known = [
+        (Preset::Grid, 1, 0xcb03_bc97_0ebb_e3f5u64),
+        (Preset::Winding, 2, 0x0bc1_a38a_1424_de83),
+        (Preset::Sunbelt, 3, 0xe9b8_3920_169a_345c),
+        (Preset::Crossroads, 4, 0x4d60_3af9_ab41_749a),
+        (Preset::LakeTown, 1, 0x8365_8859_dbbb_d245),
+    ];
+    for (p, s, fp) in known {
+        let t = us_gen::generate_version(p, s, 2);
+        assert_eq!(t.fingerprint(), fp, "{} seed {s}", p.name());
+    }
+}
+
+#[test]
 fn every_railway_through_town_has_a_depot_clear_of_roads_and_lots() {
     for t in towns().iter() {
         let depots: Vec<_> = t
