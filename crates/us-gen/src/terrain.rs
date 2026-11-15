@@ -2,8 +2,8 @@
 //! valley with flat floor for the river, hills further out. Pure function of the seed.
 
 use crate::geom::{Pt, atan2, cos, pt, sin};
-use crate::rng::Rng;
 use crate::relief::Relief;
+use crate::rng::Rng;
 use crate::world::{HALL, HWY_Y, River, S};
 
 const WAVES: usize = 6;
@@ -88,6 +88,11 @@ impl Terrain {
             base -= 14.0 * exp_neg((d / (r * 2.2)).powi(2));
         }
         base + hills * mask
+    }
+
+    /// The extra relief of a newer style, if any.
+    pub fn relief(&self) -> &Relief {
+        &self.relief
     }
 
     /// Height at a point.

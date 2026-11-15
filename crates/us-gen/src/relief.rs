@@ -129,6 +129,10 @@ impl MesaField {
             Rock::Butte,
             Rock::Butte,
             Rock::Butte,
+            Rock::Butte,
+            Rock::Butte,
+            Rock::Spire,
+            Rock::Spire,
             Rock::Spire,
             Rock::Spire,
             Rock::Spire,
@@ -182,8 +186,15 @@ impl MesaField {
             for c in &cells {
                 spots.push(*c);
                 if kind != Rock::Mesa {
-                    for (sx, sy) in [(1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
-                        spots.push(pt(c.x + sx * half * 0.26, c.y + sy * half * 0.26));
+                    for ix in -2..=2 {
+                        for iy in -2..=2 {
+                            if ix != 0 || iy != 0 {
+                                spots.push(pt(
+                                    c.x + ix as f64 * half * 0.16,
+                                    c.y + iy as f64 * half * 0.16,
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -248,7 +259,11 @@ impl MesaField {
             if d < hw * 3.0 {
                 let bed = 1.0 - smooth(hw * 0.45, hw * 1.2, d);
                 // a wash fades out near the downtown so the hall stays level
-                let keep = smooth(500.0, 1100.0, ((x - HALL.x).powi(2) + (y - HALL.y).powi(2)).sqrt());
+                let keep = smooth(
+                    500.0,
+                    1100.0,
+                    ((x - HALL.x).powi(2) + (y - HALL.y).powi(2)).sqrt(),
+                );
                 add -= depth * bed * keep;
             }
         }
@@ -287,7 +302,11 @@ impl CoastField {
             rho: rng.uniform(380.0, 450.0),
             harbour: true,
         }];
-        let mut y = if rng.chance(0.5) { yh + 1100.0 } else { yh - 1000.0 };
+        let mut y = if rng.chance(0.5) {
+            yh + 1100.0
+        } else {
+            yh - 1000.0
+        };
         for k in 0..2 {
             let rho = rng.uniform(130.0, 210.0);
             coves.push(Cove {
@@ -421,7 +440,9 @@ impl CoastField {
         for _ in 0..3 {
             let src = xs.clone();
             for i in 2..src.len() - 2 {
-                xs[i].0 = (src[i - 2].0 + 2.0 * src[i - 1].0 + 3.0 * src[i].0
+                xs[i].0 = (src[i - 2].0
+                    + 2.0 * src[i - 1].0
+                    + 3.0 * src[i].0
                     + 2.0 * src[i + 1].0
                     + src[i + 2].0)
                     / 9.0;

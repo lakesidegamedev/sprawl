@@ -588,7 +588,10 @@ fn coast(seed: u64, river: &River, terrain: &Terrain, extra: &Extra) -> Skeleton
             0.1,
             tr,
         );
-        if let Some(p) = keep(within_map(&ln)).into_iter().find(|p| p[0].y <= HWY_Y + 1.0) {
+        if let Some(p) = keep(within_map(&ln))
+            .into_iter()
+            .find(|p| p[0].y <= HWY_Y + 1.0)
+        {
             roads.push((p, RoadClass::Arterial));
         }
     }

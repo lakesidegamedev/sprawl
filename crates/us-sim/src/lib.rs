@@ -1390,3 +1390,6 @@ mod tests_fires;
 
 #[cfg(test)]
 mod tests_weather;
+
+#[cfg(test)]
+mod tests_styles;
