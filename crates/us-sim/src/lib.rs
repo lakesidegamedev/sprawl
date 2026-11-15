@@ -16,6 +16,7 @@
 mod avenues;
 mod civic;
 mod density;
+mod districts;
 mod dynamic;
 mod econ;
 mod growth;
@@ -34,6 +35,9 @@ mod value;
 
 pub use avenues::{RoadError, RoadPlan, UpgradePlan};
 pub use density::max_level_at;
+pub use districts::{
+    DISTRICT_COLOURS, District, DistrictStats, MAX_DISTRICTS, OrdScope, Ordinance,
+};
 pub use dynamic::Rival;
 pub use ledger_view::LedgerNow;
 pub use model::*;
@@ -166,6 +170,8 @@ pub struct Why {
     pub status: String,
     pub built: Option<String>,
     pub reason: String,
+    /// The district and every ordinance acting on the lot, one line each.
+    pub ordinances: Vec<String>,
 }
 
 fn mix(a: u64, b: u64, c: u64) -> u64 {
@@ -390,6 +396,8 @@ pub struct Sim {
     pub(crate) last_kind_street: i32,
     /// Dollars the town has paid for new streets and utility connections so far.
     pub(crate) growth_spent: i64,
+    /// Districts and ordinances (saved in the `DIST` section).
+    pub(crate) dist: districts::DistrictState,
 }
 
 impl Sim {
@@ -492,6 +500,7 @@ impl Sim {
             jobless: false,
             last_kind_street: -1000,
             growth_spent: 0,
+            dist: Default::default(),
         };
         // reveal order: nearest to the hall first
         let mut ord: Vec<(i64, usize)> = (0..n_add)
@@ -780,6 +789,7 @@ impl Sim {
                 }
             }
         }
+        self.dist.hash_into(&mut f);
         h
     }
 
@@ -918,7 +928,7 @@ impl Sim {
         // poorest land goes first
         for i in 0..self.lots.len() {
             let l = &self.lots[i];
-            let rate = self.lot_rate_x10(i);
+            let rate = self.lot_rate_eff_x10(i);
             let over = rate > ABANDON_ABOVE_X10;
             match l.phase {
                 Phase::Built { .. } if over && abandonable(l.kind) && !l.exempt => {
@@ -986,6 +996,7 @@ impl Sim {
         if let Some(note) = self.avenue_note(self.lots[lot].pos) {
             y.reason = format!("{} {note}", y.reason);
         }
+        y.ordinances = self.ordinance_lines(lot);
         y
     }
 
@@ -999,6 +1010,7 @@ impl Sim {
         let date = |d: i32| Date::from_days(d).text();
         match l.phase {
             Phase::Hidden => Why {
+                ordinances: Vec::new(),
                 title: "Open land".into(),
                 status: "not reached yet".into(),
                 built: None,
@@ -1012,6 +1024,7 @@ impl Sim {
                 },
             },
             Phase::Vacant => Why {
+                ordinances: Vec::new(),
                 title: "Empty lot".into(),
                 status: "waiting for a builder".into(),
                 built: None,
@@ -1024,6 +1037,7 @@ impl Sim {
                 },
             },
             Phase::Building { start, end } => Why {
+                ordinances: Vec::new(),
                 title,
                 status: format!("under construction, done {}", date(end)),
                 built: Some(format!("started {}", date(start))),
@@ -1049,6 +1063,7 @@ impl Sim {
                     String::new()
                 };
                 Why {
+                ordinances: Vec::new(),
                     title,
                     status: "in use".into(),
                     built: (since > -1000).then(|| format!("built {}", date(since))),
@@ -1056,6 +1071,7 @@ impl Sim {
                 }
             }
             Phase::Empty { since } => Why {
+                ordinances: Vec::new(),
                 title,
                 status: "empty".into(),
                 built: Some(format!("empty since {}", date(since))),
@@ -1070,6 +1086,7 @@ impl Sim {
                 },
             },
             Phase::Cleared { since } => Why {
+                ordinances: Vec::new(),
                 title: "Cleared lot".into(),
                 status: "demolished".into(),
                 built: Some(format!("cleared {}", date(since))),
@@ -1314,3 +1331,6 @@ mod tests_milestones;
 
 #[cfg(test)]
 mod tests_rivals;
+
+#[cfg(test)]
+mod tests_districts;

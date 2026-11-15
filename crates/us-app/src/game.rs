@@ -17,6 +17,7 @@ use us_sim::{Difficulty, Phase, Sim, hall_sites};
 use winit::keyboard::KeyCode;
 
 mod charts;
+mod districts;
 mod panels;
 mod screens;
 
@@ -484,6 +485,8 @@ impl State {
                     g.place_tool(pt(p.x as f64, p.y as f64));
                 } else if g.road_active().is_some() {
                     g.road_click(pt(p.x as f64, p.y as f64));
+                } else if g.ui.paint.is_some() {
+                    g.paint_at(pt(p.x as f64, p.y as f64));
                 } else {
                     g.select_at(pt(p.x as f64, p.y as f64));
                     if g.compact && g.sel.is_some() {
@@ -1581,6 +1584,12 @@ impl State {
             }
             if g.ui.news_open {
                 g.news_ui(ctx, screen_w);
+            }
+            if g.ui.districts_open {
+                g.districts_ui(ctx, screen_w);
+            }
+            if g.ui.ordinances_open {
+                g.ordinances_ui(ctx, screen_w);
             }
             g.legend_ui(ctx);
             // why panel

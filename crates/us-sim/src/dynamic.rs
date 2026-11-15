@@ -81,7 +81,8 @@ impl Sim {
                         .get(i)
                         .copied()
                         .unwrap_or(0.0) as f64;
-                    let p = 0.000_01 + 0.000_4 * (1.0 - cov) * (1.0 - cov) / 30.0;
+                    let p = (0.000_01 + 0.000_4 * (1.0 - cov) * (1.0 - cov) / 30.0)
+                        * self.ord_fire_factor(i);
                     if roll(self.seed ^ 0xf17e, i as u64, day as u64) < p {
                         self.ignite(i, cov);
                     }

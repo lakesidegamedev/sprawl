@@ -198,7 +198,7 @@ impl Sim {
             }
             if let Some(c) = class_of(l.kind) {
                 let value = kind_value(l.kind) * level_value_pct(l.level) / 100;
-                let add = value * self.tax.get(c) as i64 / 1000 / 12;
+                let add = self.lot_tax_month(i);
                 match c {
                     Class::Homes => lg.income.homes += add,
                     Class::Shops => lg.income.shops += add,
@@ -243,7 +243,10 @@ impl Sim {
     /// Dollars per month at today's state: (tax income, expenses including bond payments).
     pub fn monthly_flow(&self) -> (i64, i64) {
         let lg = self.compute_ledger();
-        (lg.income_total(), lg.expense_total())
+        (
+            lg.income_total(),
+            lg.expense_total() + self.ordinance_costs(),
+        )
     }
 
     pub fn monthly_net(&self) -> i64 {
@@ -277,7 +280,9 @@ impl Sim {
         self.step_limits();
         self.evolve_buildings();
         let lg = self.compute_ledger();
-        let (income, expense) = (lg.income_total(), lg.expense_total());
+        let ord_cost = self.ordinance_costs();
+        self.dist.last_cost = ord_cost;
+        let (income, expense) = (lg.income_total(), lg.expense_total() + ord_cost);
         self.treasury += income - expense;
         self.last_income = income;
         self.last_expense = expense;
@@ -296,7 +301,7 @@ impl Sim {
             treasury: self.treasury,
             income: lg.income,
             spending: lg.spending,
-            admin: lg.admin,
+            admin: lg.admin + ord_cost,
             debt_service: lg.interest + lg.principal,
             debt: self.debt(),
             tax_x10: self.tax,
