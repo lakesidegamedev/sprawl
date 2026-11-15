@@ -1544,6 +1544,9 @@ impl State {
             if g.map_open {
                 g.map_sheet(ctx);
             }
+            if g.ui.rivals_open {
+                g.rivals_ui(ctx, screen_w);
+            }
             if g.ui.budget_open {
                 g.budget_ui(ctx);
             }

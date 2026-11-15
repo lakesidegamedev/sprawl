@@ -358,6 +358,7 @@ pub struct UiState {
     pub build_open: bool,
     pub stats_open: bool,
     pub news_open: bool,
+    pub rivals_open: bool,
     pub tool: Option<CivicKind>,
     /// Screenshot hook: hold the ghost at this spot instead of under the cursor.
     fixed_ghost: Option<Pt>,
@@ -389,6 +390,7 @@ impl Default for UiState {
             build_open: false,
             stats_open: false,
             news_open: false,
+            rivals_open: false,
             tool: None,
             fixed_ghost: None,
             view: MapView::Normal,
@@ -528,6 +530,7 @@ impl Game {
             }
             K::KeyG => u.stats_open = !u.stats_open,
             K::KeyJ => u.news_open = !u.news_open,
+            K::KeyR => u.rivals_open = !u.rivals_open,
             K::KeyN => u.view = MapView::Normal,
             K::KeyL => u.view = MapView::LandValue,
             K::KeyV => u.view = MapView::Level,
@@ -760,6 +763,7 @@ impl Game {
                 }
                 "nolevers" => self.ui.levers_open = false,
                 "voters" => self.voters_open = true,
+                "rivals" => self.ui.rivals_open = true,
                 "noelection" => {
                     self.election_seen = self.sim.last_election().map_or(-1, |e| e.day);
                 }
@@ -808,6 +812,12 @@ impl Game {
                 "News".into()
             };
             t(ui, &news, &mut u.news_open, "What happened in town (J)");
+            t(
+                ui,
+                "Rivals",
+                &mut u.rivals_open,
+                "The three towns you compete with (R)",
+            );
             ui.add_space(10.0);
             lab_c(ui, "Map view", 11.0, Color32::from_rgb(170, 176, 196));
             egui::ComboBox::from_id_salt("mapview")
