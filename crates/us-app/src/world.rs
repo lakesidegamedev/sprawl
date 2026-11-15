@@ -153,6 +153,13 @@ fn civic_model(c: Option<CivicKind>) -> Option<CivicModel> {
         Some(CivicKind::Police) => Some(CivicModel::Police),
         Some(CivicKind::Clinic) => Some(CivicModel::Clinic),
         Some(CivicKind::Water) => Some(CivicModel::WaterTower),
+        Some(CivicKind::Power) => Some(CivicModel::PowerPlant),
+        Some(CivicKind::Library) => Some(CivicModel::Library),
+        Some(CivicKind::HighSchool) => Some(CivicModel::HighSchool),
+        Some(CivicKind::Hospital) => Some(CivicModel::Hospital),
+        Some(CivicKind::Transit) => Some(CivicModel::Transit),
+        Some(CivicKind::Stadium) => Some(CivicModel::Stadium),
+        Some(CivicKind::University) => Some(CivicModel::University),
         _ => None,
     }
 }
@@ -1047,6 +1054,38 @@ mod tests {
         live.sync(&mut sim, 1.0e9);
         assert_eq!(live.look.len(), sim.lots().len());
         assert!(live.look[before].state != 0, "the new building is drawn");
+    }
+
+    /// Every new civic building places, finishes and is drawn.
+    #[test]
+    fn scene_draws_every_new_civic_building() {
+        let town = Arc::new(generate(Preset::Grid, 3));
+        let hall = hall_sites(&town)[0];
+        let mut sim = Sim::new_with_rules(&town, hall, 3, 2, us_sim::Rules::sandbox_unlimited());
+        sim.unlock_all();
+        for _ in 0..300 {
+            sim.step_day();
+        }
+        let mut live = LiveScene::new(town, &sim, true);
+        live.sync(&mut sim, 1.0e9);
+        let mut placed = Vec::new();
+        for k in CivicKind::ALL[7..].iter() {
+            let spot = sim
+                .lots()
+                .iter()
+                .filter(|l| l.phase == Phase::Vacant)
+                .map(|l| l.pos)
+                .find(|&p| sim.check_civic(*k, p).is_ok())
+                .expect("a spot");
+            placed.push(sim.place_civic(*k, spot).expect("placed"));
+        }
+        for _ in 0..90 {
+            sim.step_day();
+        }
+        live.sync(&mut sim, 1.0e9);
+        for i in placed {
+            assert!(live.look[i].state != 0, "lot {i} is drawn");
+        }
     }
 
     /// A widened street shows as roadworks that finish; upgrades and fires change a lot's look.

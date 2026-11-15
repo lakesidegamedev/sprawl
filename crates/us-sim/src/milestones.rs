@@ -98,6 +98,13 @@ impl Sim {
         self.unlock_reached();
     }
 
+    /// Unlock every building at once, with no news. For screenshots and tests of the interface.
+    pub fn unlock_all(&mut self) {
+        for k in CivicKind::ALL {
+            self.unlocked |= bit(k);
+        }
+    }
+
     pub(crate) fn save_mile(&self, w: &mut crate::save::W) {
         w.u32(self.unlocked);
     }

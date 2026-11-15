@@ -1425,6 +1425,13 @@ impl State {
                 None
             };
             let pop = g.stats.pop;
+            let unlock_hint = g.sim.next_unlock().map(|(k, n)| {
+                format!(
+                    "NEXT: {} AT {} PEOPLE",
+                    k.label().to_uppercase(),
+                    charts::group(n)
+                )
+            });
             let mut hide_tip = false;
             if compact {
                 // one short stack: the goal on one line, then up to two news toasts
@@ -1434,10 +1441,14 @@ impl State {
                     .interactable(false)
                     .show(ctx, |ui| {
                         ui.set_max_width(wmax);
-                        let goal_text = match goal {
+                        let mut goal_text = match goal {
                             Some(n) => format!("GOAL {n} PEOPLE ({pop})"),
                             None => "KEEP YOUR TOWN GROWING".to_string(),
                         };
+                        if let Some(u) = &unlock_hint {
+                            goal_text.push('\n');
+                            goal_text.push_str(u);
+                        }
                         if let Some(b) = &stacked_banner {
                             theme::panel()
                                 .inner_margin(egui::Margin::symmetric(8, 4))
@@ -1490,6 +1501,9 @@ impl State {
                                     .label(heading(&format!("REACH {n} PEOPLE ({pop} NOW)"), 16.0)),
                                 None => ui.label(heading("KEEP YOUR TOWN GROWING", 16.0)),
                             };
+                            if let Some(u) = &unlock_hint {
+                                label(ui, u, 11.0);
+                            }
                             if let Some(t) = tip {
                                 ui.add_space(4.0);
                                 ui.add(

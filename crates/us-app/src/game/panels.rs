@@ -569,6 +569,9 @@ impl Game {
                 "loans" => self.ui.loans_open = true,
                 "build" => {
                     self.ui.build_open = true;
+                    if n > 6 {
+                        self.sim.unlock_all();
+                    }
                     self.ui.tool = CivicKind::ALL.get(n).copied();
                 }
                 "stats" => {
@@ -648,6 +651,7 @@ impl Game {
                     }
                 }
                 "civic" => {
+                    self.sim.unlock_all();
                     let kind = CivicKind::ALL[n.min(CivicKind::ALL.len() - 1)];
                     let found = self
                         .sim
@@ -1285,6 +1289,28 @@ impl Game {
             ui.add_space(4.0);
             for k in CivicKind::ALL {
                 let on = self.ui.tool == Some(k);
+                if !self.sim.is_unlocked(k) {
+                    // locked: shown greyed, with what it takes
+                    ui.horizontal(|ui| {
+                        ui.add_enabled(
+                            false,
+                            egui::Button::new(
+                                RichText::new(k.label().to_uppercase())
+                                    .font(pixel(12.0))
+                                    .color(Color32::from_rgb(110, 118, 132)),
+                            )
+                            .fill(RAISED)
+                            .min_size(vec2(150.0, 26.0)),
+                        );
+                        lab_c(
+                            ui,
+                            format!("Unlocks at {} people", charts::group(k.unlock_at())),
+                            11.0,
+                            Color32::from_rgb(130, 140, 155),
+                        );
+                    });
+                    continue;
+                }
                 let can = self.sim.treasury >= k.cost();
                 ui.horizontal(|ui| {
                     let b = ui.add(
@@ -1321,14 +1347,19 @@ impl Game {
                     ),
                     10.0,
                 );
-                lab(
-                    ui,
-                    format!(
-                        "COVERS ABOUT {} M BY ROAD AT THIS FUNDING",
-                        (k.service().reach_m() * (0.4 + 0.6 * f)).round() as i64
-                    ),
-                    10.0,
-                );
+                if k.covers().is_some() {
+                    lab(
+                        ui,
+                        format!(
+                            "COVERS ABOUT {} M BY ROAD AT THIS FUNDING",
+                            k.reach_at(f).round() as i64
+                        ),
+                        10.0,
+                    );
+                }
+                if !k.effect_text().is_empty() {
+                    wrapped(ui, k.effect_text().to_uppercase(), 10.0, TEXT);
+                }
                 lab(ui, "TAKES 40 TO 70 DAYS TO BUILD", 10.0);
                 if btn(ui, "Stop placing", false, 11.0).clicked() {
                     self.ui.tool = None;
@@ -1396,10 +1427,12 @@ impl Game {
             ));
         }
         let f = dept_fraction(&self.sim, kind.service());
-        let reach = (kind.service().reach_m() * (0.4 + 0.6 * f)) as f32;
-        let ring = ring_points(&self.live, view, p, reach, w, h, ppp);
-        if ring.len() > 3 {
-            painter.add(egui::Shape::closed_line(ring, Stroke::new(2.0, GOLD)));
+        let reach = kind.reach_at(f) as f32;
+        if reach > 0.0 {
+            let ring = ring_points(&self.live, view, p, reach, w, h, ppp);
+            if ring.len() > 3 {
+                painter.add(egui::Shape::closed_line(ring, Stroke::new(2.0, GOLD)));
+            }
         }
         let text = match verdict {
             Ok(()) => format!("{}  {}", kind.label(), money(kind.cost())).to_uppercase(),
@@ -1443,7 +1476,7 @@ impl Game {
     ) {
         let Some(Sel::Lot(i)) = self.sel else { return };
         let l = &self.sim.lots()[i];
-        let svc = l.civic.map(CivicKind::service).or(match l.kind {
+        let svc = l.civic.map(|c| c.covers()).unwrap_or(match l.kind {
             us_gen::LotKind::School => Some(Service::Schools),
             us_gen::LotKind::Fire => Some(Service::Fire),
             us_gen::LotKind::Water => Some(Service::Water),
@@ -1451,7 +1484,9 @@ impl Game {
             _ => None,
         });
         let Some(s) = svc else { return };
-        let reach = (s.reach_m() * (0.4 + 0.6 * dept_fraction(&self.sim, s))) as f32;
+        let reach = (s.reach_m()
+            * l.civic.map_or(1.0, CivicKind::reach_mult)
+            * (0.4 + 0.6 * dept_fraction(&self.sim, s))) as f32;
         let ring = ring_points(&self.live, view, l.pos, reach, w, h, ppp);
         if ring.len() > 3 {
             painter.add(egui::Shape::closed_line(ring, Stroke::new(2.0, GOLD)));
@@ -1481,16 +1516,29 @@ impl Game {
             lab(ui, format!("BUILDING LEVEL {} OF 5", l.level), 12.0);
         }
         if let Some(k) = l.civic {
+            let cover = if k.covers().is_some() {
+                format!(
+                    "COVERS ABOUT {} M BY ROAD. ",
+                    k.reach_at(1.0).round() as i64
+                )
+            } else {
+                String::new()
+            };
             lab(
                 ui,
                 format!(
-                    "{} COVERS ABOUT {} M BY ROAD. UPKEEP {} A MONTH AT FULL FUNDING.",
+                    "{} {cover}UPKEEP {} A MONTH AT FULL FUNDING.",
                     k.label(),
-                    k.service().reach_m().round() as i64,
                     money(k.upkeep())
                 ),
                 10.0,
             );
+            if !k.effect_text().is_empty() {
+                wrapped(ui, k.effect_text().to_uppercase(), 10.0, TEXT);
+            }
+        }
+        for note in self.sim.civic_notes(lot) {
+            wrapped(ui, note.to_uppercase(), 10.0, TEXT);
         }
         if matches!(l.phase, Phase::Built { .. }) && class_of(l.kind).is_some() && !l.exempt {
             let mut parts = String::new();
