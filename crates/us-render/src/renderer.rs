@@ -187,6 +187,8 @@ struct Globals {
     screen: [f32; 4],
     tone: [f32; 4],
     look: [f32; 4],
+    /// snow cover, wet ground, wind east and north
+    wx: [f32; 4],
 }
 
 struct GpuMesh {
@@ -719,7 +721,7 @@ impl Renderer {
             inst_pipeline,
             shadow_inst_pipeline,
             templates: Vec::new(),
-            inst_bufs: (0..8).map(|_| None).collect(),
+            inst_bufs: (0..9).map(|_| None).collect(),
             overlay_gpu: None,
         };
         r.templates = vec![
@@ -731,6 +733,7 @@ impl Renderer {
             r.upload_mesh(&crate::trains::Vehicle::Coach.mesh(), "coach"),
             r.upload_mesh(&crate::trains::Vehicle::Hopper.mesh(), "hopper"),
             r.upload_mesh(&crate::trains::Vehicle::Boxcar.mesh(), "box car"),
+            r.upload_mesh(&crate::weather::water_tile_mesh(), "flood water"),
         ];
         Ok(r)
     }
@@ -1158,8 +1161,17 @@ impl Renderer {
         let sun = cal
             .map_or(Vec3::from(style.sun), |c| Vec3::from(c.light()))
             .normalize();
+        let wl = &scene.weather;
         let shadow_tone = cal.map_or(style.shadow_tone, |c| c.shadow_tone());
-        let tone = cal.map_or([1.0; 3], |c| c.tone());
+        // clouds put the hard shadows out
+        let shadow_tone = shadow_tone + (1.0 - shadow_tone) * wl.overcast.clamp(0.0, 1.0);
+        let mut tone = cal.map_or([1.0; 3], |c| c.tone());
+        // a darker, cooler light under cloud, and the flash of lightning
+        let oc = wl.overcast.clamp(0.0, 1.0);
+        let dim = [1.0 - 0.28 * oc, 1.0 - 0.24 * oc, 1.0 - 0.14 * oc];
+        for k in 0..3 {
+            tone[k] = (tone[k] * dim[k] + 0.7 * wl.flash.clamp(0.0, 1.0)).min(1.7);
+        }
         let lit_windows = cal.map_or(0.0, |c| c.lit_windows());
         let map_view = scene.overlay_active();
         // 0 plain, 1 autumn, 2 spring, 3 summer (winter is the snow flag)
@@ -1169,7 +1181,14 @@ impl Renderer {
             Season::Summer => 3.0,
             Season::Winter => 0.0,
         });
-        let snow = cal.is_some_and(|c| c.season() == Season::Winter);
+        let snow_cover = if wl.active {
+            wl.snow.clamp(0.0, 1.0)
+        } else if cal.is_some_and(|c| c.season() == Season::Winter) {
+            1.0
+        } else {
+            0.0
+        };
+        let snow = snow_cover > 0.04;
         let lamps = cal.is_some_and(|c| c.phase() != DayPhase::Day);
         let (light_vp, texel, range) = light_matrix(scene, &view, sun, style.shadow_size);
         self.ensure_shadow(style.shadow_size);
@@ -1189,7 +1208,7 @@ impl Renderer {
                 rw as f32,
                 rh as f32,
                 2.0 * (camera.fov_deg.to_radians() * 0.5).tan() / rh as f32,
-                0.0,
+                scene.time,
             ],
             tone: [tone[0], tone[1], tone[2], lit_windows],
             look: [
@@ -1198,6 +1217,7 @@ impl Renderer {
                 map_view as u8 as f32,
                 lamps as u8 as f32,
             ],
+            wx: [snow_cover, wl.wet.clamp(0.0, 1.0), wl.wind[0], wl.wind[1]],
         };
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&globals));
@@ -1223,7 +1243,7 @@ impl Renderer {
             fi.lamps
                 .retain(|l| Vec3::from(l.pos).distance_squared(eye) < LAMP_FAR * LAMP_FAR);
         }
-        let sets: [&[crate::instances::Instance]; 8] = [
+        let sets: [&[crate::instances::Instance]; 9] = [
             &fi.cars,
             &fi.puffs,
             &fi.people,
@@ -1232,6 +1252,7 @@ impl Renderer {
             &fi.trains.sets[1],
             &fi.trains.sets[2],
             &fi.trains.sets[3],
+            &fi.water,
         ];
         for (k, set) in sets.iter().enumerate() {
             if set.is_empty() {
@@ -1389,7 +1410,7 @@ impl Renderer {
                 for c in &mut base {
                     *c = lum + (*c - lum) * 0.12;
                 }
-            } else if snow {
+            } else if snow_cover > 0.6 {
                 base = [236.0 / 255.0, 241.0 / 255.0, 247.0 / 255.0];
             } else {
                 base = season_ground(base, season_code);

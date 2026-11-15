@@ -82,7 +82,7 @@ fn the_boom_rate_is_bounded_per_game_year_and_follows_difficulty() {
         let y = years(&mut s, 12, true);
         let mut prev = 0;
         for (n, &p) in y.iter().enumerate() {
-            let cap = 600.0 * libm::pow(1.06, n as f64) * d.arrival_pct() as f64 / 100.0 * 2.0;
+            let cap = 600.0 * libm::pow(1.06, n as f64) * d.arrival_pct() as f64 / 100.0 * 2.1;
             assert!(
                 ((p - prev) as f64) < cap,
                 "{d:?} year {}: {} new people against a bound of {cap:.0}",

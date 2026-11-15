@@ -20,6 +20,7 @@ mod charts;
 mod districts;
 mod panels;
 mod screens;
+mod weather_fx;
 
 use screens::{Mode, Nav};
 pub mod touch;
@@ -1032,6 +1033,7 @@ impl State {
             g.one_sheet_only();
         }
         let view = g.cam.camera().view(w as f32 / h as f32);
+        g.paint_weather(ctx);
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Background,
             egui::Id::new("world-overlay"),
@@ -1937,6 +1939,8 @@ impl Game {
         self.live
             .scene
             .set_calendar(Some(Calendar::from_date(d.month, d.day, hour)));
+        let look = self.weather_look();
+        self.live.scene.set_weather(look);
     }
 
     fn toast(&mut self, text: impl Into<String>, bad: bool) {

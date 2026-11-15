@@ -223,7 +223,9 @@ impl Sim {
         let homes_attr = ratio.clamp(0.3, 1.2)
             * self.tax_factor(Class::Homes)
             * rival(self, Class::Homes)
-            * mood.clamp(0.6, 1.4);
+            * mood.clamp(0.6, 1.4)
+            // people hold off from a town that has just been flooded or lost power
+            * (1.0 - 0.1 * self.weather_trouble());
         let shops_attr = self.tax_factor(Class::Shops) * rival(self, Class::Shops);
         let ind_attr = self.tax_factor(Class::Industry) * rival(self, Class::Industry);
         // the town wants people for the jobs it has, customers for its shops, workers for its

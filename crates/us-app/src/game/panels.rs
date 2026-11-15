@@ -2376,6 +2376,7 @@ impl Game {
                             EventKind::Election => ("Election", GOLD),
                             EventKind::GameOver => ("Game over", CORAL),
                             EventKind::Limit => ("Limit", ORANGE),
+                            EventKind::Weather => ("Weather", BLUE),
                         };
                         ui.horizontal(|ui| {
                             lab_c(

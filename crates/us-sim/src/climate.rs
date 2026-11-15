@@ -175,8 +175,8 @@ fn vnoise(seed: u64, chan: u64, t: f64) -> f64 {
     let i = libm::floor(t);
     let f = t - i;
     let s = f * f * (3.0 - 2.0 * f);
-    let a = roll(seed ^ 0x57ea_7e5, chan, i as i64 as u64);
-    let b = roll(seed ^ 0x57ea_7e5, chan, (i as i64 + 1) as u64);
+    let a = roll(seed ^ 0x057e_a7e5, chan, i as i64 as u64);
+    let b = roll(seed ^ 0x057e_a7e5, chan, (i as i64 + 1) as u64);
     a + (b - a) * s
 }
 
@@ -385,6 +385,11 @@ impl Sim {
         weather_on(self.seed, self.town.preset, self.day + 1)
     }
 
+    /// What the sky is doing today.
+    pub fn sky_now(&self) -> Sky {
+        self.weather().sky
+    }
+
     /// Today's temperature in degrees Celsius.
     pub fn temperature_c(&self) -> f32 {
         self.weather().temp_c
@@ -425,6 +430,24 @@ impl Sim {
     /// Flood water depth above the river, metres (0 when there is no flood).
     pub fn flood_depth(&self) -> f32 {
         self.wx.flood_m as f32
+    }
+
+    /// How wet the ground and roads look, 0 to 1: rain now, drying out over a few days.
+    pub fn ground_wet(&self) -> f32 {
+        (0.85 * self.rain() as f64 + 0.14 * self.wx.soak).min(1.0) as f32
+    }
+
+    /// Cloud cover for the light, 0 (clear) to 1 (storm).
+    pub fn overcast(&self) -> f32 {
+        let w = self.weather();
+        match w.sky {
+            Sky::Clear | Sky::HeatWave => 0.0,
+            Sky::Cloudy => 0.3,
+            Sky::Rain => 0.5 + 0.2 * w.precip,
+            Sky::Snow => 0.45,
+            Sky::Blizzard => 0.8,
+            Sky::Storm => 1.0,
+        }
     }
 
     /// Road runs under water now (indices into `road_runs`), closed to traffic.
@@ -990,7 +1013,7 @@ impl Sim {
                 [(mix(self.seed ^ 0x570e, day as u64, k as u64) % taxed.len() as u64) as usize];
             self.wx.strikes.push(pick);
             if self.lots[pick].fire.is_none()
-                && roll(self.seed ^ 0x570f, pick as u64, day as u64) < 0.25
+                && roll(self.seed ^ 0x570f, pick as u64, day as u64) < 0.1
             {
                 let cov = self.coverage[Service::Fire.index()]
                     .get(pick)
