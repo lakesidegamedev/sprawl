@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 1.1.0 (2026-11-15)
+
+- Version 1.1.0, a big update. Shown version is 1.1.0.
+- Interface 2.0 in the Slate look: tool rail, inspector, icons, sentence case text, smooth motion and a Reduce motion setting.
+- Roads look like roads: junctions with rounded kerbs, sidewalks, zebra crossings, lane markings and planted medians; new towns also get roundabouts, highway ramps, fewer dead ends and streets that bend with the hills.
+- More models: about 25 new buildings (supermarket, bank, hotels, cinema, office park, car dealership, diner, petrol stations, corner store, pharmacy, townhouse rows, mid-rise, glass towers, duplex, mobile homes, factories, tank farm, freight yard, port cranes, recycling centre and civic look-alikes), city buses, delivery and garbage trucks, pickups and vans that run in numbers set by the town's size, traffic lights, bus shelters, billboards, benches and bins, and poplar, oak and pine street trees. New calls: `kit_more::variant`, `fleet::{Vehicle, Prop}`, `Scene::set_population`; the `modelsheet` example.
+- Fires grow through smoke, flames and full fire, spread with wind and dry weather, and are answered by fire engines, police cars and ambulances that drive the real roads; response time decides how much burns.
+- Construction you can watch: new buildings and rebuilds go up in 12 stages (fenced plot, foundation, frame inside scaffolding, walls floor by floor, tidy-up) with tower or mobile cranes, rebuilds start with the old building coming down, trees grow back after the job, day and night change smoothly (windows, street lamps and car lights come on gradually, cars gain tail lights), and tall jobs make news naming the place. New: `site` module, `building_site_for`, `Calendar::{darkness, lamps}`, `Sim::place_phrase`.
+- Weather: seeded rain, snow, thunderstorms, heat waves and blizzards with a day-ahead warning; floods, lightning fires, power cuts, plowing and storm repairs; storm drains, building codes and snow plowing ordinances.
+- Tram lines: link two to six transit stops into a line in the new Trams window; the line follows open arterials and collectors, costs $520 a metre and upkeep every month, is built in stages (track, then wires) and then runs two and three section trams both ways at a pace set by population and the roads budget; open lines take traffic off the streets beside them (and lift approval), raise land value near stops, bring a few more people and a little shop demand, with news when a line opens. Saves keep lines in section `TRAM`. New calls: `Sim::tram_stops`, `check_tram`, `build_tram`, `remove_tram`, `tram_lines`, `tram_rate`, `trams_open`, `trams_version`, `TramPlan`, `TramLineView`, `TramState`, `TramError`; `trams` in us-render and the `tramsheet` example.
+- Slip lanes: highway ramps are one-way single lanes that leave or join the highway in a long tapered merge, with white edge lines and arrows, and the highway's edge line breaks along the merge. All roads use one asphalt colour.
+- Ground texture: grass, fields, sand, dirt and snow have stepped patches and tufts up close instead of flat colour; snow settles in rounded drifts.
+- New towns use generator version 3 (roundabouts, ramps, through collectors) and always have at least two downtown towers. Saved towns keep the generator they were made with.
+- Saves keep fires in progress (`FIRE`), the weather (`WTHR`) and tram lines (`TRAM`) in their own sections; older saves open with all three at their defaults.
+- Fix: on phones, the Districts and Ordinances sheets could close as soon as they opened.
+- Balance note: with the new road layout towns run their services a little cheaper, so the default-tax money check now allows a surplus up to 45 percent of income (was 40).
+
 ## 1.0.1 (2026-11-15)
 
 - Fix: on a wide window with the signed-in name and frame rate showing, the top bar drew the election date under the speed buttons. The buttons on the right are now laid out first and the town's figures get the room that is left: the small trend charts are left out, then the election date moves into the approval meter's tip, and nothing is ever drawn under a button. Phones get the same rule in both rows, the approval meter sizes its words to the room it has, and the date shows month and year.

@@ -1,4 +1,4 @@
-URBAN SPRAWL 1.0.1
+URBAN SPRAWL 1.1.0
 
 Start the game by running urban-sprawl (urban-sprawl.exe on Windows).
 
@@ -18,15 +18,16 @@ Controls
 
 Panels
   P taxes   K budget   O bonds   B build   G graphs   J news   V voters
-  I districts   H ordinances   R rival towns   Y draw a road or bridge   M map views
+  I districts   H ordinances   R rival towns   F trams   Y draw a road or bridge   M map views
 
 What you decide
   Taxes for homes, shops and industry, the budget of every department, bonds, and where the
   civic buildings go: schools, police, fire, clinics, parks, water, power, and as the town grows
   a library, high school, hospital, transit stop, stadium and university. Draw avenues and
   bridges, widen streets, group neighbourhoods into districts and switch on ordinances for the
-  whole town or one district. Three rival towns compete for your people and firms. Voters judge
-  you every four years.
+  whole town or one district, and link transit stops into tram lines. Three rival towns compete
+  for your people and firms. Weather brings storms, floods, snow and heat waves; fires spread and
+  the fire, police and ambulance crews drive to them. Voters judge you every four years.
 
 If the game does not start, the log is urban-sprawl.log in your temp folder.
 The Silkscreen and Inter fonts are under the SIL Open Font License (Silkscreen-OFL.txt, Inter-OFL.txt).
