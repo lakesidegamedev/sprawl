@@ -5,7 +5,7 @@ use crate::*;
 
 /// Days a fire burns before the lot is cleared and rebuilt.
 pub const FIRE_DAYS: i32 = 6;
-const RIVAL_NAMES: [&str; 4] = ["Ashford", "Bellmont", "Corvale", "Dunmore"];
+pub(crate) const RIVAL_NAMES: [&str; 4] = ["Ashford", "Bellmont", "Corvale", "Dunmore"];
 
 pub(crate) fn rival_code(name: &str) -> u8 {
     RIVAL_NAMES.iter().position(|&n| n == name).unwrap_or(0) as u8
@@ -48,19 +48,6 @@ impl Sim {
 
     pub fn rival(&self) -> &Rival {
         &self.rival
-    }
-
-    /// How hard the rival pulls on a class, 0 to 0.3: grows with how much worse our rate is.
-    /// Negative (down to -0.15) when our rate is the better one.
-    pub(crate) fn rival_pull(&self, c: Class) -> f64 {
-        let diff = self.tax.get(c) as f64 - self.rival.tax.get(c) as f64;
-        if diff >= 20.0 {
-            (diff / 200.0).min(0.3)
-        } else if diff <= -20.0 {
-            (diff / 200.0).max(-0.15)
-        } else {
-            0.0
-        }
     }
 
     /// Daily: fires start, burn and are rebuilt.
@@ -144,90 +131,5 @@ impl Sim {
         };
         self.log(EventKind::Fire, text, Some(at));
         self.changed_lots.push(i);
-    }
-
-    /// Monthly: the rival moves its taxes and draws people and firms from a town that taxes
-    /// more.
-    pub(crate) fn step_rival(&mut self) {
-        self.month_index += 1;
-        let m = self.month_index as u64;
-        for c in Class::ALL {
-            let r = roll(self.seed ^ 0x71a1, m, c.index() as u64);
-            if r < 0.10 {
-                let step = ((roll(self.seed ^ 0x71a2, m, c.index() as u64) * 4.0) as i32 - 2) * 10;
-                let step = if step == 0 { -10 } else { step };
-                let old = self.rival.tax.get(c);
-                let new = (old as i32 + step).clamp(40, 110) as u32;
-                if new != old {
-                    self.rival.tax.set(c, new);
-                    let verb = if new < old { "cut" } else { "raised" };
-                    let name = self.rival.name;
-                    self.log(
-                        EventKind::Rival,
-                        format!(
-                            "{name} {verb} its {} tax to {:.1}%.",
-                            c.label().to_lowercase(),
-                            new as f64 / 10.0
-                        ),
-                        None,
-                    );
-                }
-            }
-            let ours = self.tax.get(c) as i32;
-            let theirs = self.rival.tax.get(c) as i32;
-            let diff = ours - theirs;
-            if diff >= 20 && self.population() >= 60 {
-                let n = 1 + diff / 60;
-                for _ in 0..n {
-                    if roll(self.seed ^ 0x71a3, m * 8 + c.index() as u64, 7)
-                        < (diff as f64 / 100.0).min(0.7)
-                    {
-                        self.send_away(c, ours, theirs);
-                    }
-                }
-            }
-        }
-    }
-
-    /// The least valued building of a class empties as its people or firm leave.
-    fn send_away(&mut self, c: Class, ours: i32, theirs: i32) {
-        let day = self.day;
-        let mut best: Option<(f64, usize)> = None;
-        for (i, l) in self.lots.iter().enumerate() {
-            if !matches!(l.phase, Phase::Built { .. })
-                || l.exempt
-                || l.civic.is_some()
-                || l.fire.is_some()
-                || class_of(l.kind) != Some(c)
-            {
-                continue;
-            }
-            let lv = self.lot_value.get(i).copied().unwrap_or(0.5) as f64;
-            let score = lv + roll(self.seed ^ 0x71a4, i as u64, day as u64) * 0.3;
-            if best.is_none_or(|b| score < b.0) {
-                best = Some((score, i));
-            }
-        }
-        let Some((_, i)) = best else { return };
-        self.lots[i].phase = Phase::Empty { since: day };
-        self.changed_lots.push(i);
-        self.departures += 1;
-        let who = match c {
-            Class::Homes => "A household",
-            Class::Shops => "A shop",
-            Class::Industry => "A firm",
-        };
-        let name = self.rival.name;
-        let at = self.lots[i].pos;
-        self.log(
-            EventKind::Rival,
-            format!(
-                "{who} left for {name}, which taxes {} at {:.1}% against your {:.1}%.",
-                c.label().to_lowercase(),
-                theirs as f64 / 10.0,
-                ours as f64 / 10.0
-            ),
-            Some(at),
-        );
     }
 }

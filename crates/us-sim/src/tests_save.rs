@@ -178,16 +178,22 @@ fn autosave_keeps_the_three_newest_files() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The body of a current save with its sections cut off, as format 4 wrote it. Only for a save
-/// with no sections.
+/// The body of a current save with its sections cut off, as format 4 wrote it.
 fn without_sections(save: &[u8]) -> Vec<u8> {
     let body = &save[22..];
+    // a game that has run only the always-on features has a single section, the rivals
+    let at = body
+        .windows(4)
+        .rposition(|w| w == b"RIVL")
+        .expect("rival section");
+    let len = u64::from_le_bytes(body[at + 4..at + 12].try_into().unwrap()) as usize;
+    assert_eq!(at + 12 + len, body.len(), "save has other sections");
     assert_eq!(
-        &body[body.len() - 8..],
-        &0u64.to_le_bytes(),
-        "save has sections"
+        &body[at - 8..at],
+        &1u64.to_le_bytes(),
+        "save has other sections"
     );
-    body[..body.len() - 8].to_vec()
+    body[..at - 8].to_vec()
 }
 
 fn with_header(version: u16, body: &[u8]) -> Vec<u8> {
@@ -221,6 +227,8 @@ fn format_4_saves_open_with_every_feature_at_its_defaults() {
     }
     let old = with_header(4, &without_sections(&s.save()));
     let mut l = Sim::load(&old).expect("a format 4 save opens");
+    // the rival towns beyond the first start from the seed when there is no section
+    s.rivals = crate::rivals::Rivals::new(s.seed);
     assert_eq!(l.fingerprint(), s.fingerprint());
     for _ in 0..100 {
         s.step_day();
@@ -237,6 +245,7 @@ fn preview_7_saves_open_on_their_old_town() {
         s.step_day();
     }
     let old = as_format_3(&s.save());
+    s.rivals = crate::rivals::Rivals::new(s.seed);
     assert_eq!(u16::from_le_bytes([old[4], old[5]]), 3);
     let mut loaded = Sim::load(&old).expect("a format 3 save opens");
     assert_eq!(loaded.town().gen_version, 1);
