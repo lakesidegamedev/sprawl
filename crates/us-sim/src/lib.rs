@@ -26,6 +26,7 @@ mod ledger_view;
 mod limits;
 mod milestones;
 mod model;
+mod place;
 mod pressure;
 pub mod rail;
 mod rivals;
@@ -890,6 +891,8 @@ impl Sim {
             end: self.day + days,
         };
         self.changed_lots.push(li);
+        let big = if level > 1 { level } else { 1 };
+        self.log_big_job(li, big);
         true
     }
 
@@ -1361,6 +1364,8 @@ mod tests_rivals;
 
 #[cfg(test)]
 mod tests_districts;
+#[cfg(test)]
+mod tests_place;
 
 #[cfg(test)]
 mod tests_rail;

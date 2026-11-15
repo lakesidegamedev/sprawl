@@ -1159,7 +1159,7 @@ impl Renderer {
     ) {
         let aspect = rw as f32 / rh as f32;
         let view = camera.view(aspect);
-        use crate::calendar::{DayPhase, Season};
+        use crate::calendar::Season;
         let cal = scene.calendar;
         let sun = cal
             .map_or(Vec3::from(style.sun), |c| Vec3::from(c.light()))
@@ -1176,7 +1176,7 @@ impl Renderer {
             Season::Winter => 0.0,
         });
         let snow = cal.is_some_and(|c| c.season() == Season::Winter);
-        let lamps = cal.is_some_and(|c| c.phase() != DayPhase::Day);
+        let lamps = cal.map_or(0.0, |c| c.lamps());
         let (light_vp, texel, range) = light_matrix(scene, &view, sun, style.shadow_size);
         self.ensure_shadow(style.shadow_size);
         let edge_i = self.edge_pipeline_index(final_format);
@@ -1198,12 +1198,7 @@ impl Renderer {
                 0.0,
             ],
             tone: [tone[0], tone[1], tone[2], lit_windows],
-            look: [
-                season_code,
-                snow as u8 as f32,
-                map_view as u8 as f32,
-                lamps as u8 as f32,
-            ],
+            look: [season_code, snow as u8 as f32, map_view as u8 as f32, lamps],
         };
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&globals));
