@@ -23,6 +23,8 @@ pub const COACH_LEN: f32 = 20.0;
 pub const HOPPER_LEN: f32 = 14.0;
 pub const BOXCAR_LEN: f32 = 15.0;
 const GAP: f32 = 1.0;
+/// Sideways distance of a train from the middle of the line, metres.
+const LANE: f32 = 1.45;
 /// Height of the rail head above the road bed.
 const RAIL_Z: f32 = 0.25;
 
@@ -109,9 +111,9 @@ const WINDOW: Rgb = [70, 96, 120];
 /// Bogies and a frame under a vehicle of length `len`, width 2.9 m.
 fn underframe(o: &mut Obj, len: f32) {
     let h = len / 2.0;
-    o.bx(-h + 0.3, -1.3, 0.25, h - 0.3, 1.3, 0.9, STEEL);
+    o.bx(-h + 0.3, -1.2, 0.25, h - 0.3, 1.2, 0.9, STEEL);
     for x in [-h * 0.62, h * 0.62] {
-        o.bx(x - 1.4, -1.45, 0.0, x + 1.4, 1.45, 0.7, [36, 38, 44]);
+        o.bx(x - 1.4, -1.3, 0.0, x + 1.4, 1.3, 0.7, [36, 38, 44]);
     }
 }
 
@@ -120,11 +122,11 @@ pub fn loco() -> Obj {
     let mut o = Obj::new();
     let h = LOCO_LEN / 2.0;
     underframe(&mut o, LOCO_LEN);
-    o.bx(-h, -1.45, 0.9, h, 1.45, 2.9, MARKER);
+    o.bx(-h, -1.3, 0.9, h, 1.3, 2.9, MARKER);
     o.bx_top(-h + 0.6, -1.3, 2.9, 2.0, 1.3, 3.5, MARKER, [90, 94, 100]);
-    o.bx_top(2.4, -1.45, 2.9, h, 1.45, 4.3, MARKER, ROOF);
-    o.bx(2.5, -1.5, 3.0, h - 0.1, -1.46, 4.0, WINDOW);
-    o.bx(2.5, 1.46, 3.0, h - 0.1, 1.5, 4.0, WINDOW);
+    o.bx_top(2.4, -1.3, 2.9, h, 1.3, 4.3, MARKER, ROOF);
+    o.bx(2.5, -1.34, 3.0, h - 0.1, -1.3, 4.0, WINDOW);
+    o.bx(2.5, 1.3, 3.0, h - 0.1, 1.34, 4.0, WINDOW);
     for y in [-0.9f32, 0.9] {
         o.poly(
             &[
@@ -147,11 +149,11 @@ pub fn coach() -> Obj {
     let mut o = Obj::new();
     let h = COACH_LEN / 2.0;
     underframe(&mut o, COACH_LEN);
-    o.bx_top(-h, -1.45, 0.9, h, 1.45, 3.9, MARKER, ROOF);
+    o.bx_top(-h, -1.3, 0.9, h, 1.3, 3.9, MARKER, ROOF);
     let mut x = -h + 1.6;
     while x < h - 2.0 {
-        o.bx(x, -1.47, 1.8, x + 1.4, -1.45, 3.1, WINDOW);
-        o.bx(x, 1.45, 1.8, x + 1.4, 1.47, 3.1, WINDOW);
+        o.bx(x, -1.34, 1.8, x + 1.4, -1.3, 3.1, WINDOW);
+        o.bx(x, 1.3, 1.8, x + 1.4, 1.34, 3.1, WINDOW);
         x += 2.4;
     }
     o
@@ -162,7 +164,7 @@ pub fn hopper() -> Obj {
     let mut o = Obj::new();
     let h = HOPPER_LEN / 2.0;
     underframe(&mut o, HOPPER_LEN);
-    o.bx_top(-h, -1.4, 0.9, h, 1.4, 3.5, MARKER, [150, 150, 154]);
+    o.bx_top(-h, -1.3, 0.9, h, 1.3, 3.5, MARKER, [150, 150, 154]);
     for x in [-h * 0.5, 0.0, h * 0.5] {
         o.bx(x - 0.4, -0.5, 3.5, x + 0.4, 0.5, 3.85, [110, 112, 118]);
     }
@@ -174,9 +176,9 @@ pub fn boxcar() -> Obj {
     let mut o = Obj::new();
     let h = BOXCAR_LEN / 2.0;
     underframe(&mut o, BOXCAR_LEN);
-    o.bx_top(-h, -1.45, 0.9, h, 1.45, 4.1, MARKER, [128, 112, 100]);
-    o.bx(-1.4, -1.5, 1.0, 1.4, -1.46, 3.7, [70, 54, 44]);
-    o.bx(-1.4, 1.46, 1.0, 1.4, 1.5, 3.7, [70, 54, 44]);
+    o.bx_top(-h, -1.3, 0.9, h, 1.3, 4.1, MARKER, [128, 112, 100]);
+    o.bx(-1.4, -1.34, 1.0, 1.4, -1.3, 3.7, [70, 54, 44]);
+    o.bx(-1.4, 1.3, 1.0, 1.4, 1.34, 3.7, [70, 54, 44]);
     o
 }
 
@@ -405,7 +407,12 @@ impl Trains {
                         let (pt, d) = p.at(s);
                         let heading = libm::atan2f(d[1] * dir, d[0] * dir);
                         out.sets[veh.index()].push(Instance {
-                            pos: [pt[0], pt[1], p.z(s) + RAIL_Z],
+                            // trains keep to the right: two lanes either side of the middle
+                            pos: [
+                                pt[0] + d[1] * dir * LANE,
+                                pt[1] - d[0] * dir * LANE,
+                                p.z(s) + RAIL_Z,
+                            ],
                             theta: heading,
                             scale: 1.0,
                             tint: tint(colour),
