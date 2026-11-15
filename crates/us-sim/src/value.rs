@@ -168,7 +168,8 @@ impl Sim {
                 * (1.0 - 0.7 * empty_share.min(1.0))
                 * season
                 * pull
-                * self.ord_demand_factor(c);
+                * self.ord_demand_factor(c)
+                * self.weather_demand_factor(c);
             d += self.rail_demand(c) as f64;
             if c == Class::Shops {
                 d += self.shop_demand_bonus() * taxf;
@@ -258,6 +259,7 @@ impl Sim {
                 - W_TRAFFIC * traffic
                 - 0.06 * (1.0 - road_f)
                 - burden
+                - self.flood_value_penalty(i)
                 + near.value;
             out[i] = v.clamp(0.0, 1.0) as f32;
         }

@@ -242,7 +242,12 @@ impl Sim {
                 neg += raw;
             }
         }
-        pos + neg.max(-0.15)
+        let trouble = if c == Class::Homes {
+            0.04 * self.weather_trouble()
+        } else {
+            0.0
+        };
+        pos + neg.max(-0.15) + trouble
     }
 
     /// The rival that took the most from the town this year and last, if any took anything.

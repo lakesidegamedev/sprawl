@@ -288,7 +288,7 @@ const ROAD_CLASSES: [RoadClass; 6] = [
     RoadClass::Alley,
     RoadClass::Rail,
 ];
-const EVENT_KINDS: [EventKind; 13] = [
+const EVENT_KINDS: [EventKind; 14] = [
     EventKind::Neighborhood,
     EventKind::Milestone,
     EventKind::Budget,
@@ -302,6 +302,7 @@ const EVENT_KINDS: [EventKind; 13] = [
     EventKind::Election,
     EventKind::GameOver,
     EventKind::Limit,
+    EventKind::Weather,
 ];
 
 fn code<T: PartialEq + Copy>(all: &[T], v: T) -> u8 {

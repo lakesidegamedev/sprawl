@@ -149,7 +149,7 @@ impl Sim {
     fn start_traffic(&mut self) {
         let mut t = self.town.clone();
         t.roads = (0..self.runs.len())
-            .filter(|&i| self.run_visible_idx(i))
+            .filter(|&i| self.run_visible_idx(i) && self.wx.flooded_runs.binary_search(&i).is_err())
             .map(|i| Road {
                 class: self.runs[i].class,
                 points: self.runs[i].points.clone(),
@@ -179,7 +179,7 @@ impl Sim {
             .map(|r| (r.class, r.points.clone()))
             .collect();
         let visible: Vec<bool> = (0..self.runs.len())
-            .map(|i| self.run_visible_idx(i))
+            .map(|i| self.run_visible_idx(i) && self.wx.flooded_runs.binary_search(&i).is_err())
             .collect();
         let handle = std::thread::Builder::new()
             .name("us-traffic".into())

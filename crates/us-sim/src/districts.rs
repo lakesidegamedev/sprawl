@@ -13,6 +13,8 @@ use crate::save::{R, Res, W};
 use crate::*;
 
 pub const MAX_DISTRICTS: usize = 12;
+/// Dollars a month the snow plowing ordinance costs per metre of road it covers.
+const PLOW_FEE_PER_M: f64 = 0.5;
 const NO_DISTRICT: u8 = u8::MAX;
 
 /// Names given to new districts, in order, skipping the ones in use.
@@ -82,10 +84,13 @@ pub enum Ordinance {
     CleanIndustry,
     TrafficCalming,
     Recycling,
+    StormDrains,
+    BuildingCodes,
+    SnowPlowing,
 }
 
 impl Ordinance {
-    pub const ALL: [Ordinance; 10] = [
+    pub const ALL: [Ordinance; 13] = [
         Ordinance::HeightLimit,
         Ordinance::Upzoning,
         Ordinance::Heritage,
@@ -96,13 +101,16 @@ impl Ordinance {
         Ordinance::CleanIndustry,
         Ordinance::TrafficCalming,
         Ordinance::Recycling,
+        Ordinance::StormDrains,
+        Ordinance::BuildingCodes,
+        Ordinance::SnowPlowing,
     ];
 
     pub fn index(self) -> usize {
         self as usize
     }
 
-    fn bit(self) -> u16 {
+    pub(crate) fn bit(self) -> u16 {
         1 << self.index()
     }
 
@@ -118,6 +126,9 @@ impl Ordinance {
             Ordinance::CleanIndustry => "Clean industry rules",
             Ordinance::TrafficCalming => "Traffic calming",
             Ordinance::Recycling => "Recycling programme",
+            Ordinance::StormDrains => "Storm drains",
+            Ordinance::BuildingCodes => "Building codes",
+            Ordinance::SnowPlowing => "Snow plowing",
         }
     }
 
@@ -150,6 +161,15 @@ impl Ordinance {
                 "Traffic hurts home land value less and voters like it. Shops and industry lose a little value to slower streets. Fee per building."
             }
             Ordinance::Recycling => "Voters like it. Costs a fee per resident.",
+            Ordinance::StormDrains => {
+                "Floods reach only half as far here and do half the damage. Fee per building."
+            }
+            Ordinance::BuildingCodes => {
+                "Storm damage costs half as much. New buildings take a quarter longer to finish. Fee per building."
+            }
+            Ordinance::SnowPlowing => {
+                "Snow clears off the roads twice as fast, so traffic recovers sooner. Fee per metre of road."
+            }
         }
     }
 
@@ -383,6 +403,16 @@ impl Sim {
         }
     }
 
+    /// The ordinances that apply to a road run in an addition (`None`: the old skeleton, which
+    /// only town-wide ordinances cover).
+    pub(crate) fn ord_mask_addition(&self, addition: Option<usize>) -> u16 {
+        let d = &self.dist;
+        match addition.and_then(|a| d.add_dist.get(a)) {
+            Some(&k) if k != NO_DISTRICT => d.town | d.list[k as usize].ordinances,
+            _ => d.town,
+        }
+    }
+
     /// Whether an ordinance applies to a lot.
     pub fn ordinance_at(&self, i: usize, o: Ordinance) -> bool {
         self.ord_mask(i) & o.bit() != 0
@@ -571,6 +601,8 @@ impl Sim {
             Ordinance::Watch => 3 * Sim::lot_people(l),
             Ordinance::Recycling => 4 * Sim::lot_people(l),
             Ordinance::Heritage => 40,
+            Ordinance::StormDrains => 8,
+            Ordinance::BuildingCodes => 12,
             Ordinance::TrafficCalming => 15,
             Ordinance::CleanIndustry if c == Class::Industry => 60,
             _ => 0,
@@ -602,7 +634,16 @@ impl Sim {
         if self.ordinance_town(Ordinance::Tourism) {
             sum += self.tourism_cost();
         }
-        sum
+        sum + self.plow_fee_now()
+    }
+
+    /// Fee per month for plowing, per metre of road in the places that have it on.
+    fn plow_fee_now(&self) -> i64 {
+        let share = self.road_share(Ordinance::SnowPlowing);
+        if share <= 0.0 {
+            return 0;
+        }
+        (share * self.plow_metres(None) * PLOW_FEE_PER_M) as i64
     }
 
     /// What an ordinance costs per month over the town (`district` of `None`) or one district,
@@ -628,6 +669,9 @@ impl Sim {
         }
         if o == Ordinance::Tourism && district.is_none() {
             sum += self.tourism_cost();
+        }
+        if o == Ordinance::SnowPlowing {
+            sum += (self.plow_metres(district) * PLOW_FEE_PER_M) as i64;
         }
         -sum
     }
@@ -771,6 +815,17 @@ impl Sim {
                     "Recycling programme: residents are happier. Costs a fee per resident.".into()
                 }
                 Ordinance::Recycling => continue,
+                Ordinance::StormDrains => {
+                    "Storm drains: floods reach only half as far here. Costs a fee.".into()
+                }
+                Ordinance::BuildingCodes => {
+                    "Building codes: storm damage costs half as much here, and new buildings take a quarter longer to finish."
+                        .into()
+                }
+                Ordinance::SnowPlowing => {
+                    "Snow plowing: roads here clear twice as fast. Costs a fee per metre of road."
+                        .into()
+                }
             };
             out.push(line);
         }
@@ -919,7 +974,7 @@ impl Sim {
         let n_add = self.revealed.len();
         let mut st = DistrictState {
             last_cost: r.i64()?,
-            town: (r.u32()? & 0x3ff) as u16,
+            town: (r.u32()? & ((1u32 << Ordinance::ALL.len()) - 1)) as u16,
             ..Default::default()
         };
         let n = r.u32()? as usize;
@@ -929,7 +984,7 @@ impl Sim {
         for _ in 0..n {
             let name = r.str()?;
             let colour = r.u8()?;
-            let ordinances = (r.u32()? & 0x3ff) as u16;
+            let ordinances = (r.u32()? & ((1u32 << Ordinance::ALL.len()) - 1)) as u16;
             let k = r.len(4)?;
             let mut additions = Vec::with_capacity(k);
             for _ in 0..k {

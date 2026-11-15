@@ -53,6 +53,7 @@ impl Sim {
     /// Daily: fires start, burn and are rebuilt.
     pub(crate) fn step_fires(&mut self) {
         let day = self.day;
+        let wx_fire = self.fire_weather_factor();
         for i in 0..self.lots.len() {
             match self.lots[i].fire {
                 Some(start) if day - start >= FIRE_DAYS => {
@@ -82,7 +83,8 @@ impl Sim {
                         .copied()
                         .unwrap_or(0.0) as f64;
                     let p = (0.000_01 + 0.000_4 * (1.0 - cov) * (1.0 - cov) / 30.0)
-                        * self.ord_fire_factor(i);
+                        * self.ord_fire_factor(i)
+                        * wx_fire;
                     if roll(self.seed ^ 0xf17e, i as u64, day as u64) < p {
                         self.ignite(i, cov);
                     }
@@ -92,6 +94,11 @@ impl Sim {
     }
 
     pub(crate) fn ignite(&mut self, i: usize, cov: f64) {
+        self.ignite_by(i, cov, false);
+    }
+
+    /// Start a fire; `lightning` says a bolt did it.
+    pub(crate) fn ignite_by(&mut self, i: usize, cov: f64, lightning: bool) {
         let day = self.day;
         let at = self.lots[i].pos;
         self.lots[i].fire = Some(day);
@@ -111,7 +118,8 @@ impl Sim {
                     && m.civic.is_none()
                     && class_of(m.kind).is_some()
                     && m.pos.dist(at) < 28.0
-                    && roll(self.seed ^ 0x5b7ead, j as u64, day as u64) < 0.4
+                    && roll(self.seed ^ 0x5b7ead, j as u64, day as u64)
+                        < 0.4 * self.fire_spread_factor(at, m.pos)
                 {
                     self.lots[j].fire = Some(day);
                     self.fires_total += 1;
@@ -121,14 +129,26 @@ impl Sim {
             }
         }
         let name = kind_label(self.lots[i].kind).to_lowercase();
+        let cause = if lightning {
+            format!("Lightning hit a {name}. ")
+        } else {
+            String::new()
+        };
+        let a_name = if lightning {
+            "It".to_string()
+        } else {
+            format!("A {name}")
+        };
         let text = if cov < 0.3 {
             if spread > 0 {
-                format!("A {name} fire spread to {spread} more. No fire station covers this area.")
+                format!(
+                    "{cause}{a_name} burned and the fire spread to {spread} more. No fire station covers this area."
+                )
             } else {
-                format!("A {name} burned. No fire station covers this area.")
+                format!("{cause}{a_name} burned. No fire station covers this area.")
             }
         } else {
-            format!("A {name} caught fire; the fire station put it out.")
+            format!("{cause}{a_name} caught fire; the fire station put it out.")
         };
         self.log(EventKind::Fire, text, Some(at));
         self.changed_lots.push(i);
