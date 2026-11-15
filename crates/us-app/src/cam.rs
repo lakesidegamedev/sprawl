@@ -13,6 +13,8 @@ pub struct CamCtl {
     g_yaw: f32,
     g_tilt: f32,
     map: f32,
+    /// Seconds left of a fly-to: the camera glides slowly instead of snapping to the goal.
+    flying: f32,
 }
 
 const FOV: f32 = 24.0;
@@ -40,6 +42,7 @@ impl CamCtl {
             g_yaw: yaw,
             g_tilt: tilt,
             map,
+            flying: 0.0,
         }
     }
 
@@ -48,6 +51,7 @@ impl CamCtl {
         self.g_target = p;
         self.g_dist = dist;
         self.g_tilt = 48.0;
+        self.flying = 1.2;
     }
 
     /// Keep the camera's target on the ground under it: `z` is the ground height there.
@@ -75,6 +79,7 @@ impl CamCtl {
     }
 
     pub fn drag_pan(&mut self, dx: f32, dy: f32, height_px: f32) {
+        self.flying = 0.0;
         let mpp = self.metres_per_pixel(height_px);
         let sin_t = self.g_tilt.to_radians().sin().max(0.25);
         self.g_target += -self.right() * dx * mpp + self.forward() * dy * mpp / sin_t;
@@ -109,6 +114,9 @@ impl CamCtl {
 
     pub fn keys(&mut self, dt: f32, pan: (f32, f32), rot: f32, fast: bool) {
         let speed = self.g_dist * 0.9 * if fast { 2.5 } else { 1.0 };
+        if pan != (0.0, 0.0) {
+            self.flying = 0.0;
+        }
         self.g_target += (self.forward() * pan.1 + self.right() * pan.0) * speed * dt;
         self.g_yaw += rot * 70.0 * dt;
         self.clamp();
@@ -121,7 +129,13 @@ impl CamCtl {
 
     /// Ease the shown camera toward the goal.
     pub fn update(&mut self, dt: f32) {
-        let k = 1.0 - (-dt * 14.0).exp();
+        let rate = if self.flying > 0.0 { 4.5 } else { 14.0 };
+        self.flying = (self.flying - dt).max(0.0);
+        let k = if crate::theme::reduce_motion() {
+            1.0
+        } else {
+            1.0 - (-dt * rate).exp()
+        };
         self.target += (self.g_target - self.target) * k;
         self.dist += (self.g_dist - self.dist) * k;
         self.yaw += (self.g_yaw - self.yaw) * k;

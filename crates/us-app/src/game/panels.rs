@@ -121,33 +121,86 @@ fn dock_top(ctx: &Context) -> f32 {
         .unwrap_or(screen.bottom() - dock_h(ctx))
 }
 
+/// The icon a window or sheet shows beside its title.
+fn title_icon(title: &str) -> Option<&'static str> {
+    Some(match title.to_lowercase().as_str() {
+        "taxes" => theme::icon::TAXES,
+        "budget" => theme::icon::BUDGET,
+        "bonds" => theme::icon::BONDS,
+        "build" => theme::icon::HAMMER,
+        "graphs" => theme::icon::GRAPHS,
+        "news" => theme::icon::NEWS,
+        "voters" => theme::icon::VOTERS,
+        "rivals" => theme::icon::RIVALS,
+        "map view" => theme::icon::MAP,
+        "districts" => theme::icon::DISTRICTS,
+        "ordinances" => theme::icon::ORDINANCES,
+        _ => return None,
+    })
+}
+
+/// A title row: icon, pixel heading.
+fn title_row(ui: &mut Ui, title: &str) {
+    if let Some(g) = title_icon(title) {
+        ui.label(theme::icon_text(g, 20.0, ACCENT));
+    }
+    ui.label(heading(title, 17.0));
+}
+
+/// Fade out on close: the first click starts it, the close is reported when it has finished.
+/// Returns the opacity to draw with and whether the close is done.
+fn closing(ctx: &Context, id: &str, clicked: bool) -> (f32, bool) {
+    let key = egui::Id::new(("closing", id));
+    let started = ctx.data(|d| d.get_temp::<bool>(key)).unwrap_or(false) || clicked;
+    if started {
+        ctx.data_mut(|d| d.insert_temp(key, true));
+    }
+    let a = ctx.animate_bool_with_time_and_easing(
+        egui::Id::new(("closing-a", id)),
+        !started,
+        theme::dur(0.14),
+        egui::emath::easing::cubic_out,
+    );
+    let done = started && a <= 0.001;
+    if done {
+        ctx.data_mut(|d| d.remove::<bool>(key));
+    }
+    (a, done)
+}
+
 /// The phone version of a panel: a sheet over the lower half of the screen, above the bottom
 /// bar, with a large close button. Only one sheet is open at a time. It is placed from the bar's
-/// real position so the bar's buttons always stay visible and tappable.
+/// real position so the bar's buttons always stay visible and tappable. It slides up when it
+/// opens and fades when it closes.
 pub(super) fn sheet(ctx: &Context, title: &str, body: impl FnOnce(&mut Ui)) -> bool {
-    let mut closed = false;
     let screen = ctx.content_rect();
     let width = (screen.width() - 12.0).max(240.0);
     let bottom = dock_top(ctx) - 4.0;
     let total = ((bottom - screen.top()) * 0.6).max(200.0);
+    let open = theme::opening(ctx, title, 0.2);
+    let (fade, done) = closing(ctx, title, false);
+    let mut clicked = false;
     egui::Area::new(egui::Id::new("sheet"))
         .pivot(Align2::CENTER_BOTTOM)
-        .fixed_pos(egui::pos2(screen.center().x, bottom))
+        .fixed_pos(egui::pos2(
+            screen.center().x,
+            bottom + (1.0 - open) * 28.0 + (1.0 - fade) * 16.0,
+        ))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
+            ui.set_opacity(fade);
             theme::panel()
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
                     ui.set_width(width - 16.0);
                     ui.horizontal(|ui| {
-                        ui.label(heading(&title.to_string(), 18.0));
+                        title_row(ui, title);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let b = egui::Button::new(
-                                RichText::new("X").font(ui_font(16.0)).color(INK),
-                            )
-                            .min_size(vec2(theme::TOUCH, theme::TOUCH));
+                            let b =
+                                egui::Button::new(theme::icon_text(theme::icon::CLOSE, 20.0, INK))
+                                    .min_size(vec2(theme::TOUCH, theme::TOUCH));
                             if ui.add(b).clicked() {
-                                closed = true;
+                                clicked = true;
                             }
                         });
                     });
@@ -160,10 +213,14 @@ pub(super) fn sheet(ctx: &Context, title: &str, body: impl FnOnce(&mut Ui)) -> b
                         });
                 });
         });
-    closed
+    if clicked {
+        closing(ctx, title, true);
+    }
+    done
 }
 
-/// The frame and header every movable window shares. Returns true when closed.
+/// The frame and header every movable window shares. Returns true when closed (after a short
+/// fade). Windows fade in when they open.
 pub(super) fn window(
     ctx: &Context,
     id: &str,
@@ -172,28 +229,38 @@ pub(super) fn window(
     pos: Pos2,
     body: impl FnOnce(&mut Ui),
 ) -> bool {
-    let mut closed = false;
     if theme::is_compact(ctx) {
         return sheet(ctx, title, body);
     }
+    let mut clicked = false;
     // at a large UI scale the screen has fewer points: shrink and scroll rather than overflow
     let screen = ctx.content_rect();
-    let width = width.min(screen.width() - 30.0).max(240.0);
+    let width = width
+        .min(screen.width() - 30.0 - super::chrome::RAIL_W)
+        .max(240.0);
     let max_h = (screen.height() - 150.0).max(160.0);
+    // first placement: right of the rail, left of the inspector
+    let lo = super::chrome::RAIL_W + 12.0;
+    let hi = (screen.right() - width - super::chrome::INSPECTOR_W - 24.0).max(lo);
+    let pos = Pos2::new(pos.x.clamp(lo, hi), pos.y);
+    let (fade, done) = closing(ctx, id, false);
     egui::Window::new(id)
         .title_bar(false)
-        .frame(theme::panel())
+        .frame(theme::panel().multiply_with_opacity(fade))
         .resizable(false)
         .default_pos(pos)
         .default_width(width)
         .constrain(true)
         .show(ctx, |ui| {
+            ui.set_opacity(fade);
             ui.set_width(width);
             ui.horizontal(|ui| {
-                ui.label(heading(&title.to_string(), 18.0));
+                title_row(ui, title);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if btn(ui, "X", false, 12.0).on_hover_text("Close").clicked() {
-                        closed = true;
+                    let b = egui::Button::new(theme::icon_text(theme::icon::CLOSE, 17.0, INK))
+                        .min_size(vec2(30.0, 28.0));
+                    if ui.add(b).on_hover_text("Close").clicked() {
+                        clicked = true;
                     }
                 });
             });
@@ -207,7 +274,10 @@ pub(super) fn window(
                     body(ui);
                 });
         });
-    closed
+    if clicked {
+        closing(ctx, id, true);
+    }
+    done
 }
 
 // ----- map views -----
@@ -376,6 +446,10 @@ pub struct UiState {
     pub rivals_open: bool,
     pub districts_open: bool,
     pub ordinances_open: bool,
+    /// The map view switcher is open (desktop).
+    pub views_open: bool,
+    /// Where the Map views button sits, so the switcher opens beside it.
+    pub views_rect_y: f32,
     /// The district the paint tool works on, while it is on.
     pub paint: Option<usize>,
     /// The district chosen in the Districts window.
@@ -422,6 +496,8 @@ impl Default for UiState {
             rivals_open: false,
             districts_open: false,
             ordinances_open: false,
+            views_open: false,
+            views_rect_y: 300.0,
             paint: None,
             dist_sel: None,
             dist_stats: Vec::new(),
@@ -883,72 +959,7 @@ impl Game {
         }
     }
 
-    // ----- toolbar and top bar extras -----
-
-    /// The second strip under the top bar.
-    pub(super) fn toolbar_ui(&mut self, ui: &mut Ui) {
-        let unread = self.ui.events.len().saturating_sub(self.ui.news_seen);
-        let u = &mut self.ui;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let t = |ui: &mut Ui, name: &str, on: &mut bool, tip: &str| {
-                if btn(ui, name, *on, 12.0).on_hover_text(tip).clicked() {
-                    *on = !*on;
-                }
-            };
-            t(ui, "Taxes", &mut u.levers_open, "Tax rates and demand (P)");
-            t(ui, "Budget", &mut u.budget_open, "Department funding (K)");
-            t(ui, "Bonds", &mut u.loans_open, "Borrow and repay (O)");
-            let was = u.build_open;
-            t(ui, "Build", &mut u.build_open, "Place civic buildings (B)");
-            if was && !u.build_open {
-                u.tool = None;
-            }
-            t(ui, "Graphs", &mut u.stats_open, "Charts over time (G)");
-            let was = u.districts_open;
-            t(
-                ui,
-                "Districts",
-                &mut u.districts_open,
-                "Group neighbourhoods (I)",
-            );
-            if was && !u.districts_open {
-                u.paint = None;
-            }
-            t(
-                ui,
-                "Ordinances",
-                &mut u.ordinances_open,
-                "Town and district policies (H)",
-            );
-            let news = if unread > 0 {
-                format!("News {unread}")
-            } else {
-                "News".into()
-            };
-            t(ui, &news, &mut u.news_open, "What happened in town (J)");
-            t(
-                ui,
-                "Rivals",
-                &mut u.rivals_open,
-                "The three towns you compete with (R)",
-            );
-            ui.add_space(10.0);
-            lab_c(ui, "Map view", 11.0, Color32::from_rgb(170, 176, 196));
-            egui::ComboBox::from_id_salt("mapview")
-                .selected_text(RichText::new(u.view.label().to_string()).font(ui_font(12.0)))
-                .width(190.0)
-                .show_ui(ui, |ui| {
-                    for v in MapView::ALL {
-                        ui.selectable_value(
-                            &mut u.view,
-                            v,
-                            RichText::new(v.label().to_string()).font(ui_font(12.0)),
-                        );
-                    }
-                });
-        });
-    }
+    // ----- top bar extras -----
 
     /// Population, treasury and monthly net as small lines. Needs room, so it checks the width.
     pub(super) fn sparks_ui(&self, ui: &mut Ui) {
@@ -988,7 +999,10 @@ impl Game {
             return;
         }
         egui::Area::new(egui::Id::new("tax"))
-            .anchor(Align2::LEFT_BOTTOM, vec2(14.0, -34.0))
+            .anchor(
+                Align2::LEFT_BOTTOM,
+                vec2(super::chrome::RAIL_W + 14.0, -34.0),
+            )
             .show(ctx, |ui| {
                 theme::panel().show(ui, |ui| {
                     ui.set_width(320.0);

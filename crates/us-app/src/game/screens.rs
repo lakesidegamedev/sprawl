@@ -568,52 +568,44 @@ impl Game {
     pub(super) fn dock_ui(&mut self, ui: &mut Ui) {
         let unread = self.ui.events.len().saturating_sub(self.ui.news_seen);
         let news = if unread > 0 {
-            format!("NEWS {unread}")
+            format!("News {unread}")
         } else {
-            "NEWS".to_string()
+            "News".to_string()
         };
-        let items: [(&str, bool); 11] = [
-            ("TAXES", self.ui.levers_open),
-            ("BUDGET", self.ui.budget_open),
-            ("BONDS", self.ui.loans_open),
-            ("BUILD", self.ui.build_open),
-            ("GRAPHS", self.ui.stats_open),
-            (news.as_str(), self.ui.news_open),
-            ("VOTERS", self.voters_open),
-            ("RIVALS", self.ui.rivals_open),
-            ("MAP", self.map_open),
-            ("DISTRICT", self.ui.districts_open),
-            ("RULES", self.ui.ordinances_open),
+        let items: [(&str, &str, bool); 11] = [
+            (theme::icon::TAXES, "Taxes", self.ui.levers_open),
+            (theme::icon::BUDGET, "Budget", self.ui.budget_open),
+            (theme::icon::BONDS, "Bonds", self.ui.loans_open),
+            (theme::icon::HAMMER, "Build", self.ui.build_open),
+            (theme::icon::GRAPHS, "Graphs", self.ui.stats_open),
+            (theme::icon::NEWS, news.as_str(), self.ui.news_open),
+            (theme::icon::VOTERS, "Voters", self.voters_open),
+            (theme::icon::RIVALS, "Rivals", self.ui.rivals_open),
+            (theme::icon::MAP, "Map", self.map_open),
+            (theme::icon::DISTRICTS, "Districts", self.ui.districts_open),
+            (theme::icon::ORDINANCES, "Rules", self.ui.ordinances_open),
         ];
         let rows = super::panels::dock_rows(ui.ctx());
         let per = items.len().div_ceil(rows);
         let n = per as f32;
         let gap = 3.0;
         let w = ((ui.available_width() - 12.0 - gap * (n - 1.0)) / n).floor();
-        let font = if rows == 1 && w >= 64.0 { 12.0 } else { 11.0 };
         let mut hit: Option<usize> = None;
         ui.spacing_mut().item_spacing = vec2(gap, gap);
-        ui.spacing_mut().button_padding = vec2(1.0, 6.0);
         for row in items.chunks(per).enumerate() {
             ui.horizontal(|ui| {
-                for (j, (name, on)) in row.1.iter().enumerate() {
+                for (j, (glyph, name, on)) in row.1.iter().enumerate() {
                     let i = row.0 * per + j;
-                    let b =
-                        egui::Button::new(RichText::new(*name).font(ui_font(font)).color(if *on {
-                            LINE
-                        } else {
-                            INK
-                        }))
-                        .fill(if *on { ACCENT } else { RAISED })
-                        .min_size(vec2(w, theme::TOUCH));
-                    if ui.add(b).clicked() {
+                    if super::chrome::dock_button(ui, glyph, name, *on, vec2(w, theme::TOUCH))
+                        .clicked()
+                    {
                         hit = Some(i);
                     }
                 }
             });
         }
         if let Some(i) = hit {
-            let was = items[i].1;
+            let was = items[i].2;
             self.close_sheets();
             if !was {
                 match i {
