@@ -24,6 +24,7 @@ pub mod obj;
 pub mod overlay;
 pub mod park;
 pub mod parts;
+pub mod rail;
 mod renderer;
 mod rng;
 mod scene;
@@ -32,7 +33,9 @@ pub use calendar::{Calendar, DayPhase, Season};
 pub use camera::{Camera, View, pick_ground, pick_terrain, project, ray_ground};
 pub use civic::{ALL_CIVIC, CivicModel, build_civic};
 pub use land::Land;
-pub use levels::{MAX_LEVEL, build_lot_level, build_lot_level_for, build_lot_level_in};
+pub use levels::{
+    MAX_LEVEL, build_lot_level, build_lot_level_dense, build_lot_level_for, build_lot_level_in,
+};
 pub use mesh::{ID_GROUND, ID_NONE, Mesh, VERTEX_BYTES, Vertex};
 pub use obj::{Obj, Poly, Rgb, V3};
 pub use overlay::{LotInfo, Overlay, OverlayKind, use_category};

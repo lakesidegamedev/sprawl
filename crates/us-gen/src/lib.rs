@@ -82,11 +82,16 @@ impl Preset {
         Preset::ALL.into_iter().find(|p| p.name() == s)
     }
 
-    /// The tuned generator settings of this preset.
+    /// The tuned generator settings of this preset, at the newest generator version.
     pub fn settings(self) -> Settings {
         Settings::for_preset(self)
     }
 }
+
+/// The newest generator rules. Version 1 is the generator of 1.0.0 preview 6 and 7; saves made
+/// then rebuild their town with it. Version 2 adds railway stations, town centres that set how
+/// dense each lot is, and keeps lots out of parks and street ends off the railway.
+pub const GEN_VERSION: u32 = 2;
 
 /// Knobs of the generator. `generate` uses the tuned values of each preset; the realism tuner
 /// searches over these.
@@ -118,6 +123,9 @@ pub struct Settings {
     pub cul_share: f64,
     /// Roughly how far the built-up town reaches from the hall, metres.
     pub reach: f64,
+    /// Generator rules version, 1 to `GEN_VERSION`. Older versions give exactly the towns they
+    /// always gave, so saved games keep working.
+    pub version: u32,
 }
 
 impl Settings {
@@ -137,6 +145,7 @@ impl Settings {
             street_spacing: 1.0,
             cul_share: 0.6,
             reach: 1900.0,
+            version: GEN_VERSION,
         };
         // Tuned offline against road statistics of real towns (`us-metrics tune`).
         match p {
@@ -420,6 +429,72 @@ pub struct Lot {
     pub zone: Zone,
     /// Stable per-lot random roll in [0, 1) for visual variants.
     pub variant: f64,
+    /// How central and built-up the spot is, 0 (open suburb) to 1 (the middle of downtown).
+    /// Derived from the town centres; it sets how tall the lot is allowed and encouraged to grow.
+    /// Not part of the canonical bytes: it is computed again from the rest of the town.
+    pub density: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StationKind {
+    /// A passenger depot with a platform along the track.
+    Depot,
+    /// A grain elevator beside the track (prairie towns).
+    Elevator,
+}
+
+/// A railway building beside the track. The model is drawn like a lot: `pos` is the centre of
+/// the building, the front faces `facing` (the same convention as `Lot::facing`) and the track
+/// runs behind it.
+#[derive(Clone, Copy, Debug)]
+pub struct Station {
+    pub kind: StationKind,
+    pub pos: Pt,
+    pub facing: f64,
+    /// Collision radius of the building and its platform, metres.
+    pub radius: f64,
+    /// Length of the platform (or loading track) along the rail, metres.
+    pub length: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CentreKind {
+    /// The old downtown round the town hall.
+    Downtown,
+    /// The blocks round a railway depot.
+    Station,
+    /// A crossing of two big roads.
+    Crossroads,
+    /// A shopping area.
+    Mall,
+}
+
+/// A place the town gathers round: lots near one are denser and grow taller.
+#[derive(Clone, Copy, Debug)]
+pub struct Centre {
+    pub kind: CentreKind,
+    pub pos: Pt,
+    /// Strength at the middle, 0 to 1.
+    pub weight: f64,
+    /// Distance at which the pull fades to nothing, metres.
+    pub radius: f64,
+}
+
+impl Centre {
+    /// Pull of this centre at `p`, 0 to `weight`.
+    pub fn pull(&self, p: Pt) -> f64 {
+        let t = p.dist(self.pos) / self.radius;
+        if t >= 1.0 {
+            return 0.0;
+        }
+        let f = 1.0 - t * t;
+        self.weight * f * f
+    }
+}
+
+/// How central a point is: the strongest pull of any centre, 0 to 1.
+pub fn centrality(centres: &[Centre], p: Pt) -> f64 {
+    centres.iter().map(|c| c.pull(p)).fold(0.0, f64::max)
 }
 
 #[derive(Clone, Debug)]
@@ -442,6 +517,12 @@ pub struct Town {
     pub hall_radius: f64,
     /// The ground: heights and slopes anywhere on the map.
     pub terrain: Terrain,
+    /// Generator rules version this town was made with.
+    pub gen_version: u32,
+    /// Railway depots and elevators (none before generator version 2).
+    pub stations: Vec<Station>,
+    /// Downtown, station areas, big crossroads and malls, strongest first.
+    pub centres: Vec<Centre>,
 }
 
 impl Town {
@@ -507,6 +588,25 @@ impl Town {
         for v in self.terrain.heightfield(17) {
             b.extend_from_slice(&v.to_bits().to_le_bytes());
         }
+        // version 1 towns hash exactly as they did before versions existed
+        if self.gen_version >= 2 {
+            u(&mut b, self.gen_version as u64);
+            u(&mut b, self.stations.len() as u64);
+            for st in &self.stations {
+                u(&mut b, st.kind as u64);
+                pts(&mut b, &[st.pos]);
+                f(&mut b, st.facing);
+                f(&mut b, st.radius);
+                f(&mut b, st.length);
+            }
+            u(&mut b, self.centres.len() as u64);
+            for c in &self.centres {
+                u(&mut b, c.kind as u64);
+                pts(&mut b, &[c.pos]);
+                f(&mut b, c.weight);
+                f(&mut b, c.radius);
+            }
+        }
         b
     }
 
@@ -524,6 +624,15 @@ impl Town {
 /// Generate a 4096 m town. Same `(preset, seed)` gives the same town on every platform.
 pub fn generate(preset: Preset, seed: u64) -> Town {
     plan::generate(preset, seed, &preset.settings())
+}
+
+/// The town as generator `version` (1 to `GEN_VERSION`) made it, for opening older saves.
+pub fn generate_version(preset: Preset, seed: u64, version: u32) -> Town {
+    let st = Settings {
+        version: version.clamp(1, GEN_VERSION),
+        ..preset.settings()
+    };
+    plan::generate(preset, seed, &st)
 }
 
 /// Like `generate`, with explicit settings (used by the realism tuner).

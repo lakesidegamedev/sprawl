@@ -168,6 +168,7 @@ impl Sim {
                 facing: l.facing,
                 zone: src.map_or(Zone::Inner, |s| s.zone),
                 variant: src.map_or(0.5, |s| s.variant),
+                density: src.map_or(0.0, |s| s.density),
             });
             lot_map.push(i);
         }

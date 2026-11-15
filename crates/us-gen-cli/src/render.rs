@@ -78,7 +78,8 @@ fn text(pm: &mut Pixmap, s: &str, x: f32, y: f32, scale: f32, c: Color) {
     }
 }
 
-pub fn plan_png(town: &Town, caption: &str, sub: &str) -> Pixmap {
+/// Plan view; with `density` the lots are tinted by how dense they may grow instead of by kind.
+pub fn plan_png(town: &Town, caption: &str, sub: &str, density: bool) -> Pixmap {
     let size = town.size as f32;
     let sc = PX / size;
     let h_px = (size - 0.0) * sc;
@@ -250,7 +251,28 @@ pub fn plan_png(town: &Town, caption: &str, sub: &str) -> Pixmap {
         let rr = ((l.radius * 0.7) as f32 * sc).max(1.0);
         let (x, y) = map(l.centre);
         if let Some(r) = Rect::from_xywh(x - rr, y - rr, rr * 2.0, rr * 2.0) {
-            pm.fill_rect(r, &paint(lot_col(l.kind)), Transform::identity(), None);
+            let c = if density {
+                let k = l.density.clamp(0.0, 1.0);
+                let m = |a: f64, b: f64| (a + (b - a) * k).round() as u8;
+                rgb(m(200.0, 160.0), m(200.0, 20.0), m(190.0, 40.0))
+            } else {
+                lot_col(l.kind)
+            };
+            pm.fill_rect(r, &paint(c), Transform::identity(), None);
+        }
+    }
+    for st in &town.stations {
+        let (x, y) = map(st.pos);
+        let rr = (st.radius as f32 * sc).max(3.0) + 2.0;
+        for (grow, c) in [(1.5, rgb(20, 20, 24)), (0.0, rgb(214, 40, 40))] {
+            if let Some(r) = Rect::from_xywh(
+                x - rr - grow,
+                y - rr - grow,
+                (rr + grow) * 2.0,
+                (rr + grow) * 2.0,
+            ) {
+                pm.fill_rect(r, &paint(c), Transform::identity(), None);
+            }
         }
     }
     let (hx, hy) = map(town.hall);

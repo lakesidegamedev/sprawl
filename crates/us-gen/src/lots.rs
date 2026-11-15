@@ -1,13 +1,17 @@
 //! Stage three: lots along the streets.
 
 use crate::geom::{
-    Pt, atan2, bbox, cos, dist_pt_ring, interpolate, length, point_in_ring, pt, sin,
+    Pt, atan2, bbox, cos, dist_pt_ring, interpolate, length, point_in_ring, project, pt,
+    seg_intersect, sin,
 };
 use crate::plan::Draft;
 use crate::rng::Rng;
 use crate::terrain::Terrain;
 use crate::world::{HWY_Y, S, dist_hall};
-use crate::{Addition, CulDeSac, Lot, LotKind, RoadClass, Zone};
+use crate::{
+    Addition, Centre, CentreKind, CulDeSac, Lot, LotKind, Preset, RoadClass, Station, StationKind,
+    Zone, centrality,
+};
 
 /// Disks in a flat grid, for fast overlap tests.
 struct DiskHash {
@@ -69,9 +73,33 @@ struct Ctx<'a> {
     boxes: Vec<(Pt, Pt)>,
     hall: Pt,
     offices_left: u32,
+    /// Generator version 2 rules: centres shape the lot kinds, parks stay clear.
+    v2: bool,
+    centres: Vec<Centre>,
+    /// Indices of park additions.
+    parks: Vec<usize>,
 }
 
 impl Ctx<'_> {
+    /// True when a disk at `c` reaches into a park (version 2 rules only).
+    fn touches_park(&self, c: Pt, r: f64) -> bool {
+        if !self.v2 {
+            return false;
+        }
+        self.parks.iter().any(|&i| {
+            let (lo, hi) = self.boxes[i];
+            if c.x < lo.x - r || c.x > hi.x + r || c.y < lo.y - r || c.y > hi.y + r {
+                return false;
+            }
+            let poly = &self.additions[i].polygon;
+            point_in_ring(c, poly) || dist_pt_ring(c, poly) < r
+        })
+    }
+
+    fn central(&self, p: Pt) -> f64 {
+        centrality(&self.centres, p)
+    }
+
     fn zone_at(&self, p: Pt) -> (Lz, f64) {
         for (i, a) in self.additions.iter().enumerate() {
             let (lo, hi) = self.boxes[i];
@@ -108,6 +136,52 @@ impl Ctx<'_> {
             class,
             RoadClass::Highway | RoadClass::Arterial | RoadClass::Collector
         );
+        if self.v2 {
+            let c = self.central(at);
+            match zone {
+                Zone::Core if dc < 380.0 => {
+                    let tower_ok = c > 0.6 && self.offices_left > 0;
+                    let w_office = if !tower_ok {
+                        0.0
+                    } else if big {
+                        2.4 * c
+                    } else {
+                        0.9 * c
+                    };
+                    return kind_from(
+                        rng.weighted(&[5.0, 3.0 + 2.0 * c, w_office, 1.0, 1.0 - 0.6 * c]),
+                        &[Shop, Apartments, Office, Parking, Row],
+                    );
+                }
+                Zone::Inner if c > 0.4 => {
+                    // the blocks round the station or a big crossroads: shops and flats
+                    let shop = if big { 4.5 * c } else { 2.5 * c };
+                    return kind_from(
+                        rng.weighted(&[
+                            6.0 * (1.0 - c),
+                            2.0,
+                            1.0 + 2.5 * c,
+                            shop,
+                            0.12,
+                            0.4 * c,
+                            0.1,
+                            0.1,
+                        ]),
+                        &[
+                            House, Row, Apartments, Shop, Church, Parking, School, Sports,
+                        ],
+                    );
+                }
+                Zone::Outer if c > 0.45 && big => {
+                    // a neighbourhood centre at a crossroads out in the suburbs
+                    return kind_from(
+                        rng.weighted(&[16.0, 6.0 * c, 4.0 * c, 1.0, 1.2, 0.25, 0.25]),
+                        &[House, Shop, Apartments, Gas, FastFood, School, Sports],
+                    );
+                }
+                _ => {}
+            }
+        }
         match zone {
             Zone::Core => {
                 if dc < 380.0 {
@@ -190,7 +264,9 @@ pub fn make_lots(
     water: &[Vec<Pt>],
     terrain: &Terrain,
     rng: &mut Rng,
-) -> Vec<Lot> {
+    preset: Preset,
+    v2: bool,
+) -> (Vec<Lot>, Vec<Station>, Vec<Centre>) {
     let mut h = DiskHash::new();
     for d in drafts {
         road_disks(&mut h, &d.line, d.class.half_width());
@@ -203,7 +279,12 @@ pub fn make_lots(
         additions,
         boxes: additions.iter().map(|a| bbox(&a.polygon)).collect(),
         hall,
-        offices_left: 5,
+        offices_left: if v2 { 14 } else { 5 },
+        v2,
+        centres: Vec::new(),
+        parks: (0..additions.len())
+            .filter(|&i| additions[i].zone == Zone::Park)
+            .collect(),
     };
     let mut lots: Vec<Lot> = Vec::new();
     let wboxes: Vec<(Pt, Pt)> = water.iter().map(|w| bbox(w)).collect();
@@ -229,6 +310,14 @@ pub fn make_lots(
         terrain.slope(c) < 0.15
     };
 
+    let stations = if v2 {
+        let mut srng = Rng::new((rng.f64() * 9.0e15) as u64, 0x57a7);
+        place_stations(drafts, hall, preset, &site_ok, &mut h, &ctx, &mut srng)
+    } else {
+        Vec::new()
+    };
+    ctx.centres = find_centres(drafts, additions, hall, &stations);
+
     // cul-de-sac bulbs: a ring of houses round the turning circle
     for c in culs {
         let Some(d) = drafts.iter().find(|d| {
@@ -244,14 +333,24 @@ pub fn make_lots(
             let ang = a + da;
             let r = 8.0;
             let ctr = pt(c.pos.x + cos(ang) * 22.0, c.pos.y + sin(ang) * 22.0);
-            if site_ok(ctr, r) && !h.hit(ctr.x, ctr.y, r) {
+            let zone = if v2 {
+                match ctx.zone_at(ctr).0 {
+                    Lz::Z(Zone::Park) => continue,
+                    Lz::Z(z) => z,
+                    _ => Zone::Outer,
+                }
+            } else {
+                Zone::Outer
+            };
+            if site_ok(ctr, r) && !h.hit(ctr.x, ctr.y, r) && !ctx.touches_park(ctr, r) {
                 lots.push(Lot {
                     centre: ctr,
                     radius: r,
                     kind: LotKind::House,
                     facing: atan2(cos(ang), -sin(ang)) + std::f64::consts::PI,
-                    zone: Zone::Outer,
+                    zone,
                     variant: rng.f64(),
+                    density: 0.0,
                 });
                 h.add(ctr.x, ctr.y, r);
             }
@@ -337,8 +436,26 @@ pub fn make_lots(
                 let nc = pt(-uc.y * side, uc.x * side);
                 let off = hw + setback + rc;
                 let ctr = pt(pc.x + nc.x * off, pc.y + nc.y * off);
-                let office_too_far = kind == LotKind::Office && ctr.dist(hall) > 245.0;
-                if office_too_far || !site_ok(ctr, rc) || h.hit(ctr.x, ctr.y, rc) {
+                let office_too_far = kind == LotKind::Office
+                    && if v2 {
+                        ctx.central(ctr) < 0.55
+                    } else {
+                        ctr.dist(hall) > 245.0
+                    };
+                // version 2: the zone is checked again where the building really stands, so
+                // packing along the street never carries a lot into a park or open land
+                let mut zone = zone;
+                let mut misplaced = false;
+                if v2 {
+                    match ctx.zone_at(ctr).0 {
+                        Lz::Z(Zone::Park) => misplaced = true,
+                        Lz::Open | Lz::Fringe => misplaced |= zone != Zone::Farm,
+                        Lz::Z(z) if zone != Zone::Farm => zone = z,
+                        Lz::Z(_) => {}
+                    }
+                    misplaced |= ctx.touches_park(ctr, rc);
+                }
+                if misplaced || office_too_far || !site_ok(ctr, rc) || h.hit(ctr.x, ctr.y, rc) {
                     // blocked by a cross street or a neighbour: try again a little further on
                     k = kc + 3.0;
                     continue;
@@ -353,6 +470,7 @@ pub fn make_lots(
                     facing: atan2(-nc.x, nc.y),
                     zone,
                     variant: rng.f64(),
+                    density: 0.0,
                 });
                 h.add(ctr.x, ctr.y, rc);
                 if zone == Zone::Farm {
@@ -379,7 +497,252 @@ pub fn make_lots(
             cur = next;
         }
     }
-    lots
+    for l in &mut lots {
+        l.density = lot_density(l.zone, ctx.central(l.centre));
+    }
+    (lots, stations, ctx.centres)
+}
+
+/// How dense a lot may become, from its zone and how central it is.
+fn lot_density(zone: Zone, central: f64) -> f64 {
+    let (base, mult) = match zone {
+        Zone::Core => (0.3, 0.9),
+        Zone::Inner => (0.1, 0.85),
+        Zone::Outer => (0.0, 0.55),
+        Zone::Industry => (0.1, 0.5),
+        Zone::Mall => (0.15, 0.6),
+        Zone::Campus => (0.1, 0.6),
+        Zone::Park | Zone::Farm => (0.0, 0.2),
+    };
+    (base + mult * central).clamp(0.0, 1.0)
+}
+
+/// Where the town gathers: downtown round the hall, the station blocks, crossings of big roads
+/// and malls. Strongest first.
+fn find_centres(
+    drafts: &[Draft],
+    additions: &[Addition],
+    hall: Pt,
+    stations: &[Station],
+) -> Vec<Centre> {
+    let mut out = vec![Centre {
+        kind: CentreKind::Downtown,
+        pos: hall,
+        weight: 1.0,
+        radius: 560.0,
+    }];
+    for s in stations.iter().filter(|s| s.kind == StationKind::Depot) {
+        out.push(Centre {
+            kind: CentreKind::Station,
+            pos: s.pos,
+            weight: 0.72,
+            radius: 300.0,
+        });
+    }
+    for a in additions.iter().filter(|a| a.zone == Zone::Mall) {
+        out.push(Centre {
+            kind: CentreKind::Mall,
+            pos: crate::geom::centroid(&a.polygon),
+            weight: 0.4,
+            radius: 260.0,
+        });
+    }
+    // crossings of big roads: arterial with arterial or highway, then arterial with collector
+    let big: Vec<&Draft> = drafts
+        .iter()
+        .filter(|d| matches!(d.class, RoadClass::Highway | RoadClass::Arterial))
+        .collect();
+    let coll: Vec<&Draft> = drafts
+        .iter()
+        .filter(|d| d.class == RoadClass::Collector)
+        .collect();
+    let crossings = |a: &[&Draft], b: &[&Draft], same: bool, max_d: f64| -> Vec<Pt> {
+        let mut pts: Vec<Pt> = Vec::new();
+        for (i, da) in a.iter().enumerate() {
+            let (alo, ahi) = bbox(&da.line);
+            for (j, db) in b.iter().enumerate() {
+                if same && j <= i {
+                    continue;
+                }
+                if same && da.class == RoadClass::Highway && db.class == RoadClass::Highway {
+                    continue;
+                }
+                let (blo, bhi) = bbox(&db.line);
+                if bhi.x < alo.x || blo.x > ahi.x || bhi.y < alo.y || blo.y > ahi.y {
+                    continue;
+                }
+                for wa in da.line.windows(2) {
+                    for wb in db.line.windows(2) {
+                        if let Some((t, _)) = seg_intersect(wa[0], wa[1], wb[0], wb[1]) {
+                            let p = wa[0].lerp(wa[1], t);
+                            if p.dist(hall) < max_d {
+                                pts.push(p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        pts.sort_by(|p, q| {
+            p.dist(hall)
+                .total_cmp(&q.dist(hall))
+                .then(p.x.total_cmp(&q.x))
+                .then(p.y.total_cmp(&q.y))
+        });
+        pts
+    };
+    let add = |out: &mut Vec<Centre>, pts: Vec<Pt>, weight: f64, radius: f64, cap: usize| {
+        let mut n = 0;
+        for p in pts {
+            if n >= cap {
+                break;
+            }
+            if out
+                .iter()
+                .any(|c| c.pos.dist(p) < 0.6 * c.radius.max(radius))
+            {
+                continue;
+            }
+            out.push(Centre {
+                kind: CentreKind::Crossroads,
+                pos: p,
+                weight,
+                radius,
+            });
+            n += 1;
+        }
+    };
+    add(&mut out, crossings(&big, &big, true, 2000.0), 0.5, 240.0, 8);
+    add(
+        &mut out,
+        crossings(&big, &coll, false, 1600.0),
+        0.32,
+        170.0,
+        12,
+    );
+    out.sort_by(|a, b| {
+        b.weight
+            .total_cmp(&a.weight)
+            .then(a.pos.x.total_cmp(&b.pos.x))
+            .then(a.pos.y.total_cmp(&b.pos.y))
+    });
+    out
+}
+
+/// A depot on each railway where it passes closest to downtown, beside the street that crosses
+/// the track there, and in prairie towns a grain elevator across the track.
+fn place_stations(
+    drafts: &[Draft],
+    hall: Pt,
+    preset: Preset,
+    site_ok: &dyn Fn(Pt, f64) -> bool,
+    h: &mut DiskHash,
+    ctx: &Ctx,
+    rng: &mut Rng,
+) -> Vec<Station> {
+    const BUILDING_R: f64 = 13.0;
+    const SET_BACK: f64 = 18.0;
+    const PLATFORM: f64 = 48.0;
+    let mut out = Vec::new();
+    for rail in drafts.iter().filter(|d| d.class == RoadClass::Rail) {
+        let line = &rail.line;
+        let total = length(line);
+        // where streets cross the track, nearest the hall first; the closest point as a fallback
+        let mut cands: Vec<(f64, f64)> = Vec::new();
+        for d in drafts.iter().filter(|d| {
+            matches!(
+                d.class,
+                RoadClass::Arterial | RoadClass::Collector | RoadClass::Local
+            )
+        }) {
+            for wa in line.windows(2) {
+                for wb in d.line.windows(2) {
+                    if let Some((t, _)) = seg_intersect(wa[0], wa[1], wb[0], wb[1]) {
+                        let p = wa[0].lerp(wa[1], t);
+                        let bonus = if d.class == RoadClass::Local {
+                            60.0
+                        } else {
+                            0.0
+                        };
+                        cands.push((p.dist(hall) + bonus, project(line, p).0));
+                    }
+                }
+            }
+        }
+        let (along_h, dist_h, _) = project(line, hall);
+        cands.push((dist_h + 200.0, along_h));
+        cands.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        'cand: for &(dh, a0) in &cands {
+            if dh > 1500.0 {
+                break;
+            }
+            for off in [30.0, -30.0, 46.0, -46.0, 64.0, -64.0] {
+                let a = a0 + off;
+                if a < PLATFORM || a > total - PLATFORM {
+                    continue;
+                }
+                let (p, u) = interpolate(line, a);
+                let mut n = pt(-u.y, u.x);
+                if (hall - p).dot(n) < 0.0 {
+                    n = n * -1.0;
+                }
+                let ctr = p + n * SET_BACK;
+                let mut disks = vec![(ctr, BUILDING_R)];
+                let mut k = -PLATFORM / 2.0;
+                while k <= PLATFORM / 2.0 {
+                    disks.push((p + n * 7.5 + u * k, 3.0));
+                    k += 8.0;
+                }
+                let clear = disks
+                    .iter()
+                    .all(|&(c, r)| site_ok(c, r) && !h.hit(c.x, c.y, r) && !ctx.touches_park(c, r));
+                if !clear {
+                    continue;
+                }
+                for &(c, r) in &disks {
+                    h.add(c.x, c.y, r);
+                }
+                out.push(Station {
+                    kind: StationKind::Depot,
+                    pos: ctr,
+                    facing: atan2(n.x, -n.y),
+                    radius: BUILDING_R,
+                    length: PLATFORM,
+                });
+                if preset == Preset::Grid {
+                    // the elevator stands across the track, a little down the line
+                    let sign = if rng.chance(0.5) { 1.0 } else { -1.0 };
+                    for step in 0..24usize {
+                        let mag = 80.0 + 15.0 * (step / 2) as f64;
+                        let b = a + sign * if step % 2 == 0 { mag } else { -mag };
+                        if b < 30.0 || b > total - 30.0 {
+                            continue;
+                        }
+                        let (q, v) = interpolate(line, b);
+                        let mut m = pt(v.y, -v.x);
+                        if m.dot(n) > 0.0 {
+                            m = m * -1.0;
+                        }
+                        let c = q + m * 15.0;
+                        let r = 10.0;
+                        if site_ok(c, r) && !h.hit(c.x, c.y, r) && !ctx.touches_park(c, r) {
+                            h.add(c.x, c.y, r);
+                            out.push(Station {
+                                kind: StationKind::Elevator,
+                                pos: c,
+                                facing: atan2(m.x, -m.y),
+                                radius: r,
+                                length: 30.0,
+                            });
+                            break;
+                        }
+                    }
+                }
+                break 'cand;
+            }
+        }
+    }
+    out
 }
 
 /// Whether a lot at this spot is built shoulder to shoulder with its neighbours.
@@ -464,7 +827,7 @@ fn back_lot(
     let (fx, fy) = (-sin(front.facing), cos(front.facing));
     let d = front.radius + r + gap;
     let ctr = pt(front.centre.x + fx * d, front.centre.y + fy * d);
-    if !site_ok(ctr, r) || h.hit(ctr.x, ctr.y, r) {
+    if !site_ok(ctr, r) || h.hit(ctr.x, ctr.y, r) || ctx.touches_park(ctr, r) {
         return None;
     }
     // stay inside the same sort of ground: never back onto a park or open land
@@ -479,5 +842,6 @@ fn back_lot(
         facing: front.facing,
         zone,
         variant: rng.f64(),
+        density: 0.0,
     })
 }

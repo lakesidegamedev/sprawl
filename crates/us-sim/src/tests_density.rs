@@ -52,3 +52,72 @@ fn dense_towns_grow_and_stay_solvent_without_gridlock() {
         );
     }
 }
+
+#[test]
+fn tall_buildings_gather_at_the_centres_and_suburbs_stay_low() {
+    let town = generate(Preset::Grid, 3);
+    let s = run(&town, 365 * 20);
+    let (mut hi, mut nh, mut lo, mut nl) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    let mut tall_central = 0;
+    for (i, l) in s.lots().iter().enumerate() {
+        if !matches!(l.phase, Phase::Built { .. }) || class_of(l.kind).is_none() || l.exempt {
+            continue;
+        }
+        let d = s.lot_density(i);
+        assert!(
+            l.level <= max_level_at(l.kind, d),
+            "{:?} at level {} on density {d:.2}",
+            l.kind,
+            l.level
+        );
+        if d >= 0.6 {
+            hi += l.level as f64;
+            nh += 1.0;
+            tall_central += (l.level >= 4) as usize;
+        } else if d < 0.2 {
+            lo += l.level as f64;
+            nl += 1.0;
+        }
+    }
+    let (hi, lo) = (hi / nh.max(1.0), lo / nl.max(1.0));
+    eprintln!(
+        "central mean level {hi:.2} over {nh}, suburban {lo:.2} over {nl}, tall central {tall_central}"
+    );
+    assert!(nh > 30.0 && nl > 100.0);
+    assert!(hi > lo + 0.6, "central {hi:.2}, suburban {lo:.2}");
+    assert!(
+        tall_central >= 5,
+        "only {tall_central} tall buildings downtown"
+    );
+}
+
+#[test]
+fn builders_fill_streets_from_the_buildings_already_standing() {
+    let town = generate(Preset::Winding, 2);
+    let mut s = Sim::new_with_rules(&town, hall_sites(&town)[0], 7, 2, Rules::sandbox());
+    let mut round = 0;
+    let (mut started, mut beside) = (0usize, 0usize);
+    for d in 0..900 {
+        let before: Vec<bool> = s
+            .lots()
+            .iter()
+            .map(|l| matches!(l.phase, Phase::Building { .. } | Phase::Built { .. }))
+            .collect();
+        s.step_day();
+        if d % 30 == 5 {
+            crate::tests_balance::tend(&mut s, &mut round);
+        }
+        for i in 0..before.len() {
+            let now = matches!(s.lots()[i].phase, Phase::Building { .. });
+            if now && !before[i] && s.lots()[i].civic.is_none() {
+                started += 1;
+                let nb = s.near[i].iter().any(|&j| before[j as usize]);
+                beside += nb as usize;
+            }
+        }
+    }
+    eprintln!("{beside} of {started} new buildings went up beside one already there");
+    // without the preference about half go up beside a standing building
+    assert!(started > 80);
+    assert!(beside * 100 >= started * 60, "{beside} of {started}");
+}

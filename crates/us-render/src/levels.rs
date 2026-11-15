@@ -236,6 +236,44 @@ pub fn build_lot_level_for(
     )
 }
 
+/// Like `build_lot_level_for`, for a lot of a given density (0 to 1, from the town generator).
+/// The middle of downtown and the station blocks get the tallest towers: offices and flats at
+/// level 4 and 5 there rise well above the same level elsewhere.
+pub fn build_lot_level_dense(
+    preset: us_gen::Preset,
+    kind: LotKind,
+    level: u8,
+    radius: f32,
+    density: f32,
+    rng: &mut Rng,
+) -> Obj {
+    let region = Region::of(preset);
+    let level = level.clamp(1, MAX_LEVEL);
+    let tall = (density - 0.75).max(0.0) / 0.25;
+    let obj = match kind {
+        LotKind::Office if level >= 4 && tall > 0.0 => {
+            let base = if level == 4 { 10.0 } else { 14.0 };
+            let floors = (base + tall.min(1.0) * if level == 4 { 4.0 } else { 10.0 }) as usize;
+            let mut o = kit::office(region, floors, rng);
+            if level >= 5 {
+                let h = top_of(&o);
+                o.pyramid(0.0, 0.0, h, 4.2, 5.0, [110, 120, 140], 4, 45.0);
+            }
+            o
+        }
+        LotKind::Apartments if level >= 4 && tall > 0.0 => {
+            let base = if level == 4 { 7.0 } else { 9.0 };
+            let floors = (base + tall.min(1.0) * if level == 4 { 2.0 } else { 5.0 }) as usize;
+            let mut o = kit::apartments(region, floors, rng);
+            let h = top_of(&o);
+            o.bx(-5.0, -3.0, h, 5.0, 3.0, h + 1.2, [120, 150, 110]);
+            o
+        }
+        _ => build_lot_level_in(region, kind, level, rng),
+    };
+    kit::fit_to_lot(obj, radius)
+}
+
 /// The model for one lot at a building level from 1 to 5 in a region.
 pub fn build_lot_level_in(region: Region, kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
     let level = level.clamp(1, MAX_LEVEL);

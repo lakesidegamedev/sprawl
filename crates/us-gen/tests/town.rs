@@ -397,7 +397,7 @@ fn long_addition_edges_become_collectors() {
 }
 
 #[test]
-fn downtown_has_a_handful_of_towers_near_the_hall() {
+fn downtown_has_a_cluster_of_towers_at_its_centres() {
     for t in towns().iter() {
         let offices: Vec<_> = t
             .lots
@@ -405,17 +405,178 @@ fn downtown_has_a_handful_of_towers_near_the_hall() {
             .filter(|l| l.kind == us_gen::LotKind::Office)
             .collect();
         assert!(
-            offices.len() <= 6,
+            (1..=16).contains(&offices.len()),
             "{} seed {}: {} towers",
             t.preset.name(),
             t.seed,
             offices.len()
         );
         for o in offices {
+            let c = us_gen::centrality(&t.centres, o.centre);
             assert!(
-                d(o.centre, t.hall) < 252.0,
-                "office {:.0} m from the hall",
+                c >= 0.55,
+                "office {:.0} m from the hall has centrality {c:.2}",
                 d(o.centre, t.hall)
+            );
+            assert!(o.density > 0.7, "office density {:.2}", o.density);
+        }
+    }
+}
+
+#[test]
+fn version_one_towns_are_unchanged() {
+    // saves from 1.0.0 preview 6 and 7 rebuild their town with generator version 1
+    let known = [
+        (Preset::Grid, 1, 0x5a21_c829_5a15_dac2u64),
+        (Preset::Winding, 2, 0x4b2b_4134_c47f_1068),
+        (Preset::Sunbelt, 3, 0xc5bd_9134_c70e_b74b),
+        (Preset::Crossroads, 4, 0xc662_cfba_26fb_cb07),
+        (Preset::LakeTown, 1, 0x08e6_8d74_ff49_7b24),
+    ];
+    for (p, s, fp) in known {
+        let t = us_gen::generate_version(p, s, 1);
+        assert_eq!(t.fingerprint(), fp, "{} seed {s}", p.name());
+        assert!(t.stations.is_empty());
+    }
+}
+
+#[test]
+fn every_railway_through_town_has_a_depot_clear_of_roads_and_lots() {
+    for t in towns().iter() {
+        let depots: Vec<_> = t
+            .stations
+            .iter()
+            .filter(|s| s.kind == us_gen::StationKind::Depot)
+            .collect();
+        assert!(
+            !depots.is_empty(),
+            "{} seed {}: no depot",
+            t.preset.name(),
+            t.seed
+        );
+        let rails: Vec<_> = t
+            .roads
+            .iter()
+            .filter(|r| r.class == RoadClass::Rail)
+            .collect();
+        for s in &t.stations {
+            let to_rail = rails
+                .iter()
+                .flat_map(|r| {
+                    r.points
+                        .windows(2)
+                        .map(move |w| seg_closest(s.pos, w[0], w[1]))
+                })
+                .fold(f64::INFINITY, f64::min);
+            assert!(to_rail < 25.0, "station {to_rail:.0} m from the track");
+            for r in t.roads.iter().filter(|r| r.class != RoadClass::Rail) {
+                for w in r.points.windows(2) {
+                    let dd = seg_closest(s.pos, w[0], w[1]);
+                    assert!(dd >= s.radius + r.class.half_width(), "station on a road");
+                }
+            }
+            for l in &t.lots {
+                assert!(
+                    d(l.centre, s.pos) >= l.radius + s.radius - 1e-6,
+                    "lot on a station"
+                );
+            }
+        }
+        // the depot is a centre the town gathers round
+        assert!(
+            t.centres
+                .iter()
+                .any(|c| c.kind == us_gen::CentreKind::Station),
+            "{} seed {}: depot is not a centre",
+            t.preset.name(),
+            t.seed
+        );
+    }
+}
+
+#[test]
+fn no_lot_stands_in_a_park() {
+    for t in towns().iter() {
+        for (i, l) in t.lots.iter().enumerate() {
+            if l.kind == us_gen::LotKind::Farm {
+                continue;
+            }
+            for a in t.additions.iter().filter(|a| a.zone == Zone::Park) {
+                assert!(
+                    !point_in(l.centre, &a.polygon)
+                        && ring_dist(l.centre, &a.polygon) >= l.radius - 1e-6,
+                    "{} seed {}: lot {i} ({:?}) in a park",
+                    t.preset.name(),
+                    t.seed,
+                    l.kind
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn no_street_ends_on_the_railway() {
+    for t in towns().iter() {
+        let culs: Vec<Pt> = t.cul_de_sacs.iter().map(|c| c.pos).collect();
+        for (i, r) in t
+            .roads
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| is_street(r.class))
+        {
+            if d(r.points[0], *r.points.last().unwrap()) < 1e-6 {
+                continue;
+            }
+            for e in [r.points[0], *r.points.last().unwrap()] {
+                if culs.iter().any(|c| d(*c, e) < 1e-6) {
+                    continue;
+                }
+                let on_road = t.roads.iter().enumerate().any(|(j, o)| {
+                    j != i
+                        && o.class != RoadClass::Rail
+                        && o.points
+                            .windows(2)
+                            .any(|w| seg_closest(e, w[0], w[1]) < 1.5)
+                });
+                assert!(
+                    on_road,
+                    "{} seed {}: road {i} ({:?}) ends at ({:.0}, {:.0}) with no road",
+                    t.preset.name(),
+                    t.seed,
+                    r.class,
+                    e.x,
+                    e.y
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn lots_are_densest_at_the_centres() {
+    for t in towns().iter() {
+        let (mut core, mut nc, mut outer, mut no) = (0.0, 0.0, 0.0, 0.0);
+        for l in &t.lots {
+            match l.zone {
+                Zone::Core => {
+                    core += l.density;
+                    nc += 1.0;
+                }
+                Zone::Outer => {
+                    outer += l.density;
+                    no += 1.0;
+                }
+                _ => {}
+            }
+            assert!((0.0..=1.0).contains(&l.density));
+        }
+        if nc > 0.0 && no > 0.0 {
+            assert!(
+                core / nc > 2.0 * outer / no,
+                "{} seed {}",
+                t.preset.name(),
+                t.seed
             );
         }
     }

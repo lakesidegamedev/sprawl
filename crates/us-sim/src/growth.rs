@@ -57,11 +57,13 @@ impl Sim {
             let lv = self.lot_value.get(i).copied().unwrap_or(0.0);
             let (up_lv, down_lv) = Sim::level_thresholds(l.level);
             let roll_m = roll(self.seed ^ 0x1e7e1, i as u64, day as u64);
-            if l.level < max_level(l.kind)
+            let pull = self.upgrade_pull(i);
+            let l = &self.lots[i];
+            if l.level < max_level_at(l.kind, self.lot_density(i))
                 && lv >= up_lv
                 && self.class_demand.get(class) >= 0.2
                 && self.services_avg(i) >= 0.1 * (l.level as f64 - 1.0)
-                && roll_m < UPGRADE_CHANCE
+                && roll_m < UPGRADE_CHANCE * pull
                 && self.can_upgrade(l.kind, l.level)
             {
                 let (k, lv) = (l.kind, l.level);
