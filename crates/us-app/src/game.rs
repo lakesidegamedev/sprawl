@@ -1670,7 +1670,7 @@ impl State {
         } else if compact {
             "DRAG PAN   PINCH ZOOM   TWIST ROTATE   TAP SELECT"
         } else {
-            "WASD PAN   Q E ROTATE   RIGHT DRAG ORBIT   WHEEL ZOOM   0 1 2 3 SPEED   SPACE PAUSE   P K O B G J V PANELS   M MAP VIEW"
+            "WASD PAN   Q E ROTATE   RIGHT DRAG ORBIT   WHEEL ZOOM   0 1 2 3 SPEED   SPACE PAUSE   P K O B G J V I H R PANELS   Y ROADS   M MAP VIEW"
         };
         if !(compact && g.any_sheet()) {
             egui::Area::new(egui::Id::new("help"))
