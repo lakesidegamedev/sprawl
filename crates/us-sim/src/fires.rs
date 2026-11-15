@@ -233,6 +233,22 @@ impl Sim {
         self.start_blaze(i, s);
     }
 
+    /// A fire the weather started: `lightning` adds a news line saying a bolt did it.
+    pub(crate) fn ignite_by(&mut self, i: usize, _cov: f64, lightning: bool) {
+        let s = self.day as i64 * DAY_S
+            + (roll(self.seed ^ 0x1b07, i as u64, self.day as u64) * 80_000.0) as i64;
+        if lightning {
+            let name = kind_label(self.lots[i].kind).to_lowercase();
+            let at = self.lots[i].pos;
+            self.log(
+                EventKind::Fire,
+                format!("Lightning hit a {name}."),
+                Some(at),
+            );
+        }
+        self.start_blaze(i, s);
+    }
+
     pub(crate) fn start_blaze(&mut self, i: usize, start_s: i64) {
         let day = self.day;
         let at = self.lots[i].pos;
@@ -461,10 +477,11 @@ impl Sim {
                 .get(i)
                 .copied()
                 .unwrap_or(0.0) as f64;
-            let dry = 0.6 + 0.8 * self.dryness();
+            // dry, windy days are worse; rain and lying snow damp fires down
+            let wx = self.fire_weather_factor();
             let p = (0.000_01 + 0.000_4 * (1.0 - cov) * (1.0 - cov) / 30.0)
                 * self.ord_fire_factor(i)
-                * dry;
+                * wx;
             if roll(self.seed ^ 0xf17e, i as u64, day as u64) < p {
                 let s =
                     day_start + (roll(self.seed ^ 0xf1de, i as u64, day as u64) * 80_000.0) as i64;

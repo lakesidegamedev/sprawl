@@ -9,6 +9,7 @@ struct Globals {
     screen: vec4<f32>, // width, height of the main targets
     tone: vec4<f32>,   // rgb flat tint of the whole picture, a share of lit windows
     look: vec4<f32>,   // x season (1 autumn, 2 spring, 3 summer), y snow, z map view (desaturate), w share of lamps and vehicle lights on (0 to 1)
+    wx: vec4<f32>,     // x snow cover 0 to 1, y wet ground, zw wind (east, north) in m/s
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -32,11 +33,25 @@ struct VOut {
     @location(5) @interpolate(flat) tint: u32,
 };
 
+// Tree crowns lean downwind and sway with the wind's strength. Only leaf-coloured vertices move.
+fn sway(p: vec3<f32>, c: vec3<f32>) -> vec3<f32> {
+    let w = g.wx.zw;
+    if (abs(w.x) + abs(w.y) < 0.5) {
+        return p;
+    }
+    if (leaf_step(c, 88.0, 150.0, 76.0) < 0 && leaf_step(c, 70.0, 128.0, 66.0) < 0) {
+        return p;
+    }
+    let k = 0.045 * (1.0 + 0.5 * sin(g.screen.w * 2.3 + p.x * 0.21 + p.y * 0.17));
+    return vec3<f32>(p.x + w.x * k, p.y + w.y * k, p.z);
+}
+
 @vertex
 fn vs_main(v: VIn) -> VOut {
     var o: VOut;
-    o.clip = g.view_proj * vec4<f32>(v.pos, 1.0);
-    o.world = v.pos;
+    let p = sway(v.pos, v.color.rgb * 255.0);
+    o.clip = g.view_proj * vec4<f32>(p, 1.0);
+    o.world = p;
     o.normal = v.normal;
     o.color = v.color;
     o.id = v.id;
@@ -86,7 +101,7 @@ fn vs_inst_shadow(v: VIn, i: Inst) -> @builtin(position) vec4<f32> {
 
 @vertex
 fn vs_shadow(v: VIn) -> @builtin(position) vec4<f32> {
-    return g.light_vp * vec4<f32>(v.pos, 1.0);
+    return g.light_vp * vec4<f32>(sway(v.pos, v.color.rgb * 255.0), 1.0);
 }
 
 // 1 when the sun reaches the point, 0 when a caster is in front of it.
@@ -139,6 +154,61 @@ fn autumn_leaf(step: i32, dark: bool) -> vec3<f32> {
 // the tree's colour step.
 fn patch_step(c: vec3<f32>) -> i32 {
     return leaf_step(c, 250.0, 126.0, 16.0);
+}
+
+// ---- ground grain: stepped patches and tufts on natural ground, so fields, grass, sand and
+// snow are not flat colour. Stepped like the rest of the cel look: no blur, no haze.
+
+fn hash2(p: vec2<i32>) -> f32 {
+    let h = hash_u(bitcast<u32>(p.x) * 73856093u ^ bitcast<u32>(p.y) * 19349663u);
+    return f32(h % 10000u) / 10000.0;
+}
+
+fn vnoise(p: vec2<f32>) -> f32 {
+    let i = vec2<i32>(floor(p));
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash2(i);
+    let b = hash2(i + vec2<i32>(1, 0));
+    let c = hash2(i + vec2<i32>(0, 1));
+    let d = hash2(i + vec2<i32>(1, 1));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Natural ground (grass, fields, sand, dirt, snow), not roads, pavements, markings or water.
+fn natural(c: vec3<f32>) -> bool {
+    let hi = max(c.r, max(c.g, c.b));
+    let lo = min(c.r, min(c.g, c.b));
+    let snowy = lo > 0.88 && c.b >= c.r;
+    let watery = c.b > c.g + 0.04 && c.b > c.r + 0.04;
+    return (hi - lo > 0.055 || snowy) && !watery;
+}
+
+// Tone multiplier for natural ground at a world place and camera distance.
+fn ground_grain(w: vec2<f32>, dist: f32, snowy: bool) -> f32 {
+    var k = 1.0;
+    if (dist < 1800.0) {
+        // broad patches: worn and lush grass, damp and dry soil, drifts
+        let n = vnoise(w / 9.0) * 0.6 + vnoise(w / 27.0) * 0.4;
+        if (n > 0.64) {
+            k = 1.04;
+        } else if (n < 0.38) {
+            k = 0.955;
+        }
+    }
+    if (dist < 420.0) {
+        // tufts and stones up close
+        let t = hash2(vec2<i32>(floor(w / 1.3)));
+        if (t > 0.9) {
+            k = k * 0.93;
+        } else if (t < 0.05) {
+            k = k * 1.05;
+        }
+    }
+    if (snowy) {
+        k = 1.0 + (k - 1.0) * 0.5;
+    }
+    return k;
 }
 
 fn is_green(c: vec3<f32>) -> bool {
@@ -237,17 +307,41 @@ fn fs_main(v: VOut) -> FOut {
         }
         // snow
         if (g.look.y > 0.5) {
+            // patches go white as the cover deepens; full cover is the plain winter look
+            let reach = g.wx.x * 1.3 - 0.15;
             if (ground) {
                 if (col.g > col.b + 0.08 && col.g > col.r - 0.06) {
-                    col = vec3<f32>(236.0, 241.0, 247.0) / 255.0;
+                    let cx = u32(max(v.world.x, 0.0) / 5.0);
+                    let cy = u32(max(v.world.y, 0.0) / 5.0);
+                    let h = f32(hash_u(cx * 7919u + cy * 104729u + 17u) % 1000u) / 1000.0;
+                    if (h < reach) {
+                        col = vec3<f32>(236.0, 241.0, 247.0) / 255.0;
+                    }
                 }
             } else if (cel && !exempt && v.tint == 0u && n.z > 0.35) {
-                col = vec3<f32>(238.0, 242.0, 248.0) / 255.0;
+                let h = f32(hash_u(v.id / 16u) % 1000u) / 1000.0;
+                if (h < reach) {
+                    col = vec3<f32>(238.0, 242.0, 248.0) / 255.0;
+                }
+            }
+        }
+        // rain: wet roads and ground are darker and a little bluer, wet roofs slightly so
+        if (g.wx.y > 0.01 && v.tint == 0u) {
+            let wet = g.wx.y;
+            let is_white = col.r > 0.88 && col.g > 0.88;
+            if (!cel && !is_white) {
+                col = col * vec3<f32>(1.0 - 0.28 * wet, 1.0 - 0.25 * wet, 1.0 - 0.15 * wet);
+            } else if (cel && n.z > 0.35 && !is_white) {
+                col = col * (1.0 - 0.1 * wet);
             }
         }
     } else if (!keep) {
         let lum = dot(col, vec3<f32>(0.3, 0.59, 0.11));
         col = mix(vec3<f32>(lum), col, 0.12);
+    }
+    if (cel && ground && g.look.z < 0.5 && natural(col)) {
+        let snowy = min(col.r, min(col.g, col.b)) > 0.88;
+        col = col * ground_grain(v.world.xy, v.dist, snowy);
     }
     var k = 1.0;
     if (cel && ground) {

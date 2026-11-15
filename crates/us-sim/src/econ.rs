@@ -283,7 +283,9 @@ impl Sim {
         let lg = self.compute_ledger();
         let ord_cost = self.ordinance_costs();
         self.dist.last_cost = ord_cost;
-        let (income, expense) = (lg.income_total(), lg.expense_total() + ord_cost);
+        // storm repairs, flood repairs and plowing, collected over the month
+        let wx_cost = self.take_weather_costs();
+        let (income, expense) = (lg.income_total(), lg.expense_total() + ord_cost + wx_cost);
         self.treasury += income - expense;
         self.last_income = income;
         self.last_expense = expense;
@@ -302,7 +304,7 @@ impl Sim {
             treasury: self.treasury,
             income: lg.income,
             spending: lg.spending,
-            admin: lg.admin + ord_cost,
+            admin: lg.admin + ord_cost + wx_cost,
             debt_service: lg.interest + lg.principal,
             debt: self.debt(),
             tax_x10: self.tax,

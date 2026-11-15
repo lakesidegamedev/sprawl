@@ -35,6 +35,7 @@ mod scene;
 pub mod site;
 pub mod trains;
 pub mod trams;
+pub mod weather;
 
 pub use calendar::{Calendar, DayPhase, Season};
 pub use camera::{Camera, View, pick_ground, pick_terrain, project, ray_ground};
@@ -50,3 +51,4 @@ pub use parts::Region;
 pub use renderer::{AdapterSummary, Frame, FrameStats, NoAdapter, Renderer, Style, SurfaceTarget};
 pub use rng::Rng;
 pub use scene::{Chunk, FrameInstances, GRASS, LotState, RoadInfo, Scene};
+pub use weather::WeatherLook;

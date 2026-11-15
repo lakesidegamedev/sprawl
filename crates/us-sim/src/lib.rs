@@ -39,6 +39,7 @@ mod trams;
 mod value;
 
 pub use avenues::{RoadError, RoadPlan, UpgradePlan};
+pub use climate::{Sky, Weather, WeatherCosts};
 pub use density::max_level_at;
 pub use districts::{
     DISTRICT_COLOURS, District, DistrictStats, MAX_DISTRICTS, OrdScope, Ordinance,
@@ -409,6 +410,8 @@ pub struct Sim {
     pub(crate) dist: districts::DistrictState,
     /// Fires in progress and emergency vehicles (saved in the `FIRE` section).
     pub(crate) fx: fires::FireState,
+    /// What the weather has done (saved in the `WTHR` section).
+    pub(crate) wx: climate::Climate,
 }
 
 impl Sim {
@@ -514,6 +517,7 @@ impl Sim {
             growth_spent: 0,
             dist: Default::default(),
             fx: Default::default(),
+            wx: Default::default(),
         };
         // reveal order: nearest to the hall first
         let mut ord: Vec<(i64, usize)> = (0..n_add)
@@ -805,6 +809,7 @@ impl Sim {
             }
         }
         self.dist.hash_into(&mut f);
+        self.wx.hash_into(&mut f);
         h
     }
 
@@ -884,8 +889,10 @@ impl Sim {
             self.treasury -= cost;
             self.growth_spent += cost;
         }
-        let days =
-            kind_build_days(self.lots[li].kind) + (roll(self.seed, li as u64, 5) * 10.0) as i32;
+        let days = self.codes_build_days(
+            li,
+            kind_build_days(self.lots[li].kind) + (roll(self.seed, li as u64, 5) * 10.0) as i32,
+        );
         self.lots[li].phase = Phase::Building {
             start: self.day,
             end: self.day + days,
@@ -935,6 +942,7 @@ impl Sim {
             }
         }
 
+        self.step_weather();
         self.step_fires();
         self.step_traffic();
         self.step_trams();
@@ -988,7 +996,10 @@ impl Sim {
         let rate = 0.8 * PACE * growth_mult(tax) * (1.0 + (built / (700.0 * PACE)).min(1.5));
         // the mood of the market: all three classes together
         let rate = rate * (0.6 + 0.8 * self.mean_demand());
-        self.acc += rate;
+        // a power cut or a dry water supply stops the builders for the day
+        if !self.shortage_today() {
+            self.acc += rate;
+        }
         self.step_streets();
         while self.acc >= 1.0 {
             self.acc -= 1.0;
@@ -1023,6 +1034,7 @@ impl Sim {
             y.reason = format!("{} {line}", y.reason);
         }
         y.ordinances = self.ordinance_lines(lot);
+        y.ordinances.extend(self.weather_lines(lot));
         y
     }
 
@@ -1375,3 +1387,6 @@ mod tests_trams;
 
 #[cfg(test)]
 mod tests_fires;
+
+#[cfg(test)]
+mod tests_weather;

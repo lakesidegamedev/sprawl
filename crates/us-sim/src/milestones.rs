@@ -251,7 +251,7 @@ impl Sim {
         let relief =
             (self.fx_count(CivicKind::Transit) as f64 * 0.05).min(0.2) + self.tram_relief();
         let add = self.fx_count(CivicKind::Stadium) as f64 * 0.03;
-        (avg * (1.0 - relief) + add).clamp(0.0, 1.0)
+        (avg * (1.0 - relief) + add + self.weather_congestion()).clamp(0.0, 1.0)
     }
 
     /// A line to add to the news when a capacity is full and a bigger building is unlocked.

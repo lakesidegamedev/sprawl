@@ -37,8 +37,8 @@ fn near_break_even(years: &[Year]) {
     for (n, y) in years.iter().enumerate().skip(9) {
         let r = ratio(y);
         assert!(
-            // generator version 3 towns have roundabouts and through routes: services reach
-            // further for the same buildings, so the net sits a few points higher
+            // generator version 3 towns (roundabouts, through routes) and weather costs move the
+            // net a few points; the band allows for both
             (-0.10..=0.45).contains(&r),
             "year {}: net is {:.1}% of income",
             n + 1,

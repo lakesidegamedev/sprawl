@@ -144,6 +144,7 @@ pub struct FrameInstances {
     pub fleet: [Vec<Instance>; 5],
     /// Traffic lights, bus shelters, billboards, benches and bins, by `fleet::Prop::index`.
     pub props: [Vec<Instance>; 5],
+    pub water: Vec<Instance>,
     pub trains: crate::trains::TrainInstances,
     /// Fire engines, police cars and ambulances.
     pub rigs: [Vec<Instance>; 3],
@@ -163,6 +164,8 @@ pub struct Scene {
     pub hall: Vec3,
     /// The game date and hour. `None` draws the plain noon look.
     pub calendar: Option<Calendar>,
+    /// Snow, wet, clouds, wind and flood water (see [`WeatherLook`]).
+    pub weather: crate::weather::WeatherLook,
     /// Animation clock in seconds: cars, smoke and people move with it.
     pub time: f32,
     x: Extras,
@@ -181,6 +184,7 @@ impl Scene {
             chunks: Vec::new(),
             hall,
             calendar: None,
+            weather: Default::default(),
             time: 0.0,
             x: Extras::default(),
         }
@@ -237,6 +241,7 @@ impl Scene {
             ),
             land,
             calendar: None,
+            weather: Default::default(),
             time: 0.0,
             x: Extras::default(),
         };
@@ -421,6 +426,14 @@ impl Scene {
         self.calendar = c;
     }
 
+    /// Set the weather look; the flood patches are compared first so an unchanged frame costs
+    /// nothing.
+    pub fn set_weather(&mut self, w: crate::weather::WeatherLook) {
+        if self.weather != w {
+            self.weather = w;
+        }
+    }
+
     /// Cars, smoke puffs and people at the scene's current clock. Empty in a map view.
     pub fn instances(&self) -> FrameInstances {
         if self.x.overlay.is_some() {
@@ -443,6 +456,7 @@ impl Scene {
             trains,
             rigs,
             flames,
+            water: self.weather.water_instances(|x, y| self.land.height(x, y)),
         }
     }
 
