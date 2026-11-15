@@ -200,6 +200,7 @@ impl Sim {
         let n = self.lots.len();
         let mut out = vec![0.0f32; n];
         let rail = self.rail_bonuses();
+        let tram = self.tram_bonuses();
         let road_f = (self.budget[Dept::Roads.index()] as f64 / 100.0).min(1.0);
         for (i, l) in self.lots.iter().enumerate() {
             if l.phase == Phase::Hidden {
@@ -255,6 +256,7 @@ impl Sim {
                 + self.ord_value_bonus(i)
                 + rail[i].depot
                 + rail[i].freight
+                + tram[i]
                 - W_TRAFFIC * traffic
                 - 0.06 * (1.0 - road_f)
                 - burden

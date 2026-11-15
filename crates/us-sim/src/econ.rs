@@ -232,6 +232,7 @@ impl Sim {
             }
         }
         lg.spending[Dept::Roads.index()] = roads * f(Dept::Roads) / 100;
+        lg.admin += self.tram_upkeep();
         let rate_x10 = self.bond_rate_x10();
         for l in &self.loans {
             lg.interest += l.principal_left * rate_x10 / 1000 / 12;

@@ -33,6 +33,7 @@ mod save;
 mod save_ext;
 mod streets;
 mod traffic;
+mod trams;
 mod value;
 
 pub use avenues::{RoadError, RoadPlan, UpgradePlan};
@@ -48,6 +49,7 @@ pub use rivals::{Personality, RivalView};
 pub use save::{AUTOSAVE_SLOTS, FIRST_LASTING_VERSION, LoadError, SAVE_VERSION, autosave_path};
 pub use streets::{RoadBuildState, RoadStage, StreetState};
 pub use traffic::RoadTraffic;
+pub use trams::{TramError, TramLineView, TramPlan, TramState};
 
 use us_gen::{LotKind, Pt, RoadClass, Town, Zone, pt};
 
@@ -364,6 +366,8 @@ pub struct Sim {
     pub(crate) pending: Option<traffic::Pending>,
     pub(crate) roads_version: u32,
     pub(crate) avenues: avenues::Avenues,
+    /// Tram lines (saved in the `TRAM` section).
+    pub(crate) trams: trams::Trams,
     pub(crate) rival: Rival,
     /// The other rival towns and every rival's population and trade with the town.
     pub(crate) rivals: rivals::Rivals,
@@ -470,6 +474,7 @@ impl Sim {
             pending: None,
             roads_version: 0,
             avenues: avenues::Avenues::default(),
+            trams: trams::Trams::default(),
             rival: Rival::new(seed),
             rivals: rivals::Rivals::new(seed),
             departures: 0,
@@ -747,6 +752,7 @@ impl Sim {
         f(self.unlocked as u64);
         self.rivals.fingerprint(&mut f);
         self.avenue_hash(&mut f);
+        self.tram_hash(&mut f);
         f(self.runs.len() as u64);
         for r in &self.runs {
             f(r.class as u64);
@@ -922,6 +928,7 @@ impl Sim {
 
         self.step_fires();
         self.step_traffic();
+        self.step_trams();
         if self.values_stale {
             self.recompute_values();
         }
@@ -996,6 +1003,11 @@ impl Sim {
             y.reason = format!("{} {line}", y.reason);
         }
         if let Some(note) = self.avenue_note(self.lots[lot].pos) {
+            y.reason = format!("{} {note}", y.reason);
+        }
+        if self.lots[lot].phase != Phase::Hidden
+            && let Some(note) = self.tram_note(self.lots[lot].pos)
+        {
             y.reason = format!("{} {note}", y.reason);
         }
         y.ordinances = self.ordinance_lines(lot);
@@ -1343,3 +1355,6 @@ mod tests_districts;
 
 #[cfg(test)]
 mod tests_rail;
+
+#[cfg(test)]
+mod tests_trams;
