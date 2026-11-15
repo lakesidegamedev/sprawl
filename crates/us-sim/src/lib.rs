@@ -15,6 +15,7 @@
 
 mod avenues;
 mod civic;
+mod climate;
 mod density;
 mod districts;
 mod dynamic;
