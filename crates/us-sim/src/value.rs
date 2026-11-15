@@ -61,6 +61,7 @@ impl Sim {
     /// Rebuild the road graph if roads changed, then coverage, land value and demand.
     pub(crate) fn recompute_values(&mut self) {
         self.values_stale = false;
+        self.rebuild_fx_sites();
         if self.net_dirty || self.roadnet.is_none() {
             let roads: Vec<(RoadClass, Vec<Pt>)> = self
                 .runs
@@ -99,13 +100,13 @@ impl Sim {
                         continue;
                     }
                     let svc = match l.civic {
-                        Some(CivicKind::Power) => None,
-                        Some(c) => Some(c.service()),
+                        Some(c) => c.covers(),
                         None => service_of_kind(l.kind),
                     };
                     if svc != Some(s) {
                         continue;
                     }
+                    let reach = reach * l.civic.map_or(1.0, CivicKind::reach_mult);
                     let Some((src, off)) = self.lot_node[i] else {
                         continue;
                     };
@@ -126,6 +127,11 @@ impl Sim {
                             }
                         }
                     }
+                }
+            }
+            if s == Service::Police && strength > 0.0 {
+                for (i, c) in cov.iter_mut().enumerate() {
+                    *c = self.ord_watch_cover(i, *c);
                 }
             }
             self.coverage[s.index()] = cov;
@@ -157,8 +163,16 @@ impl Sim {
             let taxf = (growth_mult(self.tax.get(c) as f64 / 10.0) / 1.6).clamp(0.0, 1.0);
             let season = self.season_pct(c) as f64 / 100.0;
             let pull = 1.0 - self.rival_pull(c);
-            let d =
-                base(c).clamp(0.0, 1.0) * taxf * (1.0 - 0.7 * empty_share.min(1.0)) * season * pull;
+            let mut d = base(c).clamp(0.0, 1.0)
+                * taxf
+                * (1.0 - 0.7 * empty_share.min(1.0))
+                * season
+                * pull
+                * self.ord_demand_factor(c);
+            d += self.rail_demand(c) as f64;
+            if c == Class::Shops {
+                d += self.shop_demand_bonus() * taxf;
+            }
             out.set(
                 c,
                 if land_left {
@@ -185,6 +199,7 @@ impl Sim {
         let grid = Grid::new(self);
         let n = self.lots.len();
         let mut out = vec![0.0f32; n];
+        let rail = self.rail_bonuses();
         let road_f = (self.budget[Dept::Roads.index()] as f64 / 100.0).min(1.0);
         for (i, l) in self.lots.iter().enumerate() {
             if l.phase == Phase::Hidden {
@@ -227,17 +242,23 @@ impl Sim {
             };
             let rate = class.map_or(0.0, |c| self.tax.get(c) as f64 / 10.0);
             let burden = (rate - 7.0) * TAX_BURDEN_PER_PCT;
-            let traffic = self.lot_traffic(i);
-            let v = BASE
+            let traffic = self.lot_traffic_eff(i);
+            let near = self.civic_near(l.pos, class == Some(Class::Shops));
+            let (av_access, av_noise) = self.avenue_effect(l.pos);
+            let v = BASE + av_access - av_noise
                 + W_ACCESS * access
                 + W_JOBS * jobs_near
                 + W_SERVICES * services
                 + W_PARKS * c(Service::Parks)
                 + W_NEIGHBOURS * neighbours
-                - W_INDUSTRY * industry
+                - W_INDUSTRY * industry * self.ord_industry_factor(i)
+                + self.ord_value_bonus(i)
+                + rail[i].depot
+                + rail[i].freight
                 - W_TRAFFIC * traffic
                 - 0.06 * (1.0 - road_f)
-                - burden;
+                - burden
+                + near.value;
             out[i] = v.clamp(0.0, 1.0) as f32;
         }
         self.lot_value = out;

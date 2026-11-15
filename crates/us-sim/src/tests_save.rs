@@ -178,23 +178,22 @@ fn autosave_keeps_the_three_newest_files() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A save from 1.0.0 preview 6 or 7: format 3, no generator version, town from generator 1.
-fn as_format_3(save: &[u8]) -> Vec<u8> {
-    let body = &save[22..];
-    // body: preset (1 byte), town seed (8), generator version (1), then the rest
-    let mut old_body = body[..9].to_vec();
-    old_body.extend_from_slice(&body[10..]);
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for &b in &old_body {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+#[test]
+fn format_4_saves_open_with_every_feature_at_its_defaults() {
+    let mut s = new_sim(Preset::Sunbelt, Rules::sandbox());
+    for _ in 0..300 {
+        s.step_day();
     }
-    let mut out = b"USSV".to_vec();
-    out.extend_from_slice(&3u16.to_le_bytes());
-    out.extend_from_slice(&(old_body.len() as u64).to_le_bytes());
-    out.extend_from_slice(&h.to_le_bytes());
-    out.extend_from_slice(&old_body);
-    out
+    let old = s.save_old_format(4);
+    let mut l = Sim::load(&old).expect("a format 4 save opens");
+    // the rival towns beyond the first start from the seed when there is no section
+    s.rivals = crate::rivals::Rivals::new(s.seed);
+    assert_eq!(l.fingerprint(), s.fingerprint());
+    for _ in 0..100 {
+        s.step_day();
+        l.step_day();
+    }
+    assert_eq!(l.fingerprint(), s.fingerprint());
 }
 
 #[test]
@@ -204,7 +203,8 @@ fn preview_7_saves_open_on_their_old_town() {
     for _ in 0..400 {
         s.step_day();
     }
-    let old = as_format_3(&s.save());
+    let old = s.save_old_format(3);
+    s.rivals = crate::rivals::Rivals::new(s.seed);
     assert_eq!(u16::from_le_bytes([old[4], old[5]]), 3);
     let mut loaded = Sim::load(&old).expect("a format 3 save opens");
     assert_eq!(loaded.town().gen_version, 1);

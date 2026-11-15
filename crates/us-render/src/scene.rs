@@ -120,6 +120,7 @@ struct Extras {
     chimneys: Vec<[f32; 3]>,
     walkers: Vec<Walker>,
     lamps: Vec<Instance>,
+    trains: crate::trains::Trains,
     centre: [f32; 2],
     overlay: Option<OverlayState>,
     overlay_rev: u64,
@@ -133,6 +134,7 @@ pub struct FrameInstances {
     pub puffs: Vec<Instance>,
     pub people: Vec<Instance>,
     pub lamps: Vec<Instance>,
+    pub trains: crate::trains::TrainInstances,
 }
 
 pub struct Scene {
@@ -255,6 +257,8 @@ impl Scene {
         self.x.roads = roads;
         self.x.centre = [self.hall.x, self.hall.y];
         self.x.lamps = instances::lamp_instances(&self.x.paths);
+        let service = self.x.trains.service.clone();
+        self.x.trains = crate::trains::Trains::plan(&self.x.paths, service);
         self.x.walkers = instances::make_walkers(&self.x.paths, self.x.centre, 260.0);
         self.x.cars = instances::make_cars(&self.x.paths, &self.x.volumes);
         self.refresh_chimneys();
@@ -319,7 +323,7 @@ impl Scene {
                     ),
                     None => (Vec::new(), None),
                 };
-                let mesh = overlay::build_mesh(&self.x.lots, &mass, hall, &roads, &ov);
+                let mesh = overlay::build_mesh(&self.x.lots, &mass, hall, &roads, &ov, &self.land);
                 self.x.overlay_rev += 1;
                 self.x.overlay = Some(OverlayState {
                     mesh,
@@ -354,6 +358,15 @@ impl Scene {
         self.time = seconds;
     }
 
+    /// What runs on the railways: how often, and which depots and elevators trains use. Does
+    /// nothing when the service is unchanged.
+    pub fn set_trains(&mut self, service: crate::trains::TrainService) {
+        if self.x.trains.service == service {
+            return;
+        }
+        self.x.trains = crate::trains::Trains::plan(&self.x.paths, service);
+    }
+
     pub fn set_calendar(&mut self, c: Option<Calendar>) {
         self.calendar = c;
     }
@@ -368,6 +381,7 @@ impl Scene {
             puffs: instances::puff_instances(&self.x.chimneys, self.time),
             people: instances::walker_instances(&self.x.paths, &self.x.walkers, self.time),
             lamps: self.x.lamps.clone(),
+            trains: self.x.trains.instances(&self.x.paths, self.time),
         }
     }
 

@@ -2,9 +2,10 @@
 //! everything else is shown desaturated. Palettes are lists of solid colours, never gradients.
 
 use crate::ground::Ground;
+use crate::land::Land;
 use crate::levels::{self, massing};
 use crate::mesh::Mesh;
-use crate::obj::{Obj, Rgb};
+use crate::obj::{Obj, Rgb, Sit};
 use crate::rng::Rng;
 use std::collections::BTreeMap;
 use us_gen::{LotKind, RoadClass};
@@ -27,6 +28,8 @@ pub enum OverlayKind {
     Demand,
     /// Road value 0 (empty) to 1 (jammed); lots stay neutral.
     Traffic,
+    /// Lot value is a district colour index 0 to 11; anything higher (no district) is grey.
+    District,
 }
 
 const LAND_VALUE: [Rgb; 6] = [
@@ -78,6 +81,24 @@ const TRAFFIC: [Rgb; 5] = [
     [206, 44, 44],
 ];
 
+/// Twelve district colours that stay apart, then grey for land in no district. The game keeps
+/// the same list for its own legend and window swatches.
+const DISTRICT: [Rgb; 13] = [
+    [230, 159, 0],
+    [86, 180, 233],
+    [0, 158, 115],
+    [204, 121, 167],
+    [213, 94, 0],
+    [240, 228, 66],
+    [120, 94, 240],
+    [140, 200, 90],
+    [220, 80, 80],
+    [60, 120, 200],
+    [170, 170, 170],
+    [100, 220, 210],
+    [128, 128, 136],
+];
+
 impl OverlayKind {
     /// The fixed palette of this view, lowest value first.
     pub fn palette(self) -> &'static [Rgb] {
@@ -88,13 +109,14 @@ impl OverlayKind {
             OverlayKind::ServiceCoverage => &COVERAGE,
             OverlayKind::Demand => &DEMAND,
             OverlayKind::Traffic => &TRAFFIC,
+            OverlayKind::District => &DISTRICT,
         }
     }
 
     /// The step colour for a value (a 0 to 1 value, or a category id for `Use`).
     pub fn colour(self, v: f32) -> Rgb {
         let p = self.palette();
-        let i = if self == OverlayKind::Use {
+        let i = if matches!(self, OverlayKind::Use | OverlayKind::District) {
             (v.max(0.0) as usize).min(p.len() - 1)
         } else {
             ((v.clamp(0.0, 1.0) * p.len() as f32) as usize).min(p.len() - 1)
@@ -163,17 +185,24 @@ fn shade(c: Rgb, k: f32) -> Rgb {
 ///
 /// `mass` is the real body of each lot's building (see [`levels::massing`]); a lot with no entry
 /// uses the standard model of its kind and level. `hall` is the town hall's place and body, drawn
-/// as a neutral block.
+/// as a neutral block. Everything stands on `land`, the same ground the town is drawn on.
 pub fn build_mesh(
     lots: &[LotInfo],
     mass: &[[f32; 5]],
     hall: Option<(f32, f32, f32, [f32; 5])>,
     roads: &[(RoadClass, &[us_gen::Pt])],
     ov: &Overlay,
+    land: &Land,
 ) -> Mesh {
     let mut mesh = Mesh::default();
     let mut cache: BTreeMap<(u8, u8), [f32; 5]> = BTreeMap::new();
-    let mut g = Ground::default();
+    let mut g = Ground::on(land);
+    let sit = |x: f32, y: f32| {
+        (!land.is_flat()).then(|| Sit {
+            land,
+            z: land.sit_height(x, y),
+        })
+    };
     // roads first (underneath the lot tiles are not needed: lots never overlap roads)
     if ov.kind == OverlayKind::Traffic || !ov.roads.is_empty() {
         let mut order: Vec<usize> = (0..roads.len())
@@ -234,7 +263,7 @@ pub fn build_mesh(
             o.slab(x0, y0, 0.40, x1, y1, 0.55, col);
         }
         let mut id = OVERLAY_ID_BASE + i as u32 * 16;
-        o.emit(&mut mesh, &mut id, l.x, l.y, l.theta, 1.0);
+        o.emit_on(&mut mesh, &mut id, l.x, l.y, l.theta, 1.0, sit(l.x, l.y));
         keep_colour(&mut mesh, from);
     }
     if let Some((x, y, theta, m)) = hall {
@@ -251,7 +280,7 @@ pub fn build_mesh(
             [232, 230, 226],
         );
         let mut id = OVERLAY_ID_BASE + lots.len() as u32 * 16;
-        o.emit(&mut mesh, &mut id, x, y, theta, 1.0);
+        o.emit_on(&mut mesh, &mut id, x, y, theta, 1.0, sit(x, y));
         keep_colour(&mut mesh, from);
     }
     mesh

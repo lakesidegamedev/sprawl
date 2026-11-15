@@ -15,6 +15,8 @@ pub struct LedgerNow {
     pub interest: i64,
     /// Principal repaid on bonds.
     pub principal: i64,
+    /// Fees for the ordinances in force.
+    pub ordinances: i64,
 }
 
 impl Sim {
@@ -27,6 +29,7 @@ impl Sim {
             admin: lg.admin,
             interest: lg.interest,
             principal: lg.principal,
+            ordinances: self.ordinance_costs(),
         }
     }
 }

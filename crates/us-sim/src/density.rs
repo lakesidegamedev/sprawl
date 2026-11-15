@@ -122,7 +122,8 @@ impl Sim {
         if d >= 0.85 && pop >= 8000 {
             lv += 1;
         }
-        let lv = lv.min(max_level_at(l.kind, d)).max(1);
+        let lv = lv.min(self.lot_cap(i)).max(1);
+        let lv = if self.heritage_at(i) { 1 } else { lv };
         if lv > 1 && self.queue.get(class) < Sim::units_at(l.kind, lv) as f64 {
             return 1;
         }
@@ -135,6 +136,6 @@ impl Sim {
         let l = &self.lots[i];
         let d = self.lot_density(i);
         let taller = self.taller_neighbours(i, l.level).min(3) as f64;
-        (0.45 + 1.1 * d) * (1.0 + 0.45 * taller)
+        (0.45 + 1.1 * d) * (1.0 + 0.45 * taller) * self.ord_upgrade_pull(i)
     }
 }

@@ -20,7 +20,9 @@ const MAGIC: &[u8; 4] = b"USSV";
 /// - 3: 1.0.0 preview 6 and 7. The town is generator version 1.
 /// - 4: adds the generator version after the town seed. Converting a format 3 save is reading
 ///   it with generator version 1.
-pub const SAVE_VERSION: u16 = 4;
+/// - 5: adds tagged sections after the body (see `save_ext`), one per feature added since. A
+///   format 4 save has none, and every feature starts from its defaults.
+pub const SAVE_VERSION: u16 = 5;
 
 /// The first save format the game promises to keep opening. Formats before it come from the
 /// previews before street-by-street growth (preview 5 and earlier) and cannot be converted. From
@@ -163,10 +165,17 @@ pub(crate) struct R<'a> {
     at: usize,
 }
 
-type Res<T> = Result<T, LoadError>;
+pub(crate) type Res<T> = Result<T, LoadError>;
 
 impl<'a> R<'a> {
-    fn take(&mut self, n: usize) -> Res<&'a [u8]> {
+    pub(crate) fn new(b: &'a [u8]) -> R<'a> {
+        R { b, at: 0 }
+    }
+    /// Bytes not read yet.
+    pub(crate) fn left(&self) -> usize {
+        self.b.len() - self.at
+    }
+    pub(crate) fn take(&mut self, n: usize) -> Res<&'a [u8]> {
         let end = self.at.checked_add(n).ok_or(LoadError::Truncated)?;
         let s = self.b.get(self.at..end).ok_or(LoadError::Truncated)?;
         self.at = end;
@@ -523,12 +532,25 @@ impl Sim {
     /// The whole game as bytes. A traffic run in flight is waited for first (it is deterministic,
     /// so the game goes on exactly as it would have).
     pub fn save(&mut self) -> Vec<u8> {
+        self.save_as(SAVE_VERSION)
+    }
+
+    /// The game in an older lasting format, as that version wrote it (for conversion tests).
+    #[cfg(test)]
+    pub(crate) fn save_old_format(&mut self, version: u16) -> Vec<u8> {
+        assert!((FIRST_LASTING_VERSION..SAVE_VERSION).contains(&version));
+        self.save_as(version)
+    }
+
+    fn save_as(&mut self, version: u16) -> Vec<u8> {
         self.settle_traffic();
         let mut w = W(Vec::new());
         // the code is the place in `Preset::ALL`, so new presets must be added at the end
         w.u8(code(&Preset::ALL, self.town.preset));
         w.u64(self.town.seed);
-        w.u8(self.town.gen_version as u8);
+        if version >= 4 {
+            w.u8(self.town.gen_version as u8);
+        }
         w.u64(town_hash(&self.town));
         w.u64(self.seed);
         w.pt(self.hall);
@@ -735,11 +757,20 @@ impl Sim {
         w.bool(self.jobless);
         w.i32(self.last_kind_street);
         w.i64(self.growth_spent);
+        if version >= 5 {
+            let sections = crate::save_ext::sections(self);
+            w.usize(sections.len());
+            for (tag, bytes) in sections {
+                w.0.extend_from_slice(&tag);
+                w.usize(bytes.len());
+                w.0.extend_from_slice(&bytes);
+            }
+        }
 
         let body = w.0;
         let mut out = Vec::with_capacity(HEADER_LEN + body.len());
         out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&SAVE_VERSION.to_le_bytes());
+        out.extend_from_slice(&version.to_le_bytes());
         out.extend_from_slice(&(body.len() as u64).to_le_bytes());
         out.extend_from_slice(&fnv(&body).to_le_bytes());
         out.extend_from_slice(&body);
@@ -1067,6 +1098,19 @@ impl Sim {
         s.jobless = r.bool()?;
         s.last_kind_street = r.i32()?;
         s.growth_spent = r.i64()?;
+        let mut present: Vec<[u8; 4]> = Vec::new();
+        if version >= 5 {
+            let n = r.len(12)?;
+            for _ in 0..n {
+                let tag: [u8; 4] = r.take(4)?.try_into().unwrap();
+                present.push(tag);
+                let len = r.len(1)?;
+                let bytes = r.take(len)?;
+                crate::save_ext::load_section(&mut s, tag, bytes)?;
+            }
+        }
+
+        crate::save_ext::after_load(&mut s, &present);
 
         // the sizes the rest of the code indexes by
         let nl = s.lots.len();

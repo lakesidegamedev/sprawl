@@ -455,6 +455,10 @@ impl Game {
         u.build_open = false;
         u.stats_open = false;
         u.news_open = false;
+        u.rivals_open = false;
+        u.districts_open = false;
+        u.ordinances_open = false;
+        u.paint = None;
         u.tool = None;
         self.voters_open = false;
         self.map_open = false;
@@ -468,6 +472,9 @@ impl Game {
             || u.build_open
             || u.stats_open
             || u.news_open
+            || u.rivals_open
+            || u.districts_open
+            || u.ordinances_open
             || self.voters_open
             || self.map_open
     }
@@ -483,6 +490,9 @@ impl Game {
             self.ui.loans_open,
             self.ui.budget_open,
             self.ui.levers_open,
+            self.ui.rivals_open,
+            self.ui.districts_open,
+            self.ui.ordinances_open,
         ];
         let Some(keep) = order.iter().position(|&b| b) else {
             return;
@@ -497,6 +507,7 @@ impl Game {
                 keep == 6,
                 keep == 7,
             );
+            self.ui.rivals_open = keep == 8;
             self.voters_open = v;
             self.map_open = m;
             if !b {
@@ -508,6 +519,11 @@ impl Game {
             self.ui.loans_open = l;
             self.ui.budget_open = bu;
             self.ui.levers_open = lv;
+            self.ui.districts_open = keep == 8;
+            self.ui.ordinances_open = keep == 9;
+            if keep != 8 {
+                self.ui.paint = None;
+            }
         }
     }
 
@@ -519,7 +535,7 @@ impl Game {
         } else {
             "NEWS".to_string()
         };
-        let items: [(&str, bool); 8] = [
+        let items: [(&str, bool); 11] = [
             ("TAXES", self.ui.levers_open),
             ("BUDGET", self.ui.budget_open),
             ("BONDS", self.ui.loans_open),
@@ -527,7 +543,10 @@ impl Game {
             ("GRAPHS", self.ui.stats_open),
             (news.as_str(), self.ui.news_open),
             ("VOTERS", self.voters_open),
+            ("RIVALS", self.ui.rivals_open),
             ("MAP", self.map_open),
+            ("DISTRICT", self.ui.districts_open),
+            ("RULES", self.ui.ordinances_open),
         ];
         let rows = super::panels::dock_rows(ui.ctx());
         let per = items.len().div_ceil(rows);
@@ -568,7 +587,10 @@ impl Game {
                     4 => self.ui.stats_open = true,
                     5 => self.ui.news_open = true,
                     6 => self.voters_open = true,
-                    _ => self.map_open = true,
+                    7 => self.ui.rivals_open = true,
+                    8 => self.map_open = true,
+                    9 => self.ui.districts_open = true,
+                    _ => self.ui.ordinances_open = true,
                 }
             }
         }
@@ -609,6 +631,7 @@ impl Game {
         let when = self.sim.next_election_date().text();
         let last = self.sim.last_election().cloned();
         let won = self.sim.elections_won();
+        let ord_pts = self.sim.ordinance_approval();
         let closed = super::panels::window(ctx, "voters", "Voters", 400.0, pos, |ui| {
             ui.horizontal(|ui| {
                 ui.label(heading(&format!("{}%", a.total), 32.0).color(approval_color(a.total)));
@@ -629,7 +652,7 @@ impl Game {
                 });
             });
             ui.add_space(4.0);
-            let worst = worst_line(&a);
+            let worst = worst_line(&a, self.sim.rival_taking_most());
             ui.add(egui::Label::new(RichText::new(worst).size(15.0).color(TEXT)).wrap());
             ui.add_space(6.0);
             for (name, v) in [
@@ -641,6 +664,22 @@ impl Game {
                 ("Fires", a.fires),
             ] {
                 points_row(ui, name, v);
+            }
+            if !ord_pts.is_empty() {
+                ui.add_space(2.0);
+                let text = ord_pts
+                    .iter()
+                    .map(|(o, p)| format!("{} {:+}", o.label(), p))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("Ordinances inside the lines above: {text}."))
+                            .size(13.0)
+                            .color(MUTED),
+                    )
+                    .wrap(),
+                );
             }
             ui.add_space(4.0);
             ui.add(
@@ -819,13 +858,20 @@ impl Game {
     }
 }
 
-fn worst_line(a: &us_sim::Approval) -> String {
+fn worst_line(a: &us_sim::Approval, rival: Option<&str>) -> String {
     let parts = [a.taxes, a.services, a.jobs, a.traffic, a.debt, a.fires];
     if parts.iter().all(|&p| p >= 0) {
         return "Nothing is bothering voters right now.".into();
     }
     let what = match a.worst {
-        Issue::Taxes => "taxes are too high".to_string(),
+        Issue::Taxes => match rival {
+            Some(r) => format!("taxes are too high and people are leaving for {r}"),
+            None => "taxes are too high".to_string(),
+        },
+        Issue::Jobs => match rival {
+            Some(r) => format!("there are too few jobs and firms are leaving for {r}"),
+            None => format!("they are most upset about {}", Issue::Jobs.text()),
+        },
         other => format!("they are most upset about {}", other.text()),
     };
     format!("Voters say {what}. That is the issue a challenger would run on.")
@@ -900,4 +946,133 @@ fn vote_bars(ui: &mut Ui, r: &ElectionResult) {
     );
     p.rect_stroke(rect, 0.0, Stroke::new(2.0, EDGE), egui::StrokeKind::Inside);
     let _ = DOCK_H;
+}
+
+// ----- rival towns -----
+
+impl Game {
+    pub(super) fn rivals_ui(&mut self, ctx: &Context, screen_w: f32) {
+        let pos = egui::Pos2::new((screen_w - 520.0).max(10.0), 120.0);
+        let ours = self.sim.tax_rates();
+        let pop = self.sim.population();
+        let towns = self.sim.rival_towns();
+        let closed = super::panels::window(ctx, "rivals", "Rivals", 480.0, pos, |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!(
+                        "Your town: {pop} people. Taxes: homes {:.1}%, shops {:.1}%, industry {:.1}%.",
+                        ours.homes as f64 / 10.0,
+                        ours.shops as f64 / 10.0,
+                        ours.industry as f64 / 10.0,
+                    ))
+                    .size(13.0)
+                    .color(MUTED),
+                )
+                .wrap(),
+            );
+            for t in &towns {
+                ui.add_space(6.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(heading(t.name, 20.0).color(TEXT));
+                    label(ui, &t.personality.label().to_uppercase(), 11.0);
+                });
+                let trend = if t.trend > 0 {
+                    format!("up {} this year", t.trend)
+                } else if t.trend < 0 {
+                    format!("down {} this year", -t.trend)
+                } else {
+                    "steady this year".to_string()
+                };
+                let size = if t.bigger_than_town {
+                    "bigger than your town"
+                } else {
+                    "smaller than your town"
+                };
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("{} people, {trend}, {size}.", t.pop))
+                            .size(14.0)
+                            .color(TEXT),
+                    )
+                    .wrap(),
+                );
+                egui::Grid::new(("rival_tax", t.name))
+                    .num_columns(4)
+                    .spacing([14.0, 2.0])
+                    .show(ui, |ui| {
+                        label(ui, "TAX", 11.0);
+                        label(ui, "THEIRS", 11.0);
+                        label(ui, "YOURS", 11.0);
+                        label(ui, "THIS YEAR", 11.0);
+                        ui.end_row();
+                        for c in us_sim::Class::ALL {
+                            let (theirs, mine) = (t.tax.get(c), ours.get(c));
+                            let col = if theirs + 20 <= mine {
+                                BAD
+                            } else if mine + 20 <= theirs {
+                                GOOD
+                            } else {
+                                TEXT
+                            };
+                            ui.label(RichText::new(c.label()).size(13.0).color(TEXT));
+                            ui.label(
+                                RichText::new(format!("{:.1}%", theirs as f64 / 10.0))
+                                    .size(13.0)
+                                    .color(col),
+                            );
+                            ui.label(
+                                RichText::new(format!("{:.1}%", mine as f64 / 10.0))
+                                    .size(13.0)
+                                    .color(TEXT),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(trade_text(c, t.took.get(c), t.took_last.get(c)))
+                                        .size(13.0)
+                                        .color(MUTED),
+                                )
+                                .wrap(),
+                            );
+                            ui.end_row();
+                        }
+                    });
+            }
+            ui.add_space(6.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(
+                        "A town that taxes a class 2 points or more below yours draws that class away. If you tax less and run the town well, they come back.",
+                    )
+                    .size(13.0)
+                    .color(MUTED),
+                )
+                .wrap(),
+            );
+        });
+        if closed {
+            self.ui.rivals_open = false;
+        }
+    }
+}
+
+/// What a rival took from the town this year, or the town took from it, in plain words.
+fn trade_text(c: us_sim::Class, took: i32, last: i32) -> String {
+    let what = match c {
+        us_sim::Class::Homes => "households",
+        us_sim::Class::Shops => "shops",
+        us_sim::Class::Industry => "firms",
+    };
+    let now = match took {
+        0 => "nothing moved".to_string(),
+        n if n > 0 => format!("took {n} {what} from you"),
+        n => format!("lost {} {what} to you", -n),
+    };
+    if last == 0 {
+        now
+    } else if last > 0 {
+        format!("{now} (last year it took {last})")
+    } else {
+        format!("{now} (last year you won {})", -last)
+    }
 }

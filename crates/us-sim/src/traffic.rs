@@ -119,9 +119,10 @@ impl Sim {
             return;
         }
         if self.pending.is_none()
-            && self.day % TRAFFIC_EVERY_DAYS == TRAFFIC_OFFSET
+            && (self.day % TRAFFIC_EVERY_DAYS == TRAFFIC_OFFSET || self.avenues.traffic_kick)
             && self.built_count() >= MIN_BUILT_FOR_TRAFFIC
         {
+            self.avenues.traffic_kick = false;
             self.start_traffic();
         }
     }
@@ -418,7 +419,8 @@ impl Sim {
                 m = m.max(self.traffic_cells[(y * n + x) as usize]);
             }
         }
-        m as f64
+        let near = self.civic_near(p, false);
+        (m as f64 * (1.0 - near.traffic_relief) + near.traffic_add).clamp(0.0, 1.0)
     }
 
     pub(crate) fn avg_congestion(&self) -> f32 {

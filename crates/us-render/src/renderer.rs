@@ -719,7 +719,7 @@ impl Renderer {
             inst_pipeline,
             shadow_inst_pipeline,
             templates: Vec::new(),
-            inst_bufs: vec![None, None, None, None],
+            inst_bufs: (0..8).map(|_| None).collect(),
             overlay_gpu: None,
         };
         r.templates = vec![
@@ -727,6 +727,10 @@ impl Renderer {
             r.upload_mesh(&crate::instances::puff_mesh(), "puff"),
             r.upload_mesh(&crate::instances::person_mesh(), "person"),
             r.upload_mesh(&crate::instances::lamp_mesh(), "lamp"),
+            r.upload_mesh(&crate::trains::Vehicle::Loco.mesh(), "locomotive"),
+            r.upload_mesh(&crate::trains::Vehicle::Coach.mesh(), "coach"),
+            r.upload_mesh(&crate::trains::Vehicle::Hopper.mesh(), "hopper"),
+            r.upload_mesh(&crate::trains::Vehicle::Boxcar.mesh(), "box car"),
         ];
         Ok(r)
     }
@@ -1219,7 +1223,16 @@ impl Renderer {
             fi.lamps
                 .retain(|l| Vec3::from(l.pos).distance_squared(eye) < LAMP_FAR * LAMP_FAR);
         }
-        let sets: [&[crate::instances::Instance]; 4] = [&fi.cars, &fi.puffs, &fi.people, &fi.lamps];
+        let sets: [&[crate::instances::Instance]; 8] = [
+            &fi.cars,
+            &fi.puffs,
+            &fi.people,
+            &fi.lamps,
+            &fi.trains.sets[0],
+            &fi.trains.sets[1],
+            &fi.trains.sets[2],
+            &fi.trains.sets[3],
+        ];
         for (k, set) in sets.iter().enumerate() {
             if set.is_empty() {
                 continue;

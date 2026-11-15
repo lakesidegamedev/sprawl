@@ -13,26 +13,37 @@
 //! Only integer arithmetic and IEEE `+ - * / sqrt` are used, and every random roll is a hash of
 //! `(seed, lot, day)`, so the same inputs give the same state on every platform.
 
+mod avenues;
 mod civic;
 mod density;
+mod districts;
 mod dynamic;
 mod econ;
 mod growth;
 mod ledger_view;
 mod limits;
+mod milestones;
 mod model;
 mod pressure;
+pub mod rail;
+mod rivals;
 mod roadnet;
 mod save;
+mod save_ext;
 mod streets;
 mod traffic;
 mod value;
 
+pub use avenues::{RoadError, RoadPlan, UpgradePlan};
 pub use density::max_level_at;
+pub use districts::{
+    DISTRICT_COLOURS, District, DistrictStats, MAX_DISTRICTS, OrdScope, Ordinance,
+};
 pub use dynamic::Rival;
 pub use ledger_view::LedgerNow;
 pub use model::*;
 pub use pressure::*;
+pub use rivals::{Personality, RivalView};
 pub use save::{AUTOSAVE_SLOTS, FIRST_LASTING_VERSION, LoadError, SAVE_VERSION, autosave_path};
 pub use streets::{RoadBuildState, RoadStage, StreetState};
 pub use traffic::RoadTraffic;
@@ -160,6 +171,8 @@ pub struct Why {
     pub status: String,
     pub built: Option<String>,
     pub reason: String,
+    /// The district and every ordinance acting on the lot, one line each.
+    pub ordinances: Vec<String>,
 }
 
 fn mix(a: u64, b: u64, c: u64) -> u64 {
@@ -349,7 +362,10 @@ pub struct Sim {
     pub(crate) avg_cong: f32,
     pub(crate) pending: Option<traffic::Pending>,
     pub(crate) roads_version: u32,
+    pub(crate) avenues: avenues::Avenues,
     pub(crate) rival: Rival,
+    /// The other rival towns and every rival's population and trade with the town.
+    pub(crate) rivals: rivals::Rivals,
     pub departures: u32,
     pub fires_total: u32,
     pub(crate) month_index: u32,
@@ -369,6 +385,10 @@ pub struct Sim {
     pub(crate) queue: ByClass<f64>,
     /// Per `Capacity`: full, so growth that needs it is held back.
     pub(crate) stalled: [bool; 4],
+    /// Bit per `CivicKind::ALL` position: the buildings the town has unlocked.
+    pub(crate) unlocked: u32,
+    /// Standing new civic buildings with their places, rebuilt with the land values.
+    pub(crate) fx_sites: Vec<(CivicKind, Pt)>,
     /// Per `Capacity`: past the warning level.
     pub(crate) warned: [bool; 4],
     /// Families are leaving for lack of jobs.
@@ -377,6 +397,8 @@ pub struct Sim {
     pub(crate) last_kind_street: i32,
     /// Dollars the town has paid for new streets and utility connections so far.
     pub(crate) growth_spent: i64,
+    /// Districts and ordinances (saved in the `DIST` section).
+    pub(crate) dist: districts::DistrictState,
 }
 
 impl Sim {
@@ -446,7 +468,9 @@ impl Sim {
             avg_cong: 0.0,
             pending: None,
             roads_version: 0,
+            avenues: avenues::Avenues::default(),
             rival: Rival::new(seed),
+            rivals: rivals::Rivals::new(seed),
             departures: 0,
             fires_total: 0,
             month_index: 0,
@@ -471,10 +495,13 @@ impl Sim {
             fire_days: Vec::new(),
             queue: ByClass::all(0.0),
             stalled: [false; 4],
+            unlocked: 0,
+            fx_sites: Vec::new(),
             warned: [false; 4],
             jobless: false,
             last_kind_street: -1000,
             growth_spent: 0,
+            dist: Default::default(),
         };
         // reveal order: nearest to the hall first
         let mut ord: Vec<(i64, usize)> = (0..n_add)
@@ -716,6 +743,9 @@ impl Sim {
         for st in self.stalled {
             f(st as u64);
         }
+        f(self.unlocked as u64);
+        self.rivals.fingerprint(&mut f);
+        self.avenue_hash(&mut f);
         f(self.runs.len() as u64);
         for r in &self.runs {
             f(r.class as u64);
@@ -760,6 +790,7 @@ impl Sim {
                 }
             }
         }
+        self.dist.hash_into(&mut f);
         h
     }
 
@@ -898,7 +929,7 @@ impl Sim {
         // poorest land goes first
         for i in 0..self.lots.len() {
             let l = &self.lots[i];
-            let rate = self.lot_rate_x10(i);
+            let rate = self.lot_rate_eff_x10(i);
             let over = rate > ABANDON_ABOVE_X10;
             match l.phase {
                 Phase::Built { .. } if over && abandonable(l.kind) && !l.exempt => {
@@ -959,6 +990,18 @@ impl Sim {
     // ----- the why panel -----
 
     pub fn why(&self, lot: usize) -> Why {
+        let mut y = self.why_base(lot);
+        if let Some(line) = self.rival_why(lot) {
+            y.reason = format!("{} {line}", y.reason);
+        }
+        if let Some(note) = self.avenue_note(self.lots[lot].pos) {
+            y.reason = format!("{} {note}", y.reason);
+        }
+        y.ordinances = self.ordinance_lines(lot);
+        y
+    }
+
+    fn why_base(&self, lot: usize) -> Why {
         let l = &self.lots[lot];
         let title = l
             .civic
@@ -968,6 +1011,7 @@ impl Sim {
         let date = |d: i32| Date::from_days(d).text();
         match l.phase {
             Phase::Hidden => Why {
+                ordinances: Vec::new(),
                 title: "Open land".into(),
                 status: "not reached yet".into(),
                 built: None,
@@ -981,18 +1025,24 @@ impl Sim {
                 },
             },
             Phase::Vacant => Why {
+                ordinances: Vec::new(),
                 title: "Empty lot".into(),
                 status: "waiting for a builder".into(),
                 built: None,
-                reason: if tax > 14.0 {
-                    format!("Builders are scarce at {tax:.1}% tax; growth is slow.")
-                } else if tax <= 5.0 {
-                    "Low taxes: builders will get to it soon.".into()
-                } else {
-                    "Waiting its turn behind lots closer to the town hall.".into()
-                },
+                reason: format!(
+                    "{}{}",
+                    if tax > 14.0 {
+                        format!("Builders are scarce at {tax:.1}% tax; growth is slow.")
+                    } else if tax <= 5.0 {
+                        "Low taxes: builders will get to it soon.".into()
+                    } else {
+                        "Waiting its turn behind lots closer to the town hall.".to_string()
+                    },
+                    self.rail_note(lot).unwrap_or_default()
+                ),
             },
             Phase::Building { start, end } => Why {
+                ordinances: Vec::new(),
                 title,
                 status: format!("under construction, done {}", date(end)),
                 built: Some(format!("started {}", date(start))),
@@ -1018,13 +1068,15 @@ impl Sim {
                     String::new()
                 };
                 Why {
+                ordinances: Vec::new(),
                     title,
                     status: "in use".into(),
                     built: (since > -1000).then(|| format!("built {}", date(since))),
-                    reason: format!("{reason}{warn}"),
+                    reason: format!("{reason}{warn}{}", self.rail_note(lot).unwrap_or_default()),
                 }
             }
             Phase::Empty { since } => Why {
+                ordinances: Vec::new(),
                 title,
                 status: "empty".into(),
                 built: Some(format!("empty since {}", date(since))),
@@ -1039,6 +1091,7 @@ impl Sim {
                 },
             },
             Phase::Cleared { since } => Why {
+                ordinances: Vec::new(),
                 title: "Cleared lot".into(),
                 status: "demolished".into(),
                 built: Some(format!("cleared {}", date(since))),
@@ -1271,7 +1324,21 @@ mod tests_pressure;
 mod tests_save;
 
 #[cfg(test)]
+mod tests_avenues;
+#[cfg(test)]
 mod tests_streets;
 
 #[cfg(test)]
 mod tests_limits;
+
+#[cfg(test)]
+mod tests_milestones;
+
+#[cfg(test)]
+mod tests_rivals;
+
+#[cfg(test)]
+mod tests_districts;
+
+#[cfg(test)]
+mod tests_rail;

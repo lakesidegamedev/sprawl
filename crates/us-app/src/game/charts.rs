@@ -44,7 +44,7 @@ impl Fmt {
     }
 }
 
-fn group(v: i64) -> String {
+pub(super) fn group(v: i64) -> String {
     let s = v.abs().to_string();
     let mut out = String::new();
     for (i, c) in s.chars().rev().enumerate() {

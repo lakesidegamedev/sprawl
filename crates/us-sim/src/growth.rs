@@ -59,7 +59,8 @@ impl Sim {
             let roll_m = roll(self.seed ^ 0x1e7e1, i as u64, day as u64);
             let pull = self.upgrade_pull(i);
             let l = &self.lots[i];
-            if l.level < max_level_at(l.kind, self.lot_density(i))
+            if l.level < self.lot_cap(i)
+                && !self.heritage_at(i)
                 && lv >= up_lv
                 && self.class_demand.get(class) >= 0.2
                 && self.services_avg(i) >= 0.1 * (l.level as f64 - 1.0)
@@ -120,8 +121,12 @@ impl Sim {
     pub(crate) fn merge_neighbours(&mut self, i: usize, class: Class) {
         let pos = self.lots[i].pos;
         let mut near: Vec<(i64, usize)> = Vec::new();
+        if self.heritage_at(i) {
+            return;
+        }
         for (j, m) in self.lots.iter().enumerate() {
             if j != i
+                && !self.heritage_at(j)
                 && m.phase == Phase::Vacant
                 && class_of(m.kind) == Some(class)
                 && m.pos.dist(pos) < 30.0

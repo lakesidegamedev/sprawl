@@ -9,12 +9,12 @@ use crate::theme::{
 use crate::world::LiveScene;
 use egui::{Align2, Color32, Context, Pos2, RichText, Sense, Stroke, Ui, vec2};
 use glam::Vec3;
-use us_gen::{Pt, pt};
+use us_gen::{Pt, RoadClass, pt};
 use us_render::{Overlay, OverlayKind, View, project};
 use us_sim::{
     ABANDON_ABOVE_X10, BOND_MONTHS, BOND_RATE_X10, BOND_SIZE, BUDGET_MAX_PCT, BUDGET_MIN_PCT,
-    CivicKind, Class, Date, Dept, Event, EventKind, LedgerNow, LoanError, MapKind, Phase, Service,
-    TAX_MAX_X10, TAX_MIN_X10, class_of,
+    CivicKind, Class, Date, Dept, Event, EventKind, LedgerNow, LoanError, MapKind, Phase,
+    RoadError, Service, TAX_MAX_X10, TAX_MIN_X10, class_of,
 };
 
 // Series colours: one fixed hue per meaning, readable on the dark navy panels.
@@ -46,7 +46,7 @@ fn dept_color(d: Dept) -> Color32 {
     }
 }
 
-fn lab(ui: &mut Ui, text: impl AsRef<str>, size: f32) {
+pub(super) fn lab(ui: &mut Ui, text: impl AsRef<str>, size: f32) {
     let size = size.max(12.0);
     ui.label(
         RichText::new(text.as_ref().to_uppercase())
@@ -55,7 +55,7 @@ fn lab(ui: &mut Ui, text: impl AsRef<str>, size: f32) {
     );
 }
 
-fn lab_c(ui: &mut Ui, text: impl AsRef<str>, size: f32, col: Color32) {
+pub(super) fn lab_c(ui: &mut Ui, text: impl AsRef<str>, size: f32, col: Color32) {
     let size = size.max(12.0);
     ui.label(
         RichText::new(text.as_ref().to_uppercase())
@@ -64,7 +64,7 @@ fn lab_c(ui: &mut Ui, text: impl AsRef<str>, size: f32, col: Color32) {
     );
 }
 
-fn wrapped(ui: &mut Ui, text: impl AsRef<str>, size: f32, col: Color32) {
+pub(super) fn wrapped(ui: &mut Ui, text: impl AsRef<str>, size: f32, col: Color32) {
     let size = size.max(12.0);
     ui.add(
         egui::Label::new(
@@ -76,7 +76,7 @@ fn wrapped(ui: &mut Ui, text: impl AsRef<str>, size: f32, col: Color32) {
     );
 }
 
-fn btn(ui: &mut Ui, text: &str, on: bool, size: f32) -> egui::Response {
+pub(super) fn btn(ui: &mut Ui, text: &str, on: bool, size: f32) -> egui::Response {
     let size = size.max(12.0);
     ui.add(
         egui::Button::new(
@@ -115,7 +115,7 @@ pub fn dock_h(ctx: &Context) -> f32 {
 
 /// Rows the phone dock uses at this width.
 pub fn dock_rows(ctx: &Context) -> usize {
-    if ctx.content_rect().width() < 600.0 {
+    if ctx.content_rect().width() < 900.0 {
         2
     } else {
         1
@@ -214,6 +214,7 @@ pub(super) fn window(
             ui.add_space(2.0);
             egui::ScrollArea::vertical()
                 .max_height(max_h)
+                .min_scrolled_height(max_h.min(560.0))
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.set_width(width - 14.0);
@@ -234,10 +235,11 @@ pub enum MapView {
     Coverage(Service),
     Demand(Class),
     Traffic,
+    District,
 }
 
 impl MapView {
-    pub const ALL: [MapView; 14] = [
+    pub const ALL: [MapView; 15] = [
         MapView::Normal,
         MapView::LandValue,
         MapView::Level,
@@ -252,6 +254,7 @@ impl MapView {
         MapView::Demand(Class::Shops),
         MapView::Demand(Class::Industry),
         MapView::Traffic,
+        MapView::District,
     ];
 
     pub fn label(self) -> String {
@@ -263,6 +266,7 @@ impl MapView {
             MapView::Coverage(s) => format!("{} coverage", s.label()),
             MapView::Demand(c) => format!("{} demand", c.label()),
             MapView::Traffic => "Traffic".into(),
+            MapView::District => "Districts".into(),
         }
     }
 
@@ -275,6 +279,7 @@ impl MapView {
             MapView::Coverage(s) => MapKind::Coverage(s),
             MapView::Demand(c) => MapKind::Demand(c),
             MapView::Traffic => MapKind::Traffic,
+            MapView::District => return None,
         })
     }
 
@@ -283,6 +288,10 @@ impl MapView {
         match self {
             MapView::Demand(_) => Some("Other kinds of building stay grey"),
             MapView::Level => Some("Empty land shows as level 1"),
+            MapView::District => Some("Grey land is in no district"),
+            MapView::LandValue => {
+                Some("Lots near an open depot and industry beside the railway are worth more")
+            }
             _ => None,
         }
     }
@@ -296,6 +305,7 @@ impl MapView {
             MapView::Coverage(_) => OverlayKind::ServiceCoverage,
             MapView::Demand(_) => OverlayKind::Demand,
             MapView::Traffic => OverlayKind::Traffic,
+            MapView::District => OverlayKind::District,
         })
     }
 
@@ -322,6 +332,7 @@ impl MapView {
                 "Very low", "Low", "Soft", "Balanced", "Firm", "High", "Crowded",
             ],
             MapView::Traffic => &["Free", "Light", "Busy", "Heavy", "Jammed"],
+            MapView::District => &[],
         };
         k.palette()
             .iter()
@@ -350,6 +361,24 @@ const TABS: [&str; 9] = [
     "Traffic",
 ];
 
+/// What the road tool builds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RoadMode {
+    Avenue,
+    Collector,
+    /// Widen a street to the next class.
+    Upgrade,
+}
+
+impl RoadMode {
+    fn class(self) -> RoadClass {
+        match self {
+            RoadMode::Avenue => RoadClass::Arterial,
+            _ => RoadClass::Collector,
+        }
+    }
+}
+
 /// Everything the mayor's screens remember during a session.
 pub struct UiState {
     pub levers_open: bool,
@@ -358,7 +387,20 @@ pub struct UiState {
     pub build_open: bool,
     pub stats_open: bool,
     pub news_open: bool,
+    pub rivals_open: bool,
+    pub districts_open: bool,
+    pub ordinances_open: bool,
+    /// The district the paint tool works on, while it is on.
+    pub paint: Option<usize>,
+    /// The district chosen in the Districts window.
+    pub dist_sel: Option<usize>,
+    pub dist_stats: Vec<Option<us_sim::DistrictStats>>,
+    pub dist_stats_age: f32,
     pub tool: Option<CivicKind>,
+    /// The road tool, when chosen (only live while the Build window is open).
+    pub road: Option<RoadMode>,
+    /// Points of the road being drawn.
+    pub road_pts: Vec<Pt>,
     /// Screenshot hook: hold the ghost at this spot instead of under the cursor.
     fixed_ghost: Option<Pt>,
     pub view: MapView,
@@ -372,6 +414,8 @@ pub struct UiState {
     ov_age: f32,
     ov_view: MapView,
     clock: f32,
+    /// Seconds since the trains were last told what the town offers.
+    rail_age: f32,
     cover: [f32; 6],
     cover_age: f32,
     /// Coverage of the selected lot, by service.
@@ -389,7 +433,16 @@ impl Default for UiState {
             build_open: false,
             stats_open: false,
             news_open: false,
+            rivals_open: false,
+            districts_open: false,
+            ordinances_open: false,
+            paint: None,
+            dist_sel: None,
+            dist_stats: Vec::new(),
+            dist_stats_age: 9.0,
             tool: None,
+            road: None,
+            road_pts: Vec::new(),
             fixed_ghost: None,
             view: MapView::Normal,
             tab: 0,
@@ -401,6 +454,7 @@ impl Default for UiState {
             ov_age: 9.0,
             ov_view: MapView::Normal,
             clock: 0.0,
+            rail_age: 1.0,
             cover: [0.0; 6],
             cover_age: 9.0,
             sel_cov: Vec::new(),
@@ -449,8 +503,14 @@ impl Game {
             self.ui.news_seen = self.ui.events.len();
         }
         self.ui.ledger = self.sim.ledger_now();
+        self.refresh_district_stats(dt);
         self.ui.clock += dt;
         self.live.scene.set_time(self.ui.clock);
+        self.ui.rail_age += dt;
+        if self.ui.rail_age > 1.0 {
+            self.ui.rail_age = 0.0;
+            self.live.set_rail_service(&self.sim);
+        }
         self.ui.ov_age += dt;
         if self.ui.view != self.ui.ov_view
             || (self.ui.view != MapView::Normal && self.ui.ov_age > 0.5)
@@ -515,6 +575,11 @@ impl Game {
             self.toggle_voters();
             return true;
         }
+        if matches!(code, K::Enter | K::NumpadEnter) && self.ui.build_open && self.ui.road.is_some()
+        {
+            self.road_confirm();
+            return true;
+        }
         let u = &mut self.ui;
         match code {
             K::KeyP => u.levers_open = !u.levers_open,
@@ -528,6 +593,15 @@ impl Game {
             }
             K::KeyG => u.stats_open = !u.stats_open,
             K::KeyJ => u.news_open = !u.news_open,
+            K::KeyR => u.rivals_open = !u.rivals_open,
+            K::KeyI => {
+                u.districts_open = !u.districts_open;
+                if !u.districts_open {
+                    u.paint = None;
+                }
+            }
+            K::KeyH => u.ordinances_open = !u.ordinances_open,
+            K::KeyZ => u.view = MapView::District,
             K::KeyN => u.view = MapView::Normal,
             K::KeyL => u.view = MapView::LandValue,
             K::KeyV => u.view = MapView::Level,
@@ -552,6 +626,23 @@ impl Game {
                 let i = MapView::ALL.iter().position(|&x| x == u.view).unwrap_or(0);
                 u.view = MapView::ALL[(i + 1) % MapView::ALL.len()];
             }
+            K::KeyY => {
+                u.build_open = true;
+                u.tool = None;
+                u.road = if u.road.is_some() {
+                    None
+                } else {
+                    Some(RoadMode::Avenue)
+                };
+                u.road_pts.clear();
+            }
+            K::Escape if u.build_open && u.road.is_some() => {
+                if u.road_pts.is_empty() {
+                    u.road = None;
+                } else {
+                    u.road_pts.clear();
+                }
+            }
             K::Escape if u.tool.is_some() => u.tool = None,
             _ => return false,
         }
@@ -569,6 +660,9 @@ impl Game {
                 "loans" => self.ui.loans_open = true,
                 "build" => {
                     self.ui.build_open = true;
+                    if n > 6 {
+                        self.sim.unlock_all();
+                    }
                     self.ui.tool = CivicKind::ALL.get(n).copied();
                 }
                 "stats" => {
@@ -648,6 +742,7 @@ impl Game {
                     }
                 }
                 "civic" => {
+                    self.sim.unlock_all();
                     let kind = CivicKind::ALL[n.min(CivicKind::ALL.len() - 1)];
                     let found = self
                         .sim
@@ -758,8 +853,30 @@ impl Game {
                             .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 260.0);
                     }
                 }
+                "districts" | "ordinances" => {
+                    // two districts over the first neighbourhoods, with a few ordinances on
+                    if self.sim.districts().is_empty() {
+                        for _ in 0..2 {
+                            self.sim.create_district();
+                        }
+                        for (k, a) in (0..self.town.additions.len()).take(6).enumerate() {
+                            self.sim.toggle_addition(k % 2, a);
+                        }
+                        self.sim
+                            .set_ordinance_district(0, us_sim::Ordinance::Heritage, true);
+                        self.sim
+                            .set_ordinance_town(us_sim::Ordinance::Recycling, true);
+                    }
+                    if k == "districts" {
+                        self.ui.districts_open = true;
+                        self.ui.view = MapView::District;
+                    } else {
+                        self.ui.ordinances_open = true;
+                    }
+                }
                 "nolevers" => self.ui.levers_open = false,
                 "voters" => self.voters_open = true,
+                "rivals" => self.ui.rivals_open = true,
                 "noelection" => {
                     self.election_seen = self.sim.last_election().map_or(-1, |e| e.day);
                 }
@@ -802,12 +919,34 @@ impl Game {
                 u.tool = None;
             }
             t(ui, "Graphs", &mut u.stats_open, "Charts over time (G)");
+            let was = u.districts_open;
+            t(
+                ui,
+                "Districts",
+                &mut u.districts_open,
+                "Group neighbourhoods (I)",
+            );
+            if was && !u.districts_open {
+                u.paint = None;
+            }
+            t(
+                ui,
+                "Ordinances",
+                &mut u.ordinances_open,
+                "Town and district policies (H)",
+            );
             let news = if unread > 0 {
                 format!("News {unread}")
             } else {
                 "News".into()
             };
             t(ui, &news, &mut u.news_open, "What happened in town (J)");
+            t(
+                ui,
+                "Rivals",
+                &mut u.rivals_open,
+                "The three towns you compete with (R)",
+            );
             ui.add_space(10.0);
             lab_c(ui, "Map view", 11.0, Color32::from_rgb(170, 176, 196));
             egui::ComboBox::from_id_salt("mapview")
@@ -1073,11 +1212,12 @@ impl Game {
             ui.separator();
             let spend: i64 = ledger.spending.iter().sum();
             let income: i64 = ledger.income.homes + ledger.income.shops + ledger.income.industry;
-            let out = spend + ledger.admin + ledger.interest + ledger.principal;
+            let out = spend + ledger.admin + ledger.interest + ledger.principal + ledger.ordinances;
             let rows = [
                 ("Tax income", income, GOOD),
                 ("Departments", -spend, TEXT),
                 ("General upkeep", -ledger.admin, TEXT),
+                ("Ordinances", -ledger.ordinances, TEXT),
                 ("Bond interest", -ledger.interest, TEXT),
                 ("Bond principal", -ledger.principal, TEXT),
             ];
@@ -1253,26 +1393,40 @@ impl Game {
         let c = window(ctx, "build", "Build", 320.0, pos, |ui| {
             wrapped(
                 ui,
-                "Pick a building, then click empty land next to a road the town already has. Esc to stop.",
+                "Pick a building, then click empty land next to a road the town already has. Esc to stop. A full supply holds growth back.",
                 11.0,
                 Color32::from_rgb(170, 176, 196),
             );
             ui.add_space(4.0);
+            lab(ui, "ROADS", 12.0);
+            ui.horizontal(|ui| {
+                for (m, name) in [
+                    (RoadMode::Avenue, "AVENUE"),
+                    (RoadMode::Collector, "COLLECTOR"),
+                    (RoadMode::Upgrade, "UPGRADE"),
+                ] {
+                    let on = self.ui.road == Some(m);
+                    if btn(ui, name, on, 11.0).clicked() {
+                        self.ui.road = if on { None } else { Some(m) };
+                        self.ui.tool = None;
+                        self.ui.road_pts.clear();
+                    }
+                }
+            });
+            self.road_panel(ui);
+            ui.add_space(6.0);
+            lab(ui, "BUILDINGS", 12.0);
             // what the town can carry: when one is full, growth that needs it stops
             for st in self.sim.capacities() {
                 let full = st.is_full();
                 lab_c(
                     ui,
                     format!(
-                        "{}: {} of {} used{}",
+                        "{}: {} of {}{}",
                         st.capacity.label(),
                         st.demand,
                         st.supply,
-                        if full {
-                            ". Full: growth is held back."
-                        } else {
-                            ""
-                        }
+                        if full { ", full" } else { "" }
                     ),
                     11.0,
                     if full {
@@ -1285,6 +1439,28 @@ impl Game {
             ui.add_space(4.0);
             for k in CivicKind::ALL {
                 let on = self.ui.tool == Some(k);
+                if !self.sim.is_unlocked(k) {
+                    // locked: shown greyed, with what it takes
+                    ui.horizontal(|ui| {
+                        ui.add_enabled(
+                            false,
+                            egui::Button::new(
+                                RichText::new(k.label().to_uppercase())
+                                    .font(pixel(12.0))
+                                    .color(Color32::from_rgb(110, 118, 132)),
+                            )
+                            .fill(RAISED)
+                            .min_size(vec2(150.0, 26.0)),
+                        );
+                        lab_c(
+                            ui,
+                            format!("Unlocks at {} people", charts::group(k.unlock_at())),
+                            11.0,
+                            Color32::from_rgb(130, 140, 155),
+                        );
+                    });
+                    continue;
+                }
                 let can = self.sim.treasury >= k.cost();
                 ui.horizontal(|ui| {
                     let b = ui.add(
@@ -1304,6 +1480,8 @@ impl Game {
                     );
                     if b.clicked() {
                         self.ui.tool = if on { None } else { Some(k) };
+                        self.ui.road = None;
+                        self.ui.road_pts.clear();
                     }
                     lab_c(ui, money(k.cost()), 12.0, if can { GOLD } else { BAD });
                 });
@@ -1321,14 +1499,19 @@ impl Game {
                     ),
                     10.0,
                 );
-                lab(
-                    ui,
-                    format!(
-                        "COVERS ABOUT {} M BY ROAD AT THIS FUNDING",
-                        (k.service().reach_m() * (0.4 + 0.6 * f)).round() as i64
-                    ),
-                    10.0,
-                );
+                if k.covers().is_some() {
+                    lab(
+                        ui,
+                        format!(
+                            "COVERS ABOUT {} M BY ROAD AT THIS FUNDING",
+                            k.reach_at(f).round() as i64
+                        ),
+                        10.0,
+                    );
+                }
+                if !k.effect_text().is_empty() {
+                    wrapped(ui, k.effect_text().to_uppercase(), 10.0, TEXT);
+                }
                 lab(ui, "TAKES 40 TO 70 DAYS TO BUILD", 10.0);
                 if btn(ui, "Stop placing", false, 11.0).clicked() {
                     self.ui.tool = None;
@@ -1342,6 +1525,305 @@ impl Game {
         }
     }
 
+    /// Whether the road tool is live: chosen, and the Build window open.
+    pub(super) fn road_active(&self) -> Option<RoadMode> {
+        self.ui.road.filter(|_| self.ui.build_open)
+    }
+
+    /// The road tool's text and buttons in the Build window.
+    fn road_panel(&mut self, ui: &mut Ui) {
+        let Some(mode) = self.ui.road else { return };
+        let dim = Color32::from_rgb(170, 176, 196);
+        if mode == RoadMode::Upgrade {
+            wrapped(
+                ui,
+                "Click a street to widen it one class: local to collector, collector to arterial. It keeps carrying traffic during the work. Empty lots beside it are given up; a standing building in the way stops it.",
+                11.0,
+                dim,
+            );
+            if btn(ui, "Stop", false, 11.0).clicked() {
+                self.ui.road = None;
+            }
+            return;
+        }
+        wrapped(
+            ui,
+            "Click points on the map, starting on an open road. End on a road or on open ground. Enter or a double click builds it. Esc or right click cancels. Bridges cost four times as much per metre. Empty lots under the road are given up. A standing building blocks the road: nothing is bought out.",
+            11.0,
+            dim,
+        );
+        let n = self.ui.road_pts.len();
+        lab(ui, format!("POINTS: {n}"), 11.0);
+        if n >= 2 {
+            match self.sim.check_road(mode.class(), &self.ui.road_pts) {
+                Ok(p) => {
+                    lab_c(
+                        ui,
+                        format!(
+                            "{:.0} M, COSTS {}, ABOUT {} A MONTH",
+                            p.length,
+                            money(p.cost),
+                            money(p.upkeep)
+                        ),
+                        11.0,
+                        GOLD,
+                    );
+                    if p.bridge_m > 0.0 {
+                        lab(ui, format!("BRIDGE {:.0} M", p.bridge_m), 10.0);
+                    }
+                    if p.lots_taken > 0 {
+                        lab(ui, format!("{} EMPTY LOTS GIVEN UP", p.lots_taken), 10.0);
+                    }
+                }
+                Err(e) => lab_c(ui, e.text().to_uppercase(), 11.0, BAD),
+            }
+        }
+        lab(ui, "TAKES 3 TO 12 WEEKS TO BUILD", 10.0);
+        ui.horizontal(|ui| {
+            if btn(ui, "Build", n >= 2, 12.0).clicked() {
+                self.road_confirm();
+            }
+            if btn(ui, "Undo point", false, 11.0).clicked() {
+                self.ui.road_pts.pop();
+            }
+            if btn(ui, "Cancel", false, 11.0).clicked() {
+                self.ui.road_pts.clear();
+            }
+        });
+    }
+
+    /// A click on the map while the road tool is chosen.
+    pub(super) fn road_click(&mut self, p: Pt) {
+        let Some(mode) = self.road_active() else {
+            return;
+        };
+        if mode == RoadMode::Upgrade {
+            match self.sim.upgrade_street(p) {
+                Ok(_) => self.toast("STREET WIDENING STARTED.", false),
+                Err(e) => self.toast(e.text().to_uppercase(), true),
+            }
+            return;
+        }
+        if let Some(&last) = self.ui.road_pts.last() {
+            if last.dist(p) < 8.0 {
+                // a double click ends the road
+                self.road_confirm();
+                return;
+            }
+        } else if let Err(e @ RoadError::StartNotOnRoad { .. }) =
+            self.sim.check_road(mode.class(), &[p, pt(p.x + 40.0, p.y)])
+        {
+            self.toast(e.text().to_uppercase(), true);
+            return;
+        }
+        if self.ui.road_pts.len() < 24 {
+            self.ui.road_pts.push(p);
+        }
+    }
+
+    /// Build the road drawn so far.
+    pub(super) fn road_confirm(&mut self) {
+        let Some(mode) = self.road_active() else {
+            return;
+        };
+        if self.ui.road_pts.len() < 2 {
+            self.toast("CLICK AT LEAST TWO POINTS.", true);
+            return;
+        }
+        let pts = std::mem::take(&mut self.ui.road_pts);
+        match self.sim.check_road(mode.class(), &pts) {
+            Ok(plan) => match self.sim.build_road(mode.class(), &pts) {
+                Ok(_) => self.toast(
+                    format!("WORK STARTED ON A ROAD. IT COSTS {}.", money(plan.cost)),
+                    false,
+                ),
+                Err(e) => {
+                    self.ui.road_pts = pts;
+                    self.toast(e.text().to_uppercase(), true);
+                }
+            },
+            Err(e) => {
+                self.ui.road_pts = pts;
+                self.toast(e.text().to_uppercase(), true);
+            }
+        }
+    }
+
+    /// Right click or Esc: drop the road being drawn, or leave the tool.
+    pub(super) fn road_cancel(&mut self) {
+        if self.road_active().is_none() {
+            return;
+        }
+        if self.ui.road_pts.is_empty() {
+            self.ui.road = None;
+        } else {
+            self.ui.road_pts.clear();
+        }
+    }
+
+    /// The road being drawn: its path, length, cost, bridges, and why a spot is refused.
+    fn road_ghost_ui(
+        &mut self,
+        ctx: &Context,
+        painter: &egui::Painter,
+        view: &View,
+        w: u32,
+        h: u32,
+    ) {
+        let Some(mode) = self.road_active() else {
+            return;
+        };
+        let ppp = ctx.pixels_per_point();
+        let hover = ctx.pointer_hover_pos();
+        let cursor = if ctx.egui_wants_pointer_input() {
+            None
+        } else {
+            hover.and_then(|pos| {
+                let ndc = (
+                    pos.x * ppp / w as f32 * 2.0 - 1.0,
+                    1.0 - pos.y * ppp / h as f32 * 2.0,
+                );
+                self.live
+                    .scene
+                    .pick(view, ndc)
+                    .map(|g| pt(g.x as f64, g.y as f64))
+            })
+        };
+        let screen = |me: &Self, p: Pt| {
+            project(
+                view,
+                Vec3::new(
+                    p.x as f32,
+                    p.y as f32,
+                    me.live.ground_at(p.x as f32, p.y as f32) + 1.0,
+                ),
+            )
+            .map(|s| super::to_screen(s, w, h, ppp))
+        };
+        if mode == RoadMode::Upgrade {
+            let Some(c) = cursor else { return };
+            let (text, col, path) = match self.sim.check_upgrade(c) {
+                Ok(pl) => (
+                    format!(
+                        "TO {}  {:.0} M  {}",
+                        pl.to.name(),
+                        pl.length,
+                        money(pl.cost)
+                    ),
+                    GOOD,
+                    pl.points,
+                ),
+                Err(e) => (e.text(), BAD, Vec::new()),
+            };
+            self.draw_path(painter, view, &path, col, 5.0, w, h, ppp);
+            if let Some(a) = screen(self, c) {
+                self.label_at(painter, a + vec2(18.0, 18.0), &text.to_uppercase(), col);
+            }
+            return;
+        }
+        let mut path = self.ui.road_pts.clone();
+        if let Some(c) = cursor {
+            path.push(c);
+        }
+        if path.is_empty() {
+            return;
+        }
+        let verdict = if path.len() >= 2 {
+            Some(self.sim.check_road(mode.class(), &path))
+        } else {
+            None
+        };
+        let (col, shown) = match &verdict {
+            Some(Ok(p)) => (GOOD, p.points.clone()),
+            _ => (BAD, path.clone()),
+        };
+        let col = if verdict.is_none() { GOLD } else { col };
+        self.draw_path(painter, view, &shown, col, 5.0, w, h, ppp);
+        if let Some(Ok(p)) = &verdict {
+            for (a, b) in &p.bridges {
+                self.draw_path(painter, view, &[*a, *b], GOLD, 8.0, w, h, ppp);
+            }
+        }
+        for &q in &self.ui.road_pts {
+            if let Some(s) = screen(self, q) {
+                painter.circle_filled(s, 5.0, INK);
+            }
+        }
+        let text = match &verdict {
+            Some(Ok(p)) => {
+                let mut t = format!("{:.0} M  {}", p.length, money(p.cost));
+                if p.bridge_m > 0.0 {
+                    t += &format!("  BRIDGE {:.0} M", p.bridge_m);
+                }
+                if p.lots_taken > 0 {
+                    t += &format!("  {} LOTS", p.lots_taken);
+                }
+                t
+            }
+            Some(Err(e)) => {
+                if let Some(at) = e.at()
+                    && let Some(s) = screen(self, at)
+                {
+                    painter.circle_stroke(s, 12.0, Stroke::new(3.0, BAD));
+                    painter.line_segment(
+                        [s - vec2(8.0, 8.0), s + vec2(8.0, 8.0)],
+                        Stroke::new(3.0, BAD),
+                    );
+                    painter.line_segment(
+                        [s + vec2(-8.0, 8.0), s + vec2(8.0, -8.0)],
+                        Stroke::new(3.0, BAD),
+                    );
+                }
+                e.text().to_uppercase()
+            }
+            None => "CLICK THE NEXT POINT".into(),
+        };
+        let at = hover.unwrap_or(Pos2::ZERO) + vec2(18.0, 18.0);
+        self.label_at(painter, at, &text, col);
+    }
+
+    fn label_at(&self, painter: &egui::Painter, at: Pos2, text: &str, col: Color32) {
+        let galley = painter.layout_no_wrap(text.to_string(), pixel(11.0), INK);
+        let r = egui::Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 3.0));
+        painter.rect_filled(r, 0.0, PANEL_DARK);
+        painter.rect_stroke(r, 0.0, Stroke::new(2.0, col), egui::StrokeKind::Inside);
+        painter.galley(at, galley, INK);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_path(
+        &self,
+        painter: &egui::Painter,
+        view: &View,
+        path: &[Pt],
+        col: Color32,
+        width: f32,
+        w: u32,
+        h: u32,
+        ppp: f32,
+    ) {
+        let mut line: Vec<Pos2> = Vec::new();
+        for seg in path.windows(2) {
+            let n = (seg[0].dist(seg[1]) / 8.0).ceil().max(1.0) as usize;
+            for k in 0..=n {
+                let p = seg[0].lerp(seg[1], k as f64 / n as f64);
+                if let Some(s) = project(
+                    view,
+                    Vec3::new(
+                        p.x as f32,
+                        p.y as f32,
+                        self.live.ground_at(p.x as f32, p.y as f32) + 1.0,
+                    ),
+                ) {
+                    line.push(super::to_screen(s, w, h, ppp));
+                }
+            }
+        }
+        if line.len() >= 2 {
+            painter.add(egui::Shape::line(line, Stroke::new(width, col)));
+        }
+    }
+
     /// Ghost of the chosen building under the cursor, with its reach and whether it fits.
     pub(super) fn ghost_ui(
         &mut self,
@@ -1351,6 +1833,10 @@ impl Game {
         w: u32,
         h: u32,
     ) {
+        if self.road_active().is_some() {
+            self.road_ghost_ui(ctx, painter, view, w, h);
+            return;
+        }
         let Some(kind) = self.ui.tool else { return };
         let ppp = ctx.pixels_per_point();
         let hover = ctx.pointer_hover_pos();
@@ -1396,10 +1882,12 @@ impl Game {
             ));
         }
         let f = dept_fraction(&self.sim, kind.service());
-        let reach = (kind.service().reach_m() * (0.4 + 0.6 * f)) as f32;
-        let ring = ring_points(&self.live, view, p, reach, w, h, ppp);
-        if ring.len() > 3 {
-            painter.add(egui::Shape::closed_line(ring, Stroke::new(2.0, GOLD)));
+        let reach = kind.reach_at(f) as f32;
+        if reach > 0.0 {
+            let ring = ring_points(&self.live, view, p, reach, w, h, ppp);
+            if ring.len() > 3 {
+                painter.add(egui::Shape::closed_line(ring, Stroke::new(2.0, GOLD)));
+            }
         }
         let text = match verdict {
             Ok(()) => format!("{}  {}", kind.label(), money(kind.cost())).to_uppercase(),
@@ -1443,7 +1931,7 @@ impl Game {
     ) {
         let Some(Sel::Lot(i)) = self.sel else { return };
         let l = &self.sim.lots()[i];
-        let svc = l.civic.map(CivicKind::service).or(match l.kind {
+        let svc = l.civic.map(|c| c.covers()).unwrap_or(match l.kind {
             us_gen::LotKind::School => Some(Service::Schools),
             us_gen::LotKind::Fire => Some(Service::Fire),
             us_gen::LotKind::Water => Some(Service::Water),
@@ -1451,7 +1939,9 @@ impl Game {
             _ => None,
         });
         let Some(s) = svc else { return };
-        let reach = (s.reach_m() * (0.4 + 0.6 * dept_fraction(&self.sim, s))) as f32;
+        let reach = (s.reach_m()
+            * l.civic.map_or(1.0, CivicKind::reach_mult)
+            * (0.4 + 0.6 * dept_fraction(&self.sim, s))) as f32;
         let ring = ring_points(&self.live, view, l.pos, reach, w, h, ppp);
         if ring.len() > 3 {
             painter.add(egui::Shape::closed_line(ring, Stroke::new(2.0, GOLD)));
@@ -1480,17 +1970,33 @@ impl Game {
         if !l.exempt && class_of(l.kind).is_some() {
             lab(ui, format!("BUILDING LEVEL {} OF 5", l.level), 12.0);
         }
+        for line in self.sim.ordinance_lines(lot) {
+            wrapped(ui, line, 10.0, GOOD);
+        }
         if let Some(k) = l.civic {
+            let cover = if k.covers().is_some() {
+                format!(
+                    "COVERS ABOUT {} M BY ROAD. ",
+                    k.reach_at(1.0).round() as i64
+                )
+            } else {
+                String::new()
+            };
             lab(
                 ui,
                 format!(
-                    "{} COVERS ABOUT {} M BY ROAD. UPKEEP {} A MONTH AT FULL FUNDING.",
+                    "{} {cover}UPKEEP {} A MONTH AT FULL FUNDING.",
                     k.label(),
-                    k.service().reach_m().round() as i64,
                     money(k.upkeep())
                 ),
                 10.0,
             );
+            if !k.effect_text().is_empty() {
+                wrapped(ui, k.effect_text().to_uppercase(), 10.0, TEXT);
+            }
+        }
+        for note in self.sim.civic_notes(lot) {
+            wrapped(ui, note.to_uppercase(), 10.0, TEXT);
         }
         if matches!(l.phase, Phase::Built { .. }) && class_of(l.kind).is_some() && !l.exempt {
             let mut parts = String::new();
@@ -1517,6 +2023,13 @@ impl Game {
         let (lots, roads) = match mv {
             MapView::Normal => return None,
             MapView::Traffic => (Vec::new(), sim.road_values(MapKind::Traffic)),
+            MapView::District => (
+                sim.district_lot_colours()
+                    .iter()
+                    .map(|&c| c as f32)
+                    .collect(),
+                Vec::new(),
+            ),
             MapView::Use => {
                 // the renderer numbers its categories differently from the simulation
                 let v = sim.lot_values(MapKind::Use);
@@ -1563,6 +2076,9 @@ impl Game {
                     .inner_margin(egui::Margin::same(8))
                     .show(ui, |ui| {
                         lab_c(ui, mv.label(), 12.0, ACCENT);
+                        if mv == MapView::District {
+                            self.district_legend(ui);
+                        }
                         ui.horizontal(|ui| {
                             for (col, name) in mv.steps() {
                                 let (r, _) =

@@ -17,6 +17,7 @@ use us_sim::{Difficulty, Phase, Sim, hall_sites};
 use winit::keyboard::KeyCode;
 
 mod charts;
+mod districts;
 mod panels;
 mod screens;
 
@@ -347,12 +348,16 @@ impl State {
                 travel: 0.0,
             });
         } else if let Some(p) = slot.take()
-            && left
             && !p.dragged
             && !p.on_ui
             && self.screen == Screen::Game
         {
-            self.click = Some(self.cursor);
+            if left {
+                self.click = Some(self.cursor);
+            } else if let Some(g) = self.game.as_mut() {
+                // a still right click drops the road being drawn
+                g.road_cancel();
+            }
         }
     }
 
@@ -478,6 +483,10 @@ impl State {
             } else if let Some(p) = g.live.scene.pick(&view, ndc) {
                 if g.ui.tool.is_some() {
                     g.place_tool(pt(p.x as f64, p.y as f64));
+                } else if g.road_active().is_some() {
+                    g.road_click(pt(p.x as f64, p.y as f64));
+                } else if g.ui.paint.is_some() {
+                    g.paint_at(pt(p.x as f64, p.y as f64));
                 } else {
                     g.select_at(pt(p.x as f64, p.y as f64));
                     if g.compact && g.sel.is_some() {
@@ -1425,6 +1434,13 @@ impl State {
                 None
             };
             let pop = g.stats.pop;
+            let unlock_hint = g.sim.next_unlock().map(|(k, n)| {
+                format!(
+                    "NEXT: {} AT {} PEOPLE",
+                    k.label().to_uppercase(),
+                    charts::group(n)
+                )
+            });
             let mut hide_tip = false;
             if compact {
                 // one short stack: the goal on one line, then up to two news toasts
@@ -1434,10 +1450,14 @@ impl State {
                     .interactable(false)
                     .show(ctx, |ui| {
                         ui.set_max_width(wmax);
-                        let goal_text = match goal {
+                        let mut goal_text = match goal {
                             Some(n) => format!("GOAL {n} PEOPLE ({pop})"),
                             None => "KEEP YOUR TOWN GROWING".to_string(),
                         };
+                        if let Some(u) = &unlock_hint {
+                            goal_text.push('\n');
+                            goal_text.push_str(u);
+                        }
                         if let Some(b) = &stacked_banner {
                             theme::panel()
                                 .inner_margin(egui::Margin::symmetric(8, 4))
@@ -1490,6 +1510,9 @@ impl State {
                                     .label(heading(&format!("REACH {n} PEOPLE ({pop} NOW)"), 16.0)),
                                 None => ui.label(heading("KEEP YOUR TOWN GROWING", 16.0)),
                             };
+                            if let Some(u) = &unlock_hint {
+                                label(ui, u, 11.0);
+                            }
                             if let Some(t) = tip {
                                 ui.add_space(4.0);
                                 ui.add(
@@ -1544,6 +1567,9 @@ impl State {
             if g.map_open {
                 g.map_sheet(ctx);
             }
+            if g.ui.rivals_open {
+                g.rivals_ui(ctx, screen_w);
+            }
             if g.ui.budget_open {
                 g.budget_ui(ctx);
             }
@@ -1558,6 +1584,12 @@ impl State {
             }
             if g.ui.news_open {
                 g.news_ui(ctx, screen_w);
+            }
+            if g.ui.districts_open {
+                g.districts_ui(ctx, screen_w);
+            }
+            if g.ui.ordinances_open {
+                g.ordinances_ui(ctx, screen_w);
             }
             g.legend_ui(ctx);
             // why panel
@@ -1638,7 +1670,7 @@ impl State {
         } else if compact {
             "DRAG PAN   PINCH ZOOM   TWIST ROTATE   TAP SELECT"
         } else {
-            "WASD PAN   Q E ROTATE   RIGHT DRAG ORBIT   WHEEL ZOOM   0 1 2 3 SPEED   SPACE PAUSE   P K O B G J V PANELS   M MAP VIEW"
+            "WASD PAN   Q E ROTATE   RIGHT DRAG ORBIT   WHEEL ZOOM   0 1 2 3 SPEED   SPACE PAUSE   P K O B G J V I H R PANELS   Y ROADS   M MAP VIEW"
         };
         if !(compact && g.any_sheet()) {
             egui::Area::new(egui::Id::new("help"))
