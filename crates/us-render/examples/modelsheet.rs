@@ -141,16 +141,16 @@ fn main() {
         "residential",
         &[
             m!("townhouse bay", move |g: &mut Rng| k::townhouse_row(
-                rg, 0, g
+                rg, 0, 3, g
             )),
             m!("townhouse stoop", move |g: &mut Rng| k::townhouse_row(
-                rg, 1, g
+                rg, 1, 3, g
             )),
             m!("townhouse mansard", move |g: &mut Rng| k::townhouse_row(
-                rg, 2, g
+                rg, 2, 3, g
             )),
             m!("townhouse balcony", move |g: &mut Rng| k::townhouse_row(
-                rg, 3, g
+                rg, 3, 3, g
             )),
             m!("midrise", move |g: &mut Rng| k::midrise_balconies(rg, 7, g)),
             m!("duplex", move |g: &mut Rng| k::duplex(rg, g)),

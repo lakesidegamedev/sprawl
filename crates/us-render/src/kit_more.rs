@@ -243,15 +243,6 @@ pub fn office_park(region: Region, rng: &mut Rng) -> Obj {
         );
         flat_roof(&mut o, (x - 4.0, -3.0, x + 4.0, 3.0), h, wall);
     }
-    o.slab(
-        -14.0,
-        -3.0,
-        0.0,
-        -10.0 + 10.0 * n as f32 - 6.0,
-        3.0,
-        0.0,
-        TRIM,
-    );
     let pk = parking(24.0, 8.0, rng);
     o.add_placed(&pk, 0.0, -9.0, 0.0);
     for i in 0..4 {
@@ -418,12 +409,11 @@ pub fn pharmacy(region: Region, rng: &mut Rng) -> Obj {
 
 /// A row of townhouses with its own facade: 0 bay fronts under gables, 1 flat fronts with
 /// stoops, 2 painted narrow fronts with mansards, 3 brick fronts with balconies.
-pub fn townhouse_row(_region: Region, facade: usize, rng: &mut Rng) -> Obj {
+pub fn townhouse_row(_region: Region, facade: usize, floors: usize, rng: &mut Rng) -> Obj {
     let mut o = Obj::new();
     let n = 3 + rng.below(3);
     let w = 3.4f32;
     let x0 = -(n as f32) * w / 2.0;
-    let floors = 3;
     let h = floors as f32 * 3.0;
     let brick = rng.pick(&BRICKS);
     for i in 0..n {
@@ -443,21 +433,27 @@ pub fn townhouse_row(_region: Region, facade: usize, rng: &mut Rng) -> Obj {
         match facade {
             0 => {
                 bay(&mut o, cx, -4.5, c, TRIM, GLASS, 0.9, 2.8);
-                o.win_s(cx - 0.5, cx + 0.5, 3.6, 5.6, -4.5, GLASS);
-                o.win_s(cx - 0.5, cx + 0.5, 6.6, 8.4, -4.5, GLASS);
+                for f in 1..floors {
+                    let z = f as f32 * 3.0 + 0.6;
+                    o.win_s(cx - 0.5, cx + 0.5, z, z + 1.8, -4.5, GLASS);
+                }
                 o.gable(a, -4.5, b, 4.5, h, 1.8, rng.pick(&SHINGLES), c, false, 0.2);
             }
             1 => {
                 o.slab(cx - 1.2, -5.8, 0.0, cx + 1.2, -4.5, 0.6, STONE);
                 o.win_s(cx - 0.5, cx + 0.5, 0.7, 2.6, -4.5, rng.pick(&DOORS));
-                for z in [3.4f32, 6.4] {
+                for f in 1..floors {
+                    let z = f as f32 * 3.0 + 0.4;
                     o.win_s(cx - 0.9, cx + 0.9, z, z + 1.8, -4.5, GLASS);
                 }
                 o.parapet(a, -4.5, b, 4.5, h, 0.5, c, TRIM, deck_of(c));
             }
             2 => {
                 o.win_s(cx - 0.5, cx + 0.5, 0.2, 2.4, -4.5, rng.pick(&DOORS));
-                o.win_s(cx - 0.8, cx + 0.8, 3.4, 5.4, -4.5, GLASS);
+                for f in 1..floors {
+                    let z = f as f32 * 3.0 + 0.4;
+                    o.win_s(cx - 0.8, cx + 0.8, z, z + 2.0, -4.5, GLASS);
+                }
                 o.mansard(
                     a,
                     -4.5,
@@ -469,11 +465,11 @@ pub fn townhouse_row(_region: Region, facade: usize, rng: &mut Rng) -> Obj {
                     shade(rng.pick(&SHINGLES), 0.8),
                     DARK,
                 );
-                o.win_s(cx - 0.5, cx + 0.5, 6.4, 8.2, -4.5, GLASS);
             }
             _ => {
                 o.win_s(cx - 0.5, cx + 0.5, 0.2, 2.4, -4.5, rng.pick(&DOORS));
-                for z in [3.0f32, 6.0] {
+                for f in 1..floors {
+                    let z = f as f32 * 3.0;
                     o.win_s(cx - 0.9, cx + 0.9, z + 0.3, z + 2.0, -4.5, GLASS);
                     balcony(&mut o, cx, 1.2, -4.5, z, 0.9, TRIM, DARK);
                 }
@@ -982,17 +978,37 @@ pub fn variant(
     density: f32,
     rng: &mut Rng,
 ) -> Option<Obj> {
-    let o = variant_raw(region, kind, level, density, rng)?;
-    Some(diversify(o, region, rng))
+    let mut o = variant_raw(region, kind, level, density, rng)?;
+    let own_levels = matches!(
+        kind,
+        LotKind::House | LotKind::Row | LotKind::Shop | LotKind::Apartments | LotKind::Office
+    );
+    if kind == LotKind::Workshop {
+        // the boiler stack the smoke rises from, where `levels::chimneys` expects it
+        o.prism(11.0, 4.0, 0.0, 20.0, 1.1, [160, 90, 70], 8, None);
+    }
+    // factories keep their size so the smoke stays on their chimneys
+    let o = diversify(o, region, kind != LotKind::Workshop, rng);
+    Some(if own_levels {
+        o
+    } else {
+        crate::levels::dress(o, kind, level, rng)
+    })
 }
 
 /// Make neighbours of the same model differ: a slightly different size and a body colour
 /// nudged toward one of the region's paints, all from the seeded roll.
-fn diversify(o: Obj, region: Region, rng: &mut Rng) -> Obj {
-    let sx = rng.range(0.86, 1.08);
-    let sy = rng.range(0.86, 1.08);
-    let sz = rng.range(0.92, 1.12);
-    let mut o = crate::levels::scaled(&o, sx, sy, sz);
+fn diversify(o: Obj, region: Region, resize: bool, rng: &mut Rng) -> Obj {
+    let (sx, sy, sz) = (
+        rng.range(0.86, 1.08),
+        rng.range(0.86, 1.08),
+        rng.range(0.92, 1.12),
+    );
+    let mut o = if resize {
+        crate::levels::scaled(&o, sx, sy, sz)
+    } else {
+        o
+    };
     let mut counts: Vec<(Rgb, usize)> = Vec::new();
     for p in &o.polys {
         if p.color == GLASS
@@ -1049,7 +1065,7 @@ fn variant_raw(
             _ => None,
         },
         LotKind::Row => match l {
-            1..=3 if r < 75 => Some(townhouse_row(region, r % 4, rng)),
+            1..=3 if r < 75 => Some(townhouse_row(region, r % 4, l as usize + 1, rng)),
             4 | 5 if r < 45 => Some(midrise_balconies(region, 4 + l as usize, rng)),
             _ => None,
         },

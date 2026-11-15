@@ -125,6 +125,13 @@ fn annex(o: &mut Obj, rng: &mut Rng, tall: f32) {
 
 fn generic(region: Region, kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
     let base = kit::build_lot_in(region, kind, rng);
+    dress(base, kind, level, rng)
+}
+
+/// A base model of a kind grown to a building level: bigger and taller, with rooftop or yard
+/// units from level 3, an annex from level 4 and a flag mast at level 5. Factories get the
+/// chimneys that `chimneys` reports.
+pub(crate) fn dress(base: Obj, kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
     let ground_kind = matches!(
         kind,
         LotKind::Parking | LotKind::Park | LotKind::Sports | LotKind::Farm | LotKind::Water
