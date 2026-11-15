@@ -137,8 +137,8 @@ impl Game {
                                 ),
                                 12.0,
                             );
-                            lab(ui, format!("Cost ${}", money(plan.cost)), 12.0);
-                            lab(ui, format!("Upkeep ${} a month", money(plan.upkeep)), 12.0);
+                            lab(ui, format!("Cost {}", money(plan.cost)), 12.0);
+                            lab(ui, format!("Upkeep {} a month", money(plan.upkeep)), 12.0);
                             if button(ui, "Build line", true, touch).clicked() {
                                 match self.sim.build_tram(&picked) {
                                     Ok(i) => {
@@ -200,7 +200,7 @@ impl Game {
                         lab_c(
                             ui,
                             format!(
-                                "{:.0} m, {} stops, upkeep ${} a month",
+                                "{:.0} m, {} stops, upkeep {} a month",
                                 l.length,
                                 l.stops.len(),
                                 money(l.upkeep)
