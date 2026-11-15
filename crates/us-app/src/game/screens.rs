@@ -390,10 +390,34 @@ impl Game {
                 format!("VOTE {t}")
             }
         };
-        let size = vec2(
-            if compact { 120.0 } else { 168.0 },
-            if compact { theme::TOUCH } else { 26.0 },
-        );
+        // wide enough for its own words at the font it draws them in
+        let text_w = |t: &str, size: f32| {
+            ui.fonts_mut(|f| f.layout_no_wrap(t.to_string(), pixel(size), INK).size().x)
+        };
+        // in the compact meter the words shrink to fit the room the bar has: first the word
+        // VOTE goes, then the type steps down, and last only the share is shown
+        let mut when = when;
+        let mut head = format!("APPROVAL {pct}%");
+        let mut fs = 10.0;
+        let width = if compact {
+            let room = ui.available_width().max(60.0);
+            let need = |h: &str, w: &str, fs: f32| text_w(h, fs).max(text_w(w, fs)) + 10.0;
+            if need(&head, &when, fs) > room
+                && let Some(d) = when.strip_prefix("VOTE ")
+            {
+                when = d.to_string();
+            }
+            while need(&head, &when, fs) > room && fs > 8.0 {
+                fs -= 1.0;
+            }
+            if need(&head, &when, fs) > room {
+                head = format!("{pct}%");
+            }
+            need(&head, &when, fs).max(96.0).min(room)
+        } else {
+            168.0
+        };
+        let size = vec2(width, if compact { theme::TOUCH } else { 26.0 });
         let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
         let p = ui.painter();
         p.rect_filled(rect, 0.0, PANEL_DARK);
@@ -410,15 +434,15 @@ impl Game {
             p.text(
                 rect.center_top() + vec2(0.0, 7.0),
                 Align2::CENTER_TOP,
-                format!("APPROVAL {pct}%"),
-                pixel(10.0),
+                &head,
+                pixel(fs),
                 INK,
             );
             p.text(
                 rect.center_bottom() - vec2(0.0, 7.0),
                 Align2::CENTER_BOTTOM,
                 &when,
-                pixel(10.0),
+                pixel(fs),
                 INK,
             );
         } else {
@@ -430,10 +454,23 @@ impl Game {
                 INK,
             );
         }
-        if resp.on_hover_text("What voters think (V)").clicked() {
+        // the election date beside the meter, when the bar has room for it; else in the tip
+        let when_w = if compact {
+            0.0
+        } else {
+            ui.fonts_mut(|f| f.layout_no_wrap(when.clone(), pixel(13.0), INK).size().x)
+        };
+        let show_when =
+            !compact && ui.available_width() >= when_w + 2.0 * ui.spacing().item_spacing.x;
+        let tip = if compact || show_when {
+            "What voters think (V)".to_string()
+        } else {
+            format!("{}. What voters think (V)", when.to_lowercase())
+        };
+        if resp.on_hover_text(tip).clicked() {
             self.toggle_voters();
         }
-        if !compact {
+        if show_when {
             ui.label(RichText::new(when).font(pixel(13.0)).color(INK));
         }
     }

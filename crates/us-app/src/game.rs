@@ -1111,7 +1111,12 @@ impl State {
                 let small = |s: String, col: Color32| RichText::new(s).font(pixel(12.0)).color(col);
                 let row1 = |ui: &mut egui::Ui, g: &Game| {
                     if g.placed {
-                        ui.label(small(g.sim.date().text().to_uppercase(), INK));
+                        // month and year: the day does not earn its room on a phone
+                        let d = g.sim.date().text().to_uppercase();
+                        ui.label(small(
+                            d.split_once(' ').map_or(d.clone(), |x| x.1.to_string()),
+                            INK,
+                        ));
                         ui.label(small(format!("POP {}", g.stats.pop), INK));
                         ui.label(small(
                             format!("${}", short_money(g.sim.treasury)),
@@ -1132,10 +1137,13 @@ impl State {
                 };
                 let row2 = |ui: &mut egui::Ui, g: &mut Game| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    if g.placed {
-                        g.approval_chip(ui, true);
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let chip = |ui: &mut egui::Ui, g: &mut Game| {
+                        if g.placed {
+                            g.approval_chip(ui, true);
+                        }
+                    };
+                    split_row(ui, theme::TOUCH, g, chip, |ui, g| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
                         let b =
                             egui::Button::new(RichText::new("MENU").font(pixel(12.0)).color(INK))
                                 .min_size(vec2(48.0, theme::TOUCH));
@@ -1160,10 +1168,15 @@ impl State {
                     });
                 };
                 if wide {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 10.0;
-                        row1(ui, g);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    split_row(
+                        ui,
+                        theme::TOUCH,
+                        g,
+                        |ui, g| {
+                            ui.spacing_mut().item_spacing.x = 10.0;
+                            row1(ui, g);
+                        },
+                        |ui, g| {
                             let b = egui::Button::new(
                                 RichText::new("MENU").font(pixel(12.0)).color(INK),
                             )
@@ -1188,14 +1201,14 @@ impl State {
                                 ui.add_space(6.0);
                                 g.approval_chip(ui, true);
                             }
-                        });
-                    });
+                        },
+                    );
                 } else {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
                         row1(ui, g)
                     });
-                    ui.horizontal(|ui| row2(ui, g));
+                    row2(ui, g);
                 }
                 return;
             }
@@ -1338,12 +1351,10 @@ impl State {
                     ui.horizontal(|ui| controls(ui, g));
                 });
             } else {
-                ui.horizontal(|ui| {
-                    left(ui, g);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        controls(ui, g)
-                    });
-                });
+                // the controls on the right are laid out first; the town's figures get the
+                // room that is left and drop what does not fit, so nothing is drawn under a
+                // button whatever the window width
+                split_row(ui, 28.0, g, left, controls);
             }
         });
         let top_y = if compact {
@@ -2102,4 +2113,40 @@ fn g_menu_close(st: &mut State) {
     if let Some(g) = st.game.as_mut() {
         g.menu_open = false;
     }
+}
+
+/// One row of a bar: `right` is laid out first against the right edge, then `left` gets the room
+/// that is left and is clipped to it, so the left side is never drawn under the right one.
+fn split_row(
+    ui: &mut egui::Ui,
+    height: f32,
+    g: &mut Game,
+    left: impl FnOnce(&mut egui::Ui, &mut Game),
+    right: impl FnOnce(&mut egui::Ui, &mut Game),
+) {
+    let full = ui.available_rect_before_wrap();
+    let row = egui::Rect::from_min_size(full.min, vec2(full.width(), height));
+    let mut r = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(row)
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    right(&mut r, g);
+    let used = r.min_rect().width();
+    let left_rect = egui::Rect::from_min_max(
+        row.min,
+        egui::pos2((row.max.x - used - 12.0).max(row.min.x), row.max.y),
+    );
+    let mut l = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(left_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    l.set_clip_rect(left_rect.intersect(ui.clip_rect()));
+    left(&mut l, g);
+    let bottom = r.min_rect().bottom().max(l.min_rect().bottom());
+    ui.allocate_rect(
+        egui::Rect::from_min_max(full.min, egui::pos2(full.max.x, bottom)),
+        egui::Sense::hover(),
+    );
 }
