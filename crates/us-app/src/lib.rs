@@ -235,7 +235,33 @@ impl App {
             ));
         }
         let st = &mut self.st;
-        let out = gfx.egui_ctx.run_ui(raw, |ui| st.ui(ui, w, h));
+        let out = gfx.egui_ctx.run_ui(raw, |ui| {
+            // the root of the interface covers the whole screen, the notch and home bar too;
+            // lay the interface out inside the safe area, and fill the strips above and below it
+            // in the bar colour so the top bar and dock read as reaching the screen edge
+            let safe = ui.ctx().content_rect();
+            let full = ui.ctx().viewport_rect();
+            if safe != full {
+                let p = ui.painter();
+                let fill = theme::PANEL_DARK;
+                if safe.top() > full.top() {
+                    p.rect_filled(
+                        egui::Rect::from_min_max(full.min, egui::pos2(full.max.x, safe.top())),
+                        0.0,
+                        fill,
+                    );
+                }
+                if safe.bottom() < full.bottom() {
+                    p.rect_filled(
+                        egui::Rect::from_min_max(egui::pos2(full.min.x, safe.bottom()), full.max),
+                        0.0,
+                        fill,
+                    );
+                }
+            }
+            let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(safe));
+            st.ui(&mut inner, w, h)
+        });
         gfx.egui_state
             .handle_platform_output(&gfx.window, out.platform_output);
         let ppp = out.pixels_per_point;

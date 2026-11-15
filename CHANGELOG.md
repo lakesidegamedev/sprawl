@@ -4,7 +4,9 @@
 
 ## 1.0.1 (2026-11-15)
 
-- Fix: on a wide window with the signed-in name and frame rate showing, the top bar drew the election date under the speed buttons. The buttons on the right are now laid out first and the town's figures get the room that is left: the small trend charts are left out, then the election date moves into the approval meter's tip, and nothing is ever drawn under a button. Shown version is 1.0.1.
+- Fix: on a wide window with the signed-in name and frame rate showing, the top bar drew the election date under the speed buttons. The buttons on the right are now laid out first and the town's figures get the room that is left: the small trend charts are left out, then the election date moves into the approval meter's tip, and nothing is ever drawn under a button. Phones get the same rule in both rows, the approval meter sizes its words to the room it has, and the date shows month and year.
+- Fix (iOS): the top bar and the bottom dock sat under the Dynamic Island and the home bar. The interface now lays out inside the safe area the phone reports, and the strips above and below it are filled in the bar colour so the bars still reach the screen edge.
+- Shown version is 1.0.1.
 
 ## 1.0.0 (2026-11-15)
 
