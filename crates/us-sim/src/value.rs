@@ -158,7 +158,8 @@ impl Sim {
             let season = self.season_pct(c) as f64 / 100.0;
             let pull = 1.0 - self.rival_pull(c);
             let d =
-                base(c).clamp(0.0, 1.0) * taxf * (1.0 - 0.7 * empty_share.min(1.0)) * season * pull;
+                base(c).clamp(0.0, 1.0) * taxf * (1.0 - 0.7 * empty_share.min(1.0)) * season * pull
+                    + self.rail_demand(c) as f64;
             out.set(
                 c,
                 if land_left {
@@ -185,6 +186,7 @@ impl Sim {
         let grid = Grid::new(self);
         let n = self.lots.len();
         let mut out = vec![0.0f32; n];
+        let rail = self.rail_bonuses();
         let road_f = (self.budget[Dept::Roads.index()] as f64 / 100.0).min(1.0);
         for (i, l) in self.lots.iter().enumerate() {
             if l.phase == Phase::Hidden {
@@ -235,6 +237,8 @@ impl Sim {
                 + W_PARKS * c(Service::Parks)
                 + W_NEIGHBOURS * neighbours
                 - W_INDUSTRY * industry
+                + rail[i].depot
+                + rail[i].freight
                 - W_TRAFFIC * traffic
                 - 0.06 * (1.0 - road_f)
                 - burden;

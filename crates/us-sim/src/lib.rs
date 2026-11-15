@@ -22,6 +22,7 @@ mod ledger_view;
 mod limits;
 mod model;
 mod pressure;
+pub mod rail;
 mod roadnet;
 mod save;
 mod save_ext;
@@ -985,13 +986,17 @@ impl Sim {
                 title: "Empty lot".into(),
                 status: "waiting for a builder".into(),
                 built: None,
-                reason: if tax > 14.0 {
-                    format!("Builders are scarce at {tax:.1}% tax; growth is slow.")
-                } else if tax <= 5.0 {
-                    "Low taxes: builders will get to it soon.".into()
-                } else {
-                    "Waiting its turn behind lots closer to the town hall.".into()
-                },
+                reason: format!(
+                    "{}{}",
+                    if tax > 14.0 {
+                        format!("Builders are scarce at {tax:.1}% tax; growth is slow.")
+                    } else if tax <= 5.0 {
+                        "Low taxes: builders will get to it soon.".into()
+                    } else {
+                        "Waiting its turn behind lots closer to the town hall.".to_string()
+                    },
+                    self.rail_note(lot).unwrap_or_default()
+                ),
             },
             Phase::Building { start, end } => Why {
                 title,
@@ -1022,7 +1027,7 @@ impl Sim {
                     title,
                     status: "in use".into(),
                     built: (since > -1000).then(|| format!("built {}", date(since))),
-                    reason: format!("{reason}{warn}"),
+                    reason: format!("{reason}{warn}{}", self.rail_note(lot).unwrap_or_default()),
                 }
             }
             Phase::Empty { since } => Why {
@@ -1276,3 +1281,6 @@ mod tests_streets;
 
 #[cfg(test)]
 mod tests_limits;
+
+#[cfg(test)]
+mod tests_rail;
