@@ -430,10 +430,23 @@ impl Game {
                 INK,
             );
         }
-        if resp.on_hover_text("What voters think (V)").clicked() {
+        // the election date beside the meter, when the bar has room for it; else in the tip
+        let when_w = if compact {
+            0.0
+        } else {
+            ui.fonts_mut(|f| f.layout_no_wrap(when.clone(), pixel(13.0), INK).size().x)
+        };
+        let show_when =
+            !compact && ui.available_width() >= when_w + 2.0 * ui.spacing().item_spacing.x;
+        let tip = if compact || show_when {
+            "What voters think (V)".to_string()
+        } else {
+            format!("{}. What voters think (V)", when.to_lowercase())
+        };
+        if resp.on_hover_text(tip).clicked() {
             self.toggle_voters();
         }
-        if !compact {
+        if show_when {
             ui.label(RichText::new(when).font(pixel(13.0)).color(INK));
         }
     }

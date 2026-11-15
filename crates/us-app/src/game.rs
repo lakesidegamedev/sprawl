@@ -1338,12 +1338,34 @@ impl State {
                     ui.horizontal(|ui| controls(ui, g));
                 });
             } else {
-                ui.horizontal(|ui| {
-                    left(ui, g);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        controls(ui, g)
-                    });
-                });
+                // the controls on the right are laid out first; the town's figures get the
+                // room that is left and drop what does not fit, so nothing is drawn under a
+                // button whatever the window width
+                let full = ui.available_rect_before_wrap();
+                let row = egui::Rect::from_min_size(full.min, vec2(full.width(), 28.0));
+                let mut right = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(row)
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                );
+                controls(&mut right, g);
+                let used = right.min_rect().width();
+                let left_rect = egui::Rect::from_min_max(
+                    row.min,
+                    egui::pos2((row.max.x - used - 16.0).max(row.min.x), row.max.y),
+                );
+                let mut lu = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(left_rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                lu.set_clip_rect(left_rect.intersect(ui.clip_rect()));
+                left(&mut lu, g);
+                let bottom = right.min_rect().bottom().max(lu.min_rect().bottom());
+                ui.allocate_rect(
+                    egui::Rect::from_min_max(full.min, egui::pos2(full.max.x, bottom)),
+                    egui::Sense::hover(),
+                );
             }
         });
         let top_y = if compact {

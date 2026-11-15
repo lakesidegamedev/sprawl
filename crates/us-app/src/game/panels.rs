@@ -966,7 +966,8 @@ impl Game {
 
     /// Population, treasury and monthly net as small lines. Needs room, so it checks the width.
     pub(super) fn sparks_ui(&self, ui: &mut Ui) {
-        if ui.available_width() < 640.0 {
+        // three small charts need about 200 points; leave them out rather than crowd the bar
+        if ui.available_width() < 220.0 {
             return;
         }
         let h = self.sim.history();

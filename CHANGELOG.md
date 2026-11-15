@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.0.1 (2026-11-15)
+
+- Fix: on a wide window with the signed-in name and frame rate showing, the top bar drew the election date under the speed buttons. The buttons on the right are now laid out first and the town's figures get the room that is left: the small trend charts are left out, then the election date moves into the approval meter's tip, and nothing is ever drawn under a button. Shown version is 1.0.1.
+
 ## 1.0.0 (2026-11-15)
 
 - Fix: map views (land value, use, cover, demand, traffic, districts) showed no colours on hilly ground since preview 5, because the coloured blocks were drawn under the hills. They now stand on the ground like the buildings. The Build window lists the road tools first, one line per supply, and tall windows use more of the screen before scrolling.
