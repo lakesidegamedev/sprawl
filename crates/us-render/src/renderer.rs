@@ -1426,9 +1426,9 @@ impl Renderer {
         }
         {
             let mut base = [
-                crate::scene::GRASS[0] as f64 / 255.0,
-                crate::scene::GRASS[1] as f64 / 255.0,
-                crate::scene::GRASS[2] as f64 / 255.0,
+                scene.base[0] as f64 / 255.0,
+                scene.base[1] as f64 / 255.0,
+                scene.base[2] as f64 / 255.0,
             ];
             if map_view {
                 let lum = base[0] * 0.3 + base[1] * 0.59 + base[2] * 0.11;

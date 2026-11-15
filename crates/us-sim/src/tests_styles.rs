@@ -82,7 +82,10 @@ fn a_storm_floods_the_low_ground_by_the_harbour() {
     let mut s = grow(Preset::Coast, 2, 10);
     s.wx.soak = 8.0;
     s.step_day();
-    assert!(!s.flooded().is_empty(), "no building by the sea was reached");
+    assert!(
+        !s.flooded().is_empty(),
+        "no building by the sea was reached"
+    );
     // only low ground floods: nothing on the cliff tops
     for &i in s.flooded() {
         let h = s.town.height_at(s.lots()[i].pos);

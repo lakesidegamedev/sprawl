@@ -169,6 +169,8 @@ pub struct Scene {
     pub weather: crate::weather::WeatherLook,
     /// Animation clock in seconds: cars, smoke and people move with it.
     pub time: f32,
+    /// Colour of the land past the edge of the ground mesh.
+    pub base: Rgb,
     x: Extras,
 }
 
@@ -187,6 +189,7 @@ impl Scene {
             calendar: None,
             weather: Default::default(),
             time: 0.0,
+            base: GRASS,
             x: Extras::default(),
         }
     }
@@ -244,6 +247,7 @@ impl Scene {
             calendar: None,
             weather: Default::default(),
             time: 0.0,
+            base: crate::rocklook::look_for(t.preset).map_or(GRASS, |l| l.flat),
             x: Extras::default(),
         };
         let lots: Vec<LotInfo> = t
@@ -568,27 +572,6 @@ impl Scene {
     }
 }
 
-fn hash2(a: u64, b: u64) -> u64 {
-    let mut r = Rng::new(a, b);
-    r.next_u64()
-}
-
-fn zone_colour(zone: Zone, pattern: Pattern, seed: u64, ai: usize) -> Option<Rgb> {
-    match zone {
-        Zone::Core => Some(PAVING_CORE),
-        Zone::Industry => Some(PAVING_INDUSTRY),
-        Zone::Mall => Some(PAVING_MALL),
-        Zone::Campus => Some(CAMPUS),
-        Zone::Park => Some(if pattern == Pattern::Cemetery {
-            CEMETERY
-        } else {
-            PARK_GREEN
-        }),
-        Zone::Farm => Some(FIELDS[(hash2(seed, ai as u64) % FIELDS.len() as u64) as usize]),
-        Zone::Inner | Zone::Outer => None,
-    }
-}
-
 /// Uniform grid over road segments, for "how far is this spot from any road".
 type SegCells = BTreeMap<(i32, i32), Vec<(Pt, Pt, f64)>>;
 
@@ -698,9 +681,9 @@ fn trees_for(kind: LotKind, rng: &mut Rng) -> usize {
 
 fn build_ground(t: &Town, roads: &[RoadInfo], land: &Land) -> Mesh {
     let mut g = Ground::on(land);
-    g.terrain(land, 1500.0, GRASS);
+    live::ground_terrain(&mut g, land, t);
     for (ai, a) in t.additions.iter().enumerate() {
-        if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, ai) {
+        if let Some(c) = live::zone_colour_in(t.preset, a.zone, a.pattern, t.seed, ai) {
             g.polygon(&a.polygon, layer::ZONE, c);
         }
     }

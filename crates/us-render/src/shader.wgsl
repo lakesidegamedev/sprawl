@@ -211,6 +211,21 @@ fn ground_grain(w: vec2<f32>, dist: f32, snowy: bool) -> f32 {
     return k;
 }
 
+// Layers of a steep rock face: the tone steps with height in uneven bands, with a thin dark ledge
+// line between them, so a wall reads as rock whatever the colour of the style.
+fn rock_bands(z: f32, nz: f32) -> f32 {
+    let t = z / 6.5;
+    let band = floor(t);
+    let tone = 0.86 + 0.2 * hash2(vec2<i32>(i32(band), 31));
+    var k = tone;
+    if (fract(t) < 0.07) {
+        k = 0.74;
+    }
+    // fade out towards gentle ground so scree is not striped
+    let w = clamp((0.72 - nz) / 0.12, 0.0, 1.0);
+    return 1.0 + (k - 1.0) * w;
+}
+
 fn is_green(c: vec3<f32>) -> bool {
     return c.g > c.b + 0.08 && c.g > c.r - 0.06;
 }
@@ -341,6 +356,9 @@ fn fs_main(v: VOut) -> FOut {
     if (cel && ground && g.look.z < 0.5 && natural(col)) {
         let snowy = min(col.r, min(col.g, col.b)) > 0.88;
         col = col * ground_grain(v.world.xy, v.dist, snowy);
+    }
+    if (cel && ground && n.z < 0.72 && natural(col)) {
+        col = col * rock_bands(v.world.z, n.z);
     }
     var k = 1.0;
     if (cel && ground) {

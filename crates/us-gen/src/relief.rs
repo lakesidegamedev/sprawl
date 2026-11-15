@@ -383,13 +383,13 @@ impl CoastField {
         }
         let hw = self.harbour_weight(x, y);
         // how high the headlands stand: 60 to 150 m, falling away inland
-        let swing = 0.5 + 0.5 * sin(y / 880.0 + self.cliff_a) * cos(y / 330.0 + self.cliff_b);
-        let head = 62.0 + 80.0 * swing;
+        let swing = 0.5 + 0.5 * sin(y / 1500.0 + self.cliff_a) * cos(y / 760.0 + self.cliff_b);
+        let head = 85.0 + 80.0 * swing;
         let top = plain + head * libm::exp(-d / 420.0);
         // round the harbour the land is low
         let top = top * (1.0 - hw) + (9.0 + 0.12 * top) * hw;
         // a sheer face rounded at the top edge, or a long beach in the harbour
-        let w = 24.0 + 560.0 * hw;
+        let w = 46.0 + 540.0 * hw;
         let t = (d / w).clamp(0.0, 1.0);
         let sheer = 1.0 - (1.0 - t) * (1.0 - t);
         let mix = smooth(0.02, 0.2, hw);
@@ -398,21 +398,27 @@ impl CoastField {
     }
 
     /// Water polygon: everything east of the sea edge, with a flat shelf of ground between it
-    /// and the foot of the cliffs.
+    /// and the foot of the cliffs. It runs on past the map edge so the sea reaches the horizon.
     pub fn sea_ring(&self) -> Vec<Pt> {
         let shelf = -32.0;
-        let mut pts = Vec::new();
+        let far = S + 1600.0;
+        let mut ring = Vec::new();
         let mut y = 560.0;
-        let top = S + 50.0;
-        while y <= top {
-            let x = self.edge_x(y.min(S), shelf).min(S + 50.0);
-            pts.push(pt(x, y));
+        let mut started = false;
+        while y <= S {
+            let x = self.edge_x(y, shelf);
+            if x < S + 40.0 {
+                if !started {
+                    ring.push(pt(far, y));
+                    started = true;
+                }
+                ring.push(pt(x, y));
+            }
             y += 12.0;
         }
-        let mut ring = vec![pt(S + 50.0, 560.0)];
-        ring.extend(pts);
-        ring.push(pt(S + 50.0, top));
-        // drop points that sit on the map edge in the middle of the run
+        ring.push(pt(self.edge_x(S, shelf), S));
+        ring.push(pt(self.edge_x(S, shelf), far));
+        ring.push(pt(far, far));
         ring.dedup_by(|a, b| a.dist(*b) < 1e-6);
         ring
     }

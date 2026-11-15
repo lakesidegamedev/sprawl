@@ -252,6 +252,18 @@ impl Ground {
 
     /// The whole land as a grid of faces in one colour, reaching `apron` metres past the map.
     pub fn terrain(&mut self, land: &Land, apron: f32, color: Rgb) {
+        self.terrain_with(land, apron, &|_, _| color);
+    }
+
+    /// Like `terrain`, with the colour chosen per vertex (rock faces, scree, beaches).
+    pub fn terrain_look(&mut self, land: &Land, apron: f32, look: &crate::rocklook::RockLook) {
+        self.terrain_with(land, apron, &|x, y| {
+            crate::rocklook::vertex_colour(look, land, x, y)
+        });
+    }
+
+    fn terrain_with(&mut self, land: &Land, apron: f32, colour: &dyn Fn(f32, f32) -> Rgb) {
+        let color = colour(0.0, 0.0);
         if self.land.is_none() {
             let s = land.size();
             self.rect(-apron, -apron, s + apron, s + apron, layer::BASE, color);
@@ -268,9 +280,10 @@ impl Ground {
                 // past the map edge the land is held level, so it is shaded level too
                 if x < 0.0 || y < 0.0 || x > size || y > size {
                     let z = land.height(x, y) + layer::BASE;
-                    self.raw(x, y, z, [0.0, 0.0, 1.0], color, ID_GROUND);
+                    let c = colour(x.clamp(0.0, size), y.clamp(0.0, size));
+                    self.raw(x, y, z, [0.0, 0.0, 1.0], c, ID_GROUND);
                 } else {
-                    self.vert(x, y, layer::BASE, color);
+                    self.vert(x, y, layer::BASE, colour(x, y));
                 }
             }
         }

@@ -1114,3 +1114,147 @@ fn version_three_towns_of_the_five_old_styles_are_unchanged() {
         assert_eq!(generate(p, s).fingerprint(), fp, "{} seed {s}", p.name());
     }
 }
+
+fn arterial_grade(t: &Town) -> f64 {
+    let mut worst: f64 = 0.0;
+    for r in t.roads.iter().filter(|r| r.class == RoadClass::Arterial) {
+        let (mut sum, mut n) = (0.0, 0.0);
+        for w in r.points.windows(2) {
+            let len = d(w[0], w[1]);
+            if len > 1.0 {
+                sum += ((t.height_at(w[1]) - t.height_at(w[0])) / len).abs();
+                n += 1.0;
+            }
+        }
+        if n > 20.0 {
+            worst = worst.max(sum / n);
+        }
+    }
+    worst
+}
+
+#[test]
+fn red_rock_towns_have_mesas_buttes_and_spires_standing_well_above_the_flats() {
+    use us_gen::{Relief, Rock};
+    for t in towns().iter().filter(|t| t.preset == Preset::Mesa) {
+        let Relief::Mesa(m) = t.terrain.relief() else {
+            panic!("a red rock town has mesa relief");
+        };
+        let count = |k: Rock| m.formations.iter().filter(|f| f.kind == k).count();
+        assert_eq!(count(Rock::Mesa), 3, "seed {}", t.seed);
+        assert!(
+            count(Rock::Butte) + count(Rock::Spire) >= 3,
+            "seed {}",
+            t.seed
+        );
+        for f in &m.formations {
+            // the top is 100 to 300 m above the ground at its foot, and flat
+            let foot = t.height_at(us_gen::pt(f.c.x + f.r * 1.5 + f.wall + f.skirt, f.c.y));
+            let top = t.height_at(f.c);
+            assert!(
+                top - foot > 95.0 && top - foot < 330.0,
+                "seed {}: {:.0} m",
+                t.seed,
+                top - foot
+            );
+            // walls are sheer
+            let mut wall: f64 = 0.0;
+            for k in 0..8 {
+                let a = k as f64 * std::f64::consts::FRAC_PI_4;
+                let mut r = f.r * 0.7;
+                while r < f.r * 1.4 + f.wall {
+                    wall =
+                        wall.max(t.slope_at(us_gen::pt(f.c.x + r * a.cos(), f.c.y + r * a.sin())));
+                    r += 3.0;
+                }
+            }
+            assert!(wall > 1.0, "seed {}: wall slope {wall:.2}", t.seed);
+            // nothing is built on or round the rock
+            for l in &t.lots {
+                assert!(
+                    f.edge_dist(l.centre.x, l.centre.y) > f.wall + f.skirt * 0.7,
+                    "seed {}: a lot on the rock",
+                    t.seed
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn red_rock_roads_and_the_town_fill_the_flats_between_the_rock() {
+    for t in towns().iter().filter(|t| t.preset == Preset::Mesa) {
+        assert!(arterial_grade(t) < 0.07, "seed {}: roads climb", t.seed);
+        assert!(
+            t.lots.len() > 6000,
+            "seed {}: {} lots",
+            t.seed,
+            t.lots.len()
+        );
+    }
+}
+
+#[test]
+fn coastal_towns_have_a_sea_with_cliffs_a_harbour_and_a_coast_road() {
+    use us_gen::Relief;
+    for t in towns().iter().filter(|t| t.preset == Preset::Coast) {
+        assert_eq!(t.water.len(), 1, "the sea is the only water");
+        let sea = &t.water[0];
+        assert!(sea.iter().any(|p| p.x > t.size), "the sea runs off the map");
+        let Relief::Coast(c) = t.terrain.relief() else {
+            panic!("a coast town has coast relief");
+        };
+        // the sea is flat at sea level; the cliff tops stand 60 to 190 m above it
+        assert_eq!(t.height_at(us_gen::pt(t.size - 60.0, 3000.0)), 0.0);
+        let mut tallest: f64 = 0.0;
+        let mut y = 1500.0;
+        while y < 3900.0 {
+            let x = c.edge_x(y, 120.0);
+            tallest = tallest.max(t.height_at(us_gen::pt(x, y)));
+            y += 40.0;
+        }
+        assert!(
+            tallest > 60.0 && tallest < 200.0,
+            "seed {}: cliffs {tallest:.0} m",
+            t.seed
+        );
+        // the harbour: a cove with a gentle shore and lots on its low ground
+        let h = c.coves[0];
+        let shore = us_gen::pt(c.edge_x(h.c.y, 130.0), h.c.y);
+        assert!(
+            t.height_at(shore) < 12.0,
+            "seed {}: harbour shore {:.0} m",
+            t.seed,
+            t.height_at(shore)
+        );
+        assert!(
+            t.slope_at(shore) < 0.12,
+            "seed {}: harbour shore too steep",
+            t.seed
+        );
+        assert!(
+            t.lots
+                .iter()
+                .any(|l| l.centre.dist(h.c) < h.rho + 900.0 && t.height_at(l.centre) < 12.0),
+            "seed {}: no harbour district",
+            t.seed
+        );
+        // a coast road runs the length of the cliff top, clear of the water
+        let coast_road = t.roads.iter().find(|r| {
+            r.class == RoadClass::Arterial
+                && r.points.len() > 200
+                && r.points
+                    .iter()
+                    .all(|p| ring_dist(*p, sea) > 20.0 || point_in(*p, sea))
+                && r.points.last().unwrap().y > 3900.0
+                && r.points[0].y < 100.0
+        });
+        assert!(coast_road.is_some(), "seed {}: no coast road", t.seed);
+        assert!(
+            arterial_grade(t) < 0.12,
+            "seed {}: roads climb {:.3}",
+            t.seed,
+            arterial_grade(t)
+        );
+    }
+}

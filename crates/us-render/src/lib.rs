@@ -31,6 +31,7 @@ pub mod rail;
 mod renderer;
 mod rng;
 pub mod roadpaint;
+pub mod rocklook;
 mod scene;
 pub mod site;
 pub mod trains;
