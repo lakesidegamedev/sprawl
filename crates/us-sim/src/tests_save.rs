@@ -178,23 +178,55 @@ fn autosave_keeps_the_three_newest_files() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A save from 1.0.0 preview 6 or 7: format 3, no generator version, town from generator 1.
-fn as_format_3(save: &[u8]) -> Vec<u8> {
+/// The body of a current save with its sections cut off, as format 4 wrote it. Only for a save
+/// with no sections.
+fn without_sections(save: &[u8]) -> Vec<u8> {
     let body = &save[22..];
-    // body: preset (1 byte), town seed (8), generator version (1), then the rest
-    let mut old_body = body[..9].to_vec();
-    old_body.extend_from_slice(&body[10..]);
+    assert_eq!(
+        &body[body.len() - 8..],
+        &0u64.to_le_bytes(),
+        "save has sections"
+    );
+    body[..body.len() - 8].to_vec()
+}
+
+fn with_header(version: u16, body: &[u8]) -> Vec<u8> {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for &b in &old_body {
+    for &b in body {
         h ^= b as u64;
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     let mut out = b"USSV".to_vec();
-    out.extend_from_slice(&3u16.to_le_bytes());
-    out.extend_from_slice(&(old_body.len() as u64).to_le_bytes());
+    out.extend_from_slice(&version.to_le_bytes());
+    out.extend_from_slice(&(body.len() as u64).to_le_bytes());
     out.extend_from_slice(&h.to_le_bytes());
-    out.extend_from_slice(&old_body);
+    out.extend_from_slice(body);
     out
+}
+
+/// A save from 1.0.0 preview 6 or 7: format 3, no generator version, town from generator 1.
+fn as_format_3(save: &[u8]) -> Vec<u8> {
+    let body = without_sections(save);
+    // body: preset (1 byte), town seed (8), generator version (1), then the rest
+    let mut old_body = body[..9].to_vec();
+    old_body.extend_from_slice(&body[10..]);
+    with_header(3, &old_body)
+}
+
+#[test]
+fn format_4_saves_open_with_every_feature_at_its_defaults() {
+    let mut s = new_sim(Preset::Sunbelt, Rules::sandbox());
+    for _ in 0..300 {
+        s.step_day();
+    }
+    let old = with_header(4, &without_sections(&s.save()));
+    let mut l = Sim::load(&old).expect("a format 4 save opens");
+    assert_eq!(l.fingerprint(), s.fingerprint());
+    for _ in 0..100 {
+        s.step_day();
+        l.step_day();
+    }
+    assert_eq!(l.fingerprint(), s.fingerprint());
 }
 
 #[test]
