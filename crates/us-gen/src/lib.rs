@@ -8,14 +8,16 @@ mod index;
 mod junctions;
 mod lots;
 mod patterns;
-mod plan;
+pub(crate) mod plan;
 mod polygonize;
+pub mod relief;
 mod rng;
 mod skeleton;
 mod terrain;
 mod world;
 
 pub use geom::{Pt, pt};
+pub use relief::{CoastField, Cove, Formation, MesaField, Rock};
 pub use terrain::Terrain;
 pub use world::{HALL, HWY_Y, S as MAP_SIZE};
 
@@ -193,7 +195,7 @@ impl Settings {
         };
         // Tuned offline against road statistics of real towns (`us-metrics tune`). Newer styles
         // start from their base style's numbers.
-        match p.base() {
+        let tuned = match p.base() {
             Preset::Grid => Settings {
                 arterial_spacing: 1400.0,
                 block_scale: 1.84,
@@ -259,6 +261,14 @@ impl Settings {
                 ..base
             },
             Preset::Gorge | Preset::Mesa | Preset::Valley | Preset::Coast => base,
+        };
+        match p {
+            // the sea and the cliffs bound the town on one side: it reaches further the other way
+            Preset::Coast => Settings {
+                reach: 2500.0,
+                ..tuned
+            },
+            _ => tuned,
         }
     }
 }

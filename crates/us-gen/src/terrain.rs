@@ -3,6 +3,7 @@
 
 use crate::geom::{Pt, atan2, cos, pt, sin};
 use crate::rng::Rng;
+use crate::relief::Relief;
 use crate::world::{HALL, HWY_Y, River, S};
 
 const WAVES: usize = 6;
@@ -16,6 +17,8 @@ pub struct Terrain {
     basin: Option<(Pt, f64)>,
     /// (kx, ky, phase, amplitude) of each wave.
     waves: [(f64, f64, f64, f64); WAVES],
+    /// Extra relief of the newer styles (nothing for the five 1.0 styles).
+    relief: Relief,
 }
 
 fn smooth(a: f64, b: f64, x: f64) -> f64 {
@@ -47,11 +50,26 @@ impl Terrain {
             river: river.clone(),
             basin,
             waves,
+            relief: Relief::None,
         }
+    }
+
+    pub(crate) fn with_relief(mut self, relief: Relief) -> Terrain {
+        self.relief = relief;
+        self
     }
 
     /// Ground height in metres (0 is roughly the river's floor).
     pub fn height(&self, x: f64, y: f64) -> f64 {
+        let plain = self.plain_height(x, y);
+        match &self.relief {
+            Relief::None => plain,
+            Relief::Mesa(m) => plain + m.delta(x, y),
+            Relief::Coast(c) => c.height(plain, x, y),
+        }
+    }
+
+    fn plain_height(&self, x: f64, y: f64) -> f64 {
         let mut hills = 0.0;
         for (kx, ky, ph, a) in &self.waves {
             hills += a * sin(kx * x + ky * y + ph);

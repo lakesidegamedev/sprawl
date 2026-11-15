@@ -4,6 +4,7 @@ use crate::geom::{
     Pt, clip_line, dedup, dist_pt_line, dist_ring_line, interpolate, length, project, pt,
     split_line_at,
 };
+use crate::plan::Extra;
 use crate::rng::Rng;
 use crate::terrain::Terrain;
 use crate::world::{HALL, HWY_Y, Lake, River, S, TAU, ln_angle, map_ring, ring_road, wander_line};
@@ -41,7 +42,11 @@ pub fn build(
     st: &Settings,
     terrain: &Terrain,
     lake: Option<&Lake>,
+    extra: &Extra,
 ) -> Skeleton {
+    if extra.style == Some(Preset::Coast) {
+        return coast(seed, river, terrain, extra);
+    }
     let tr = Some(terrain);
     let drive_zone = river.band(-116.0, 116.0);
     let mut roads: Vec<(Vec<Pt>, RoadClass)> = vec![(highway(), RoadClass::Highway)];
@@ -504,5 +509,104 @@ fn riverside_drives(roads: &mut Vec<(Vec<Pt>, RoadClass)>, river: &River, always
         for p in pieces {
             roads.push((p, RoadClass::Arterial));
         }
+    }
+}
+
+/// The road skeleton of a coastal town: the highway along the south, a coast road along the cliff
+/// tops, a main road north from the hall, and roads running out to the sea.
+fn coast(seed: u64, river: &River, terrain: &Terrain, extra: &Extra) -> Skeleton {
+    let field = extra.sea.as_ref().expect("a coast town has a sea");
+    let zone = &extra.zones[0];
+    let tr = Some(terrain);
+    let mut rng = Rng::new(seed, 0x5ce2);
+    let mut roads: Vec<(Vec<Pt>, RoadClass)> = vec![(highway(), RoadClass::Highway)];
+    let _ = river;
+    // the coast road: on the cliff top, from the highway to the north edge
+    let (line, _) = field.coast_line(46.0);
+    roads.push((line, RoadClass::Arterial));
+    let keep = |lines: Vec<Vec<Pt>>| -> Vec<Vec<Pt>> {
+        lines
+            .into_iter()
+            .flat_map(|l| clip_line(&l, zone, false))
+            .filter(|p| length(p) > 100.0)
+            .collect()
+    };
+    // a main road north from the hall
+    let two_way = |heading: f64, anchor: Pt, salt: u64, amp: f64| -> Vec<Pt> {
+        let a = wander_line(
+            anchor,
+            heading + std::f64::consts::PI,
+            &mut Rng::new(seed, salt),
+            amp,
+            tr,
+        );
+        let b = wander_line(anchor, heading, &mut Rng::new(seed, salt + 1), amp, tr);
+        let mut l: Vec<Pt> = a.iter().rev().copied().collect();
+        l.extend(b.iter().skip(1).copied());
+        l
+    };
+    let main = two_way(
+        std::f64::consts::FRAC_PI_2 + rng.uniform(-4.0, 4.0).to_radians(),
+        HALL,
+        60,
+        0.12,
+    );
+    for p in keep(within_map(&main)) {
+        if dist_pt_line(HALL, &p) < 8.0 {
+            roads.push((p, RoadClass::Arterial));
+        }
+    }
+    // roads out to the sea: one to the harbour, one each side of it
+    let yh = field.coves[0].c.y;
+    let mut ys = vec![yh, HALL.y - 780.0 + rng.uniform(-60.0, 60.0)];
+    let north = HALL.y + 820.0 + rng.uniform(-60.0, 60.0);
+    if (north - yh).abs() > 500.0 {
+        ys.push(north);
+    }
+    ys.push(2900.0 + rng.uniform(-150.0, 150.0));
+    for (i, y0) in ys.into_iter().enumerate() {
+        if (y0 - yh).abs() < 450.0 && i > 0 {
+            continue;
+        }
+        let ln = wander_line(
+            pt(0.0, y0),
+            rng.uniform(-3.0, 3.0).to_radians(),
+            &mut Rng::new(seed, 70 + i as u64),
+            0.12,
+            tr,
+        );
+        if let Some(p) = keep(within_map(&ln)).into_iter().find(|p| p[0].x < 1.0) {
+            roads.push((p, RoadClass::Arterial));
+        }
+    }
+    // an inland road and a headland road, both north from the highway
+    for (i, x0) in [900.0, 2750.0].into_iter().enumerate() {
+        let ln = wander_line(
+            pt(x0 + rng.uniform(-80.0, 80.0), HWY_Y),
+            std::f64::consts::FRAC_PI_2,
+            &mut Rng::new(seed, 80 + i as u64),
+            0.1,
+            tr,
+        );
+        if let Some(p) = keep(within_map(&ln)).into_iter().find(|p| p[0].y <= HWY_Y + 1.0) {
+            roads.push((p, RoadClass::Arterial));
+        }
+    }
+    let rail_angle = (7.0 + rng.uniform(-3.0, 3.0)).to_radians();
+    let mut rails = Vec::new();
+    let start = pt(0.0, 380.0 + rng.uniform(-40.0, 80.0));
+    for p in keep(within_map(&wander_line(
+        start,
+        rail_angle,
+        &mut Rng::new(seed, 2),
+        0.05,
+        tr,
+    ))) {
+        rails.push(p);
+    }
+    Skeleton {
+        roads,
+        rails,
+        rail_angle,
     }
 }
