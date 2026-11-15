@@ -20,6 +20,7 @@ mod charts;
 mod districts;
 mod panels;
 mod screens;
+mod trams;
 
 use screens::{Mode, Nav};
 pub mod touch;
@@ -1601,6 +1602,9 @@ impl State {
             }
             if g.ui.ordinances_open {
                 g.ordinances_ui(ctx, screen_w);
+            }
+            if g.ui.trams.open {
+                g.trams_ui(ctx, screen_w);
             }
             g.legend_ui(ctx);
             // why panel

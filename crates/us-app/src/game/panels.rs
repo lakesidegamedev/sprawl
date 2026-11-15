@@ -390,6 +390,8 @@ pub struct UiState {
     pub rivals_open: bool,
     pub districts_open: bool,
     pub ordinances_open: bool,
+    /// The Tram window (see `trams.rs`).
+    pub(super) trams: super::trams::TramUi,
     /// The district the paint tool works on, while it is on.
     pub paint: Option<usize>,
     /// The district chosen in the Districts window.
@@ -436,6 +438,7 @@ impl Default for UiState {
             rivals_open: false,
             districts_open: false,
             ordinances_open: false,
+            trams: Default::default(),
             paint: None,
             dist_sel: None,
             dist_stats: Vec::new(),
@@ -877,6 +880,7 @@ impl Game {
                 "nolevers" => self.ui.levers_open = false,
                 "voters" => self.voters_open = true,
                 "rivals" => self.ui.rivals_open = true,
+                "trams" => self.smoke_trams(),
                 "noelection" => {
                     self.election_seen = self.sim.last_election().map_or(-1, |e| e.day);
                 }
@@ -934,6 +938,12 @@ impl Game {
                 "Ordinances",
                 &mut u.ordinances_open,
                 "Town and district policies (H)",
+            );
+            t(
+                ui,
+                "Trams",
+                &mut u.trams.open,
+                "Link transit stops into tram lines",
             );
             let news = if unread > 0 {
                 format!("News {unread}")

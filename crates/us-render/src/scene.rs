@@ -121,6 +121,7 @@ struct Extras {
     walkers: Vec<Walker>,
     lamps: Vec<Instance>,
     trains: crate::trains::Trains,
+    trams: crate::trams::Trams,
     centre: [f32; 2],
     overlay: Option<OverlayState>,
     overlay_rev: u64,
@@ -367,6 +368,15 @@ impl Scene {
         self.x.trains = crate::trains::Trains::plan(&self.x.paths, service);
     }
 
+    /// The tram lines: where they run, where they stop and how often. Does nothing when the
+    /// service is unchanged.
+    pub fn set_trams(&mut self, service: crate::trams::TramService) {
+        if self.x.trams.service == service {
+            return;
+        }
+        self.x.trams = crate::trams::Trams::plan(service, &self.land);
+    }
+
     pub fn set_calendar(&mut self, c: Option<Calendar>) {
         self.calendar = c;
     }
@@ -376,12 +386,14 @@ impl Scene {
         if self.x.overlay.is_some() {
             return FrameInstances::default();
         }
+        let mut trains = self.x.trains.instances(&self.x.paths, self.time);
+        self.x.trams.add_instances(&mut trains, self.time);
         FrameInstances {
             cars: instances::car_instances(&self.x.paths, &self.x.cars, self.time),
             puffs: instances::puff_instances(&self.x.chimneys, self.time),
             people: instances::walker_instances(&self.x.paths, &self.x.walkers, self.time),
             lamps: self.x.lamps.clone(),
-            trains: self.x.trains.instances(&self.x.paths, self.time),
+            trains,
         }
     }
 

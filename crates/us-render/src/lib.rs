@@ -29,6 +29,7 @@ mod renderer;
 mod rng;
 mod scene;
 pub mod trains;
+pub mod trams;
 
 pub use calendar::{Calendar, DayPhase, Season};
 pub use camera::{Camera, View, pick_ground, pick_terrain, project, ray_ground};

@@ -92,6 +92,9 @@ pub struct LiveScene {
     /// Lots or roads changed since the scene was last told the geometry.
     geo_dirty: bool,
     geo_at: Instant,
+    /// The chunk that holds every tram track, and what it was last drawn from.
+    tram_chunk: Option<usize>,
+    tram_key: Vec<u32>,
 }
 
 fn cell_of(x: f64, y: f64) -> Cell {
@@ -419,6 +422,8 @@ impl LiveScene {
             triangles: 0,
             geo_dirty: true,
             geo_at: Instant::now(),
+            tram_chunk: None,
+            tram_key: vec![u32::MAX],
         };
         if show_hall {
             ls.mark(hall_cell);
@@ -644,6 +649,69 @@ impl LiveScene {
             depots,
             elevators,
         });
+        self.sync_trams(sim);
+    }
+
+    /// Draw the tram tracks as the lines are built and tell the scene where trams run.
+    fn sync_trams(&mut self, sim: &Sim) {
+        use us_render::trams::{BuildStage, TrackDraw, TramLineService, TramService};
+        let lines = sim.tram_lines();
+        let mut key = vec![sim.trams_version()];
+        for l in &lines {
+            key.push(
+                match l.state {
+                    us_sim::TramState::Track => 0,
+                    us_sim::TramState::Wires => 100,
+                    us_sim::TramState::Open => 200,
+                } + (l.progress * 12.0) as u32,
+            );
+        }
+        let per_hour = sim.tram_rate();
+        self.scene.set_trams(TramService {
+            lines: lines
+                .iter()
+                .map(|l| TramLineService {
+                    points: l.points.iter().map(|p| [p.x as f32, p.y as f32]).collect(),
+                    stop_at: l.stop_at.iter().map(|&s| s as f32).collect(),
+                    per_hour,
+                    open: l.state == us_sim::TramState::Open,
+                })
+                .collect(),
+        });
+        if key == self.tram_key {
+            return;
+        }
+        self.tram_key = key;
+        let draws: Vec<TrackDraw> = lines
+            .iter()
+            .map(|l| TrackDraw {
+                points: &l.points,
+                stage: match l.state {
+                    us_sim::TramState::Track => BuildStage::Track,
+                    us_sim::TramState::Wires => BuildStage::Wires,
+                    us_sim::TramState::Open => BuildStage::Open,
+                },
+                progress: l.progress,
+            })
+            .collect();
+        let mesh = us_render::trams::track_mesh(&self.land, &draws);
+        let (zlo, zhi) = self.z_range(8.0);
+        let size = self.town.size as f32;
+        self.rev += 1;
+        let chunk = Chunk {
+            rev: self.rev,
+            mesh,
+            far: None,
+            lo: Vec3::new(-100.0, -100.0, zlo),
+            hi: Vec3::new(size + 100.0, size + 100.0, zhi),
+        };
+        match self.tram_chunk {
+            Some(ci) => self.scene.chunks[ci] = chunk,
+            None => {
+                self.scene.chunks.push(chunk);
+                self.tram_chunk = Some(self.scene.chunks.len() - 1);
+            }
+        }
     }
 
     /// Follow road changes: new class or new streets show as roadworks that finish over time.

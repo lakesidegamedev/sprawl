@@ -14,7 +14,7 @@ use us_gen::RoadClass;
 pub const TRAIN_ID_BASE: u32 = 12_000_000;
 /// Outline ids reserved per vehicle: a vehicle has far more faces than a car.
 pub const TRAIN_ID_STRIDE: u32 = ID_STRIDE * 8;
-const KIND_ID_SPAN: u32 = 40_000;
+pub(crate) const KIND_ID_SPAN: u32 = 40_000;
 /// Most vehicles of one kind drawn at once.
 pub const MAX_PER_KIND: usize = 300;
 
@@ -55,14 +55,20 @@ pub enum Vehicle {
     Coach,
     Hopper,
     Boxcar,
+    /// A tram of two sections (see `trams`).
+    Tram2,
+    /// A tram of three sections.
+    Tram3,
 }
 
 impl Vehicle {
-    pub const ALL: [Vehicle; 4] = [
+    pub const ALL: [Vehicle; 6] = [
         Vehicle::Loco,
         Vehicle::Coach,
         Vehicle::Hopper,
         Vehicle::Boxcar,
+        Vehicle::Tram2,
+        Vehicle::Tram3,
     ];
 
     pub fn length(self) -> f32 {
@@ -71,6 +77,8 @@ impl Vehicle {
             Vehicle::Coach => COACH_LEN,
             Vehicle::Hopper => HOPPER_LEN,
             Vehicle::Boxcar => BOXCAR_LEN,
+            Vehicle::Tram2 => crate::trams::tram_len(2),
+            Vehicle::Tram3 => crate::trams::tram_len(3),
         }
     }
 
@@ -80,6 +88,8 @@ impl Vehicle {
 
     pub fn mesh(self) -> Mesh {
         let o = match self {
+            Vehicle::Tram2 => crate::trams::tram(2),
+            Vehicle::Tram3 => crate::trams::tram(3),
             Vehicle::Loco => loco(),
             Vehicle::Coach => coach(),
             Vehicle::Hopper => hopper(),
@@ -95,7 +105,7 @@ impl Vehicle {
 /// The instances of every vehicle kind, indexed like [`Vehicle::ALL`].
 #[derive(Default, Clone)]
 pub struct TrainInstances {
-    pub sets: [Vec<Instance>; 4],
+    pub sets: [Vec<Instance>; 6],
 }
 
 impl TrainInstances {
@@ -369,7 +379,7 @@ impl Trains {
     /// Where every vehicle is at `time` seconds.
     pub fn instances(&self, paths: &[Path], time: f32) -> TrainInstances {
         let mut out = TrainInstances::default();
-        let mut counts = [0u32; 4];
+        let mut counts = [0u32; 6];
         for line in &self.lines {
             let p = &paths[line.path];
             let l = p.length();

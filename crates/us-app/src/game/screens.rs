@@ -495,6 +495,7 @@ impl Game {
         u.rivals_open = false;
         u.districts_open = false;
         u.ordinances_open = false;
+        u.trams.open = false;
         u.paint = None;
         u.tool = None;
         self.voters_open = false;
@@ -512,6 +513,7 @@ impl Game {
             || u.rivals_open
             || u.districts_open
             || u.ordinances_open
+            || u.trams.open
             || self.voters_open
             || self.map_open
     }
@@ -530,6 +532,7 @@ impl Game {
             self.ui.rivals_open,
             self.ui.districts_open,
             self.ui.ordinances_open,
+            self.ui.trams.open,
         ];
         let Some(keep) = order.iter().position(|&b| b) else {
             return;
@@ -558,6 +561,7 @@ impl Game {
             self.ui.levers_open = lv;
             self.ui.districts_open = keep == 8;
             self.ui.ordinances_open = keep == 9;
+            self.ui.trams.open = keep == 11;
             if keep != 8 {
                 self.ui.paint = None;
             }
@@ -572,7 +576,7 @@ impl Game {
         } else {
             "NEWS".to_string()
         };
-        let items: [(&str, bool); 11] = [
+        let items: [(&str, bool); 12] = [
             ("TAXES", self.ui.levers_open),
             ("BUDGET", self.ui.budget_open),
             ("BONDS", self.ui.loans_open),
@@ -584,6 +588,7 @@ impl Game {
             ("MAP", self.map_open),
             ("DISTRICT", self.ui.districts_open),
             ("RULES", self.ui.ordinances_open),
+            ("TRAMS", self.ui.trams.open),
         ];
         let rows = super::panels::dock_rows(ui.ctx());
         let per = items.len().div_ceil(rows);
@@ -627,7 +632,8 @@ impl Game {
                     7 => self.ui.rivals_open = true,
                     8 => self.map_open = true,
                     9 => self.ui.districts_open = true,
-                    _ => self.ui.ordinances_open = true,
+                    10 => self.ui.ordinances_open = true,
+                    _ => self.ui.trams.open = true,
                 }
             }
         }
