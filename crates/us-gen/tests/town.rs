@@ -1084,3 +1084,33 @@ fn version_three_towns_have_ramps_between_highway_and_arterial() {
     }
     assert!(ramps >= 20, "only {ramps} ramps in 60 towns");
 }
+
+#[test]
+fn version_three_towns_of_the_five_old_styles_are_unchanged() {
+    // the newer styles must never reach the code paths of these five
+    let known: [(Preset, u64, u64); 20] = [
+        (Preset::Grid, 1, 0x3226bdf61bd78561),
+        (Preset::Grid, 2, 0x5687d114417a755a),
+        (Preset::Grid, 3, 0x1c0f6c1241e0d3d2),
+        (Preset::Grid, 4, 0xfc08ddb47d499082),
+        (Preset::Winding, 1, 0xd3a6774c9a5a64c2),
+        (Preset::Winding, 2, 0x14c09d253cedf9a4),
+        (Preset::Winding, 3, 0x9b920a40c5ac6f41),
+        (Preset::Winding, 4, 0x925ed1e3181ff426),
+        (Preset::Sunbelt, 1, 0x792475721d1cc46b),
+        (Preset::Sunbelt, 2, 0x1d8d5cb00965d273),
+        (Preset::Sunbelt, 3, 0x1b621a2dc6a1c1a6),
+        (Preset::Sunbelt, 4, 0x84880390cd6d7458),
+        (Preset::Crossroads, 1, 0x7c3b9f12b203fda1),
+        (Preset::Crossroads, 2, 0x150fbd219114c683),
+        (Preset::Crossroads, 3, 0x17beddd8bfc3a0e5),
+        (Preset::Crossroads, 4, 0xcb1231c13de7de5a),
+        (Preset::LakeTown, 1, 0x2fe90211b2a662d9),
+        (Preset::LakeTown, 2, 0xa77fd1b4ddc02de0),
+        (Preset::LakeTown, 3, 0x812d79865c3a7add),
+        (Preset::LakeTown, 4, 0x5b9ae8b9ca1e764d),
+    ];
+    for (p, s, fp) in known {
+        assert_eq!(generate(p, s).fingerprint(), fp, "{} seed {s}", p.name());
+    }
+}
