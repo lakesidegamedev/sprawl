@@ -195,6 +195,18 @@ impl Ground {
         }
     }
 
+    /// True when the point is in a river or lake (always false on level land).
+    pub fn water_at(&self, p: Pt) -> bool {
+        self.land.as_ref().is_some_and(|l| l.water_at(p).is_some())
+    }
+
+    /// True when any part of the line is carried on a bridge deck.
+    pub fn on_bridge(&self, line: &[Pt]) -> bool {
+        self.land
+            .as_ref()
+            .is_some_and(|l| l.bed(line).weight.iter().any(|&w| w > 0.0))
+    }
+
     /// Ground height under a point (0 on level land).
     pub fn height_at(&self, x: f32, y: f32) -> f32 {
         self.land.as_ref().map_or(0.0, |l| l.height(x, y))

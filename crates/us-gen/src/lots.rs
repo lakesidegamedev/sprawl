@@ -274,6 +274,25 @@ pub fn make_lots(
     for c in culs {
         h.add(c.pos.x, c.pos.y, 9.0);
     }
+    // the island of a roundabout stays clear
+    for d in drafts {
+        if d.class == RoadClass::Collector
+            && d.line.len() == 33
+            && d.line[0].dist(d.line[32]) < 1e-6
+        {
+            let n = 32.0;
+            let c = pt(
+                d.line[..32].iter().map(|p| p.x).sum::<f64>() / n,
+                d.line[..32].iter().map(|p| p.y).sum::<f64>() / n,
+            );
+            if d.line
+                .iter()
+                .all(|p| (p.dist(c) - crate::junctions::RING_R).abs() < 0.3)
+            {
+                h.add(c.x, c.y, crate::junctions::RING_R - 6.0);
+            }
+        }
+    }
     h.add(hall.x, hall.y, hall_r + 10.0);
     let mut ctx = Ctx {
         additions,

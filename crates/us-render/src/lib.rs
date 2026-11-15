@@ -30,6 +30,7 @@ pub mod parts;
 pub mod rail;
 mod renderer;
 mod rng;
+pub mod roadpaint;
 mod scene;
 pub mod site;
 pub mod trains;
