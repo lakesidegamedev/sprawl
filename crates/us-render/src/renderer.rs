@@ -719,7 +719,7 @@ impl Renderer {
             inst_pipeline,
             shadow_inst_pipeline,
             templates: Vec::new(),
-            inst_bufs: (0..14).map(|_| None).collect(),
+            inst_bufs: (0..24).map(|_| None).collect(),
             overlay_gpu: None,
         };
         r.templates = vec![
@@ -738,6 +738,14 @@ impl Renderer {
             r.upload_mesh(&crate::emergency::RigKind::Ambulance.mesh(), "ambulance"),
             r.upload_mesh(&crate::emergency::flame_mesh(), "flame"),
         ];
+        for v in crate::fleet::Vehicle::ALL {
+            let t = r.upload_mesh(&v.mesh(), v.name());
+            r.templates.push(t);
+        }
+        for p in crate::fleet::Prop::ALL {
+            let t = r.upload_mesh(&p.mesh(), p.name());
+            r.templates.push(t);
+        }
         Ok(r)
     }
 
@@ -1224,7 +1232,7 @@ impl Renderer {
             fi.lamps
                 .retain(|l| Vec3::from(l.pos).distance_squared(eye) < LAMP_FAR * LAMP_FAR);
         }
-        let sets: [&[crate::instances::Instance]; 14] = [
+        let sets: [&[crate::instances::Instance]; 24] = [
             &fi.cars,
             &fi.puffs,
             &fi.people,
@@ -1239,6 +1247,16 @@ impl Renderer {
             &fi.rigs[1],
             &fi.rigs[2],
             &fi.flames,
+            &fi.fleet[0],
+            &fi.fleet[1],
+            &fi.fleet[2],
+            &fi.fleet[3],
+            &fi.fleet[4],
+            &fi.props[0],
+            &fi.props[1],
+            &fi.props[2],
+            &fi.props[3],
+            &fi.props[4],
         ];
         for (k, set) in sets.iter().enumerate() {
             if set.is_empty() {

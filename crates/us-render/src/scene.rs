@@ -120,6 +120,9 @@ struct Extras {
     chimneys: Vec<[f32; 3]>,
     walkers: Vec<Walker>,
     lamps: Vec<Instance>,
+    fleet: Vec<crate::fleet::Veh>,
+    props: [Vec<Instance>; 5],
+    population: Option<u32>,
     trains: crate::trains::Trains,
     trams: crate::trams::Trams,
     vehicles: Vec<crate::emergency::EmVehicle>,
@@ -137,6 +140,10 @@ pub struct FrameInstances {
     pub puffs: Vec<Instance>,
     pub people: Vec<Instance>,
     pub lamps: Vec<Instance>,
+    /// Buses, delivery trucks, garbage trucks, pickups and vans, by `fleet::Vehicle::index`.
+    pub fleet: [Vec<Instance>; 5],
+    /// Traffic lights, bus shelters, billboards, benches and bins, by `fleet::Prop::index`.
+    pub props: [Vec<Instance>; 5],
     pub trains: crate::trains::TrainInstances,
     /// Fire engines, police cars and ambulances.
     pub rigs: [Vec<Instance>; 3],
@@ -267,6 +274,8 @@ impl Scene {
         self.x.trains = crate::trains::Trains::plan(&self.x.paths, service);
         self.x.walkers = instances::make_walkers(&self.x.paths, self.x.centre, 260.0);
         self.x.cars = instances::make_cars(&self.x.paths, &self.x.volumes);
+        self.x.props = crate::fleet::make_props(&self.x.paths, &self.x.lots, self.x.centre);
+        self.rebuild_fleet();
         self.refresh_chimneys();
     }
 
@@ -393,6 +402,21 @@ impl Scene {
         self.x.blazes = blazes;
     }
 
+    /// The town's population: it sets how many buses, delivery trucks, garbage trucks, pickups
+    /// and vans run. Without it the fleet is sized from the number of lots.
+    pub fn set_population(&mut self, population: u32) {
+        if self.x.population == Some(population) {
+            return;
+        }
+        self.x.population = Some(population);
+        self.rebuild_fleet();
+    }
+
+    fn rebuild_fleet(&mut self) {
+        let pop = self.x.population.unwrap_or(self.x.lots.len() as u32 * 3);
+        self.x.fleet = crate::fleet::make_fleet(&self.x.paths, &self.x.lots, pop);
+    }
+
     pub fn set_calendar(&mut self, c: Option<Calendar>) {
         self.calendar = c;
     }
@@ -414,6 +438,8 @@ impl Scene {
             puffs,
             people: instances::walker_instances(&self.x.paths, &self.x.walkers, self.time),
             lamps: self.x.lamps.clone(),
+            fleet: crate::fleet::fleet_instances(&self.x.paths, &self.x.fleet, self.time),
+            props: self.x.props.clone(),
             trains,
             rigs,
             flames,
