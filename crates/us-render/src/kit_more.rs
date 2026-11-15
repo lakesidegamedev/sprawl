@@ -982,6 +982,63 @@ pub fn variant(
     density: f32,
     rng: &mut Rng,
 ) -> Option<Obj> {
+    let o = variant_raw(region, kind, level, density, rng)?;
+    Some(diversify(o, region, rng))
+}
+
+/// Make neighbours of the same model differ: a slightly different size and a body colour
+/// nudged toward one of the region's paints, all from the seeded roll.
+fn diversify(o: Obj, region: Region, rng: &mut Rng) -> Obj {
+    let sx = rng.range(0.86, 1.08);
+    let sy = rng.range(0.86, 1.08);
+    let sz = rng.range(0.92, 1.12);
+    let mut o = crate::levels::scaled(&o, sx, sy, sz);
+    let mut counts: Vec<(Rgb, usize)> = Vec::new();
+    for p in &o.polys {
+        if p.color == GLASS
+            || p.color == GLASS_D
+            || p.color == MARKER_SKIP
+            || p.color == TREE
+            || p.color == crate::kit::TREE_D
+        {
+            continue;
+        }
+        match counts.iter_mut().find(|c| c.0 == p.color) {
+            Some(c) => c.1 += 1,
+            None => counts.push((p.color, 1)),
+        }
+    }
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    if let Some(&(body, _)) = counts.first() {
+        let paint = match material(region, rng) {
+            Mat::Brick => rng.pick(&BRICKS),
+            Mat::Concrete => rng.pick(&CONCS),
+            _ => rng.pick(&PAINTS),
+        };
+        let k = rng.range(0.15, 0.45);
+        let j = |rng: &mut Rng| rng.range(-9.0, 9.0);
+        let mut c = mix(body, paint, k);
+        for v in &mut c {
+            *v = (*v as f32 + j(rng)).clamp(0.0, 255.0) as u8;
+        }
+        for p in &mut o.polys {
+            if p.color == body {
+                p.color = c;
+            }
+        }
+    }
+    o
+}
+
+const MARKER_SKIP: Rgb = [255, 0, 255];
+
+fn variant_raw(
+    region: Region,
+    kind: LotKind,
+    level: u8,
+    density: f32,
+    rng: &mut Rng,
+) -> Option<Obj> {
     let r = rng.below(100);
     let tall = (density - 0.75).max(0.0) / 0.25;
     let l = level;
