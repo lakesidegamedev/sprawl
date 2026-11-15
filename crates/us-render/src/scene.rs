@@ -323,7 +323,7 @@ impl Scene {
                     ),
                     None => (Vec::new(), None),
                 };
-                let mesh = overlay::build_mesh(&self.x.lots, &mass, hall, &roads, &ov);
+                let mesh = overlay::build_mesh(&self.x.lots, &mass, hall, &roads, &ov, &self.land);
                 self.x.overlay_rev += 1;
                 self.x.overlay = Some(OverlayState {
                     mesh,

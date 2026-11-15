@@ -30,7 +30,7 @@ fn overlay_has_one_block_per_lot() {
         lots: t.lots.iter().map(|l| use_category(l.kind) as f32).collect(),
         roads: vec![],
     };
-    let m = build_mesh(&lots, &[], None, &[], &ov);
+    let m = build_mesh(&lots, &[], None, &[], &ov, &us_render::Land::flat(4096.0));
     let blocks: BTreeSet<u32> = m
         .vertices
         .iter()
@@ -43,7 +43,7 @@ fn overlay_has_one_block_per_lot() {
         lots: ov.lots[..10].to_vec(),
         ..ov.clone()
     };
-    let m = build_mesh(&lots, &[], None, &[], &half);
+    let m = build_mesh(&lots, &[], None, &[], &half, &us_render::Land::flat(4096.0));
     let blocks: BTreeSet<u32> = m
         .vertices
         .iter()
