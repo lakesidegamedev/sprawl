@@ -134,16 +134,156 @@ pub fn ring_arc(r: &RoadDraw) -> Option<(Pt, bool)> {
     Some((o, ccw))
 }
 
-/// A short collector that leaves a highway: a ramp.
+/// A short collector that leaves a highway: a ramp. Its drawn line starts at the highway's
+/// edge (see `ramp_cut`), so an end within the highway's width counts.
 fn is_ramp(r: &RoadDraw, all: &[&RoadDraw]) -> bool {
     r.class == RoadClass::Collector
-        && r.points.len() == 15
+        && r.points.len() <= 15
+        && r.points.len() >= 2
         && all.iter().any(|h| {
             h.class == RoadClass::Highway
-                && [r.points[0], r.points[14]]
+                && [r.points[0], r.points[r.points.len() - 1]]
                     .iter()
-                    .any(|e| project(h.points, *e).1 < 1.5)
+                    .any(|e| project(h.points, *e).1 < RAMP_CUT + 1.5)
         })
+}
+
+/// Distance from a ramp's centre line to the highway's where the drawn slip lane starts: its
+/// surface then meets the highway's outer lane in a taper, with no junction patch.
+const RAMP_CUT: f64 = 16.0;
+
+/// Half width of a slip lane as drawn: one lane, one way.
+pub const RAMP_HW: f64 = 4.0;
+
+/// Height of the patch that hides the highway's edge line along a slip lane's merge.
+pub const GAP_Z: f32 = z::MARK + 0.01;
+
+/// Length of the merge taper along the highway's edge, metres.
+const TAPER: f64 = 75.0;
+
+/// How a ramp meets its highway, for drawing.
+pub struct RampCut {
+    /// The line to draw: from where the slip lane's inner edge meets the highway's edge.
+    pub line: Vec<Pt>,
+    /// The merge wedge: a thin triangle along the highway's edge widening to the slip lane.
+    pub wedge: [Pt; 3],
+    /// The strip of the highway's edge line to paint over where the slip lane joins.
+    pub gap: [Pt; 4],
+}
+
+/// Whether a (cut) ramp is an exit, traffic leaving the highway, or an entrance. Traffic keeps
+/// right: on the side of the highway the ramp sits, it runs along the direction whose right is
+/// that side; a ramp leaving in that direction is an exit. Also returns which end is the
+/// highway's.
+fn ramp_flow(r: &RoadDraw, all: &[&RoadDraw]) -> Option<(bool, bool)> {
+    let p = r.points;
+    for h in all.iter().filter(|h| h.class == RoadClass::Highway) {
+        for front in [true, false] {
+            let (e, nx) = if front {
+                (p[0], p[1])
+            } else {
+                (p[p.len() - 1], p[p.len() - 2])
+            };
+            let (along, dist, q) = project(h.points, e);
+            if dist > RAMP_CUT + 1.5 {
+                continue;
+            }
+            let ht = tangent_at(h.points, along);
+            let n = (e - q).unit();
+            let v = if pt(ht.y, -ht.x).dot(n) > 0.0 {
+                ht
+            } else {
+                ht * -1.0
+            };
+            let d = (nx - e).unit();
+            return Some((d.dot(v) > 0.0, front));
+        }
+    }
+    None
+}
+
+/// Unit direction of a polyline at a distance along it.
+fn tangent_at(line: &[Pt], along: f64) -> Pt {
+    let mut acc = 0.0;
+    for w in line.windows(2) {
+        let l = w[0].dist(w[1]);
+        if acc + l >= along {
+            return (w[1] - w[0]).unit();
+        }
+        acc += l;
+    }
+    let n = line.len();
+    (line[n - 1] - line[n - 2]).unit()
+}
+
+/// The part of a ramp to draw: the line from where its inner edge meets the highway's edge, and
+/// the merge wedge (a thin triangle along the highway's edge that widens to the ramp). `None`
+/// for any road that is not a ramp (15 points, a collector, one end on a highway's centre line).
+pub fn ramp_cut(r: &RoadDraw, highways: &[&[Pt]]) -> Option<RampCut> {
+    if r.class != RoadClass::Collector || r.points.len() != 15 {
+        return None;
+    }
+    let p = r.points;
+    let (front, h) = highways.iter().find_map(|h| {
+        if project(h, p[0]).1 < 1.5 {
+            Some((true, *h))
+        } else if project(h, p[p.len() - 1]).1 < 1.5 {
+            Some((false, *h))
+        } else {
+            None
+        }
+    })?;
+    let line: Vec<Pt> = if front {
+        p.to_vec()
+    } else {
+        p.iter().rev().copied().collect()
+    };
+    // walk from the highway until the centre line is RAMP_CUT away from the highway's
+    for k in 1..line.len() {
+        let (a, b) = (line[k - 1], line[k]);
+        let (da, db) = (project(h, a).1, project(h, b).1);
+        if db >= RAMP_CUT {
+            let t = if db > da {
+                ((RAMP_CUT - da) / (db - da)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let start = a.lerp(b, t);
+            let mut out = vec![start];
+            out.extend_from_slice(&line[k..]);
+            // the wedge: from the highway's edge some way back, out to both ramp edges
+            let (along, _, q) = project(h, start);
+            let ht = tangent_at(h, along);
+            let n = (start - q).unit();
+            let d = (b - a).unit();
+            let mut rn = pt(-d.y, d.x);
+            if rn.dot(n) > 0.0 {
+                rn = rn * -1.0;
+            }
+            let hw_h = RoadClass::Highway.half_width();
+            let back = if d.dot(ht) >= 0.0 { ht * -1.0 } else { ht };
+            let edge0 = q + n * hw_h;
+            let tip = edge0 + back * TAPER;
+            let wedge = [tip, start + rn * RAMP_HW, start - rn * RAMP_HW];
+            // the highway's edge line is broken along the taper, from its tip to the ramp
+            let inner = n * -1.6;
+            let gap = [
+                tip + inner,
+                tip,
+                edge0 - back * 2.0,
+                edge0 - back * 2.0 + inner,
+            ];
+            if !front {
+                out.reverse();
+            }
+            return Some(RampCut {
+                line: out,
+                wedge,
+                gap,
+            });
+        }
+    }
+    None
 }
 
 struct Arm {
@@ -586,7 +726,12 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], context: &[RoadDraw]) {
         }
         let hw = r.class.half_width() as f32;
         let ring = ring_arc(r);
-        let ramp = is_ramp(r, &all);
+        let ramp_at = if is_ramp(r, &all) {
+            ramp_flow(r, &all)
+        } else {
+            None
+        };
+        let ramp = ramp_at.is_some();
         let bridged = g.on_bridge(r.points);
         if matches!(r.class, RoadClass::Local | RoadClass::Collector) && !ramp && !bridged {
             for side in [-1.0f32, 1.0] {
@@ -610,14 +755,52 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], context: &[RoadDraw]) {
             }
             g.polygon(&circle(o, 2.2), z::MEDIAN + 0.01, SHRUB);
         }
-        marks(g, i, r, ring.is_some(), ramp, &nodes);
+        marks(g, i, r, ring.is_some(), ramp_at, &nodes);
     }
     for n in &nodes {
         draw_node(g, n, &all);
     }
 }
 
-fn marks(g: &mut Ground, i: usize, r: &RoadDraw, ring: bool, ramp: bool, nodes: &[Node]) {
+/// A white lane arrow at `p` pointing along `dir`, painted on the road.
+fn arrow(g: &mut Ground, p: Pt, dir: Pt) {
+    let side = pt(-dir.y, dir.x);
+    let shaft = [
+        p - dir * 2.6 + side * 0.18,
+        p - dir * 2.6 - side * 0.18,
+        p + dir * 0.6 - side * 0.18,
+        p + dir * 0.6 + side * 0.18,
+    ];
+    let head = [
+        p + dir * 2.6,
+        p + dir * 0.4 - side * 0.8,
+        p + dir * 0.4 + side * 0.8,
+    ];
+    g.polygon(&shaft, z::MARK, WHITE);
+    g.polygon(&head, z::MARK, WHITE);
+}
+
+/// Point at a distance along a polyline.
+fn point_at(line: &[Pt], along: f64) -> Pt {
+    let mut acc = 0.0;
+    for w in line.windows(2) {
+        let l = w[0].dist(w[1]);
+        if acc + l >= along {
+            return w[0].lerp(w[1], ((along - acc) / l.max(1e-9)).clamp(0.0, 1.0));
+        }
+        acc += l;
+    }
+    line[line.len() - 1]
+}
+
+fn marks(
+    g: &mut Ground,
+    i: usize,
+    r: &RoadDraw,
+    ring: bool,
+    ramp: Option<(bool, bool)>,
+    nodes: &[Node],
+) {
     let hw = r.class.half_width() as f32;
     let line = r.points;
     match r.class {
@@ -640,17 +823,35 @@ fn marks(g: &mut Ground, i: usize, r: &RoadDraw, ring: bool, ramp: bool, nodes: 
             }
             median(g, i, line, nodes);
         }
-        RoadClass::Collector if !ring => {
-            if ramp {
-                // not across the highway it leaves
-                g.ribbon(&sub_line(line, 16.0, len(line)), 0.1, 0.0, z::MARK, YELLOW);
-            } else {
-                g.ribbon(line, 0.1, 0.0, z::MARK, YELLOW);
+        RoadClass::Collector if ramp.is_some() => {
+            // a one-way slip lane: white edge lines and arrows the way traffic runs
+            let (exit, front) = ramp.unwrap();
+            let rw = RAMP_HW as f32;
+            for side in [-1.0f32, 1.0] {
+                g.ribbon(line, 0.12, side * (rw - 0.5), z::MARK, WHITE);
             }
-            if !ramp {
-                for side in [-1.0f32, 1.0] {
-                    g.ribbon(line, 0.1, side * (hw - 0.6), z::MARK, WHITE);
+            let total = len(line);
+            for at in [22.0, 70.0] {
+                if at + 6.0 > total {
+                    continue;
                 }
+                let s = if front { at } else { total - at };
+                let p = point_at(line, s);
+                let mut dir = tangent_at(line, s);
+                // from the highway's end outward: an exit points that way, an entrance back
+                if !front {
+                    dir = dir * -1.0;
+                }
+                if !exit {
+                    dir = dir * -1.0;
+                }
+                arrow(g, p, dir);
+            }
+        }
+        RoadClass::Collector if !ring => {
+            g.ribbon(line, 0.1, 0.0, z::MARK, YELLOW);
+            for side in [-1.0f32, 1.0] {
+                g.ribbon(line, 0.1, side * (hw - 0.6), z::MARK, WHITE);
             }
         }
         RoadClass::Collector => {

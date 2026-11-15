@@ -314,7 +314,7 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
         &terrain,
         &mut lot_rng,
         preset,
-        st.version >= 2,
+        st.version,
     );
 
     // output roads: big roads first, then streets by class

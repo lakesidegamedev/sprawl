@@ -323,6 +323,45 @@ pub fn add_roads(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt]) {
 /// Like `add_roads`. `context` are roads drawn elsewhere that meet these: they are not drawn
 /// here, they only decide where junctions are.
 pub fn add_roads_with(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt], context: &[RoadDraw]) {
+    // ramps are drawn from the highway's edge, so they peel off it instead of cutting across
+    let highways: Vec<&[Pt]> = roads
+        .iter()
+        .chain(context)
+        .filter(|r| r.class == RoadClass::Highway)
+        .map(|r| r.points)
+        .collect();
+    let cut_w: Vec<Option<crate::roadpaint::RampCut>> = roads
+        .iter()
+        .map(|r| crate::roadpaint::ramp_cut(r, &highways))
+        .collect();
+    let wedges: Vec<[Pt; 3]> = cut_w.iter().flatten().map(|c| c.wedge).collect();
+    let gaps: Vec<[Pt; 4]> = cut_w.iter().flatten().map(|c| c.gap).collect();
+    let is_ramp: Vec<bool> = cut_w.iter().map(|c| c.is_some()).collect();
+    let cut: Vec<Option<Vec<Pt>>> = cut_w.into_iter().map(|c| c.map(|c| c.line)).collect();
+    let trimmed: Vec<RoadDraw> = roads
+        .iter()
+        .zip(&cut)
+        .map(|(r, c)| RoadDraw {
+            class: r.class,
+            points: c.as_deref().unwrap_or(r.points),
+            works: r.works,
+        })
+        .collect();
+    let context_cut: Vec<Option<Vec<Pt>>> = context
+        .iter()
+        .map(|r| crate::roadpaint::ramp_cut(r, &highways).map(|c| c.line))
+        .collect();
+    let context_trimmed: Vec<RoadDraw> = context
+        .iter()
+        .zip(&context_cut)
+        .map(|(r, c)| RoadDraw {
+            class: r.class,
+            points: c.as_deref().unwrap_or(r.points),
+            works: r.works,
+        })
+        .collect();
+    let roads = &trimmed[..];
+    let context = &context_trimmed[..];
     let mut order: Vec<usize> = (0..roads.len())
         .filter(|&i| roads[i].class != RoadClass::Rail)
         .collect();
@@ -335,15 +374,19 @@ pub fn add_roads_with(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt], context: 
         };
         g.bridge(r.points, hw);
     }
+    let hw_of = |i: usize| {
+        if is_ramp[i] {
+            crate::roadpaint::RAMP_HW as f32
+        } else {
+            roads[i].class.half_width() as f32
+        }
+    };
     for &i in &order {
         let r = &roads[i];
-        g.ribbon(
-            r.points,
-            r.class.half_width() as f32 + 0.5,
-            0.0,
-            layer::EDGE,
-            EDGE,
-        );
+        g.ribbon(r.points, hw_of(i) + 0.5, 0.0, layer::EDGE, EDGE);
+    }
+    for w in &wedges {
+        g.polygon(&Ground::grow(&w[..], 0.5), layer::EDGE, EDGE);
     }
     for &c in culs {
         g.disc(c, 9.5, layer::EDGE, EDGE);
@@ -360,11 +403,14 @@ pub fn add_roads_with(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt], context: 
         } else {
             ASPHALT
         };
-        g.ribbon(r.points, r.class.half_width() as f32, 0.0, layer::ROAD, col);
+        g.ribbon(r.points, hw_of(i), 0.0, layer::ROAD, col);
+    }
+    for w in &wedges {
+        g.polygon(&w[..], layer::ROAD, ASPHALT);
     }
     for &i in &order {
         let r = &roads[i];
-        let hw = r.class.half_width() as f32;
+        let hw = hw_of(i);
         if let Some(p) = r.works {
             road_works(g, r, hw, p);
         } else {
@@ -384,6 +430,10 @@ pub fn add_roads_with(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt], context: 
         }
     }
     crate::roadpaint::paint(g, roads, context);
+    // the highway's edge line stops where a slip lane joins it
+    for gap in &gaps {
+        g.polygon(&gap[..], crate::roadpaint::GAP_Z, ASPHALT_HWY);
+    }
     for r in roads {
         if r.class == RoadClass::Rail {
             g.ribbon(r.points, 2.6, 0.0, layer::RAIL, BALLAST);

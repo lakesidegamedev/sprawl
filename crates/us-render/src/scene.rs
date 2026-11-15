@@ -35,7 +35,8 @@ pub const FIELDS: [Rgb; 6] = [
 pub const WATER: Rgb = [66, 132, 200];
 pub const SAND: Rgb = [214, 200, 150];
 pub const ASPHALT: Rgb = [108, 108, 120];
-pub const ASPHALT_HWY: Rgb = [96, 96, 108];
+/// Highways share the streets' asphalt so ramps and junctions join without a seam.
+pub const ASPHALT_HWY: Rgb = ASPHALT;
 pub const EDGE: Rgb = [44, 46, 56];
 pub const YELLOW: Rgb = [226, 196, 70];
 pub const BALLAST: Rgb = [128, 104, 84];
