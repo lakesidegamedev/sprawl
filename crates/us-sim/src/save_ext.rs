@@ -6,7 +6,8 @@
 //! know is skipped.
 //!
 //! To add a feature: pick a new tag, append one `push` line to `sections` and one arm to
-//! `load_section`, and write the two functions in the feature's own module. Never reuse or
+//! `load_section`, and write the two functions in the feature's own module. What a feature does
+//! when its section is missing, and any cache it rebuilds after a load, goes in `after_load`. Never reuse or
 //! change the meaning of a tag once released; add a new tag instead.
 
 use crate::Sim;
@@ -23,6 +24,7 @@ pub(crate) fn sections(s: &Sim) -> Vec<([u8; 4], Vec<u8>)> {
     // features add their sections here, one line each, in the order they were added:
     // push(b"EXMP", &|s, w| s.save_example(w));
     push(b"MILE", &|s, w| s.save_mile(w));
+    push(b"RIVL", &|s, w| s.save_rivals(w));
     out
 }
 
@@ -32,9 +34,22 @@ pub(crate) fn load_section(s: &mut Sim, tag: [u8; 4], bytes: &[u8]) -> Res<()> {
     let r = &mut r;
     match &tag {
         b"MILE" => s.load_mile(r)?,
+        b"RIVL" => s.load_rivals(r)?,
         _ => {
             let _ = (s, r.left());
         }
     }
     Ok(())
+}
+
+/// After every section is read: defaults for features whose section was missing, and derived
+/// caches. `present` lists the tags the save held.
+pub(crate) fn after_load(s: &mut Sim, present: &[[u8; 4]]) {
+    let has = |tag: &[u8; 4]| present.contains(tag);
+    // a save from before unlocks: open what the town's size has already earned, quietly
+    if !has(b"MILE") {
+        s.unlock_silently();
+    }
+    s.rebuild_fx_sites();
+    // RIVL missing: the rivals beyond the first were already made from the seed
 }

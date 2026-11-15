@@ -532,12 +532,25 @@ impl Sim {
     /// The whole game as bytes. A traffic run in flight is waited for first (it is deterministic,
     /// so the game goes on exactly as it would have).
     pub fn save(&mut self) -> Vec<u8> {
+        self.save_as(SAVE_VERSION)
+    }
+
+    /// The game in an older lasting format, as that version wrote it (for conversion tests).
+    #[cfg(test)]
+    pub(crate) fn save_old_format(&mut self, version: u16) -> Vec<u8> {
+        assert!((FIRST_LASTING_VERSION..SAVE_VERSION).contains(&version));
+        self.save_as(version)
+    }
+
+    fn save_as(&mut self, version: u16) -> Vec<u8> {
         self.settle_traffic();
         let mut w = W(Vec::new());
         // the code is the place in `Preset::ALL`, so new presets must be added at the end
         w.u8(code(&Preset::ALL, self.town.preset));
         w.u64(self.town.seed);
-        w.u8(self.town.gen_version as u8);
+        if version >= 4 {
+            w.u8(self.town.gen_version as u8);
+        }
         w.u64(town_hash(&self.town));
         w.u64(self.seed);
         w.pt(self.hall);
@@ -744,18 +757,20 @@ impl Sim {
         w.bool(self.jobless);
         w.i32(self.last_kind_street);
         w.i64(self.growth_spent);
-        let sections = crate::save_ext::sections(self);
-        w.usize(sections.len());
-        for (tag, bytes) in sections {
-            w.0.extend_from_slice(&tag);
-            w.usize(bytes.len());
-            w.0.extend_from_slice(&bytes);
+        if version >= 5 {
+            let sections = crate::save_ext::sections(self);
+            w.usize(sections.len());
+            for (tag, bytes) in sections {
+                w.0.extend_from_slice(&tag);
+                w.usize(bytes.len());
+                w.0.extend_from_slice(&bytes);
+            }
         }
 
         let body = w.0;
         let mut out = Vec::with_capacity(HEADER_LEN + body.len());
         out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&SAVE_VERSION.to_le_bytes());
+        out.extend_from_slice(&version.to_le_bytes());
         out.extend_from_slice(&(body.len() as u64).to_le_bytes());
         out.extend_from_slice(&fnv(&body).to_le_bytes());
         out.extend_from_slice(&body);
@@ -1083,23 +1098,19 @@ impl Sim {
         s.jobless = r.bool()?;
         s.last_kind_street = r.i32()?;
         s.growth_spent = r.i64()?;
-        let mut had_mile = false;
+        let mut present: Vec<[u8; 4]> = Vec::new();
         if version >= 5 {
             let n = r.len(12)?;
             for _ in 0..n {
                 let tag: [u8; 4] = r.take(4)?.try_into().unwrap();
-                had_mile |= &tag == b"MILE";
+                present.push(tag);
                 let len = r.len(1)?;
                 let bytes = r.take(len)?;
                 crate::save_ext::load_section(&mut s, tag, bytes)?;
             }
         }
 
-        // a save from before unlocks: open what the town's size has already earned, quietly
-        if !had_mile {
-            s.unlock_silently();
-        }
-        s.rebuild_fx_sites();
+        crate::save_ext::after_load(&mut s, &present);
 
         // the sizes the rest of the code indexes by
         let nl = s.lots.len();

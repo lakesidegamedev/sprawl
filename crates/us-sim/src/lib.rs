@@ -23,6 +23,7 @@ mod limits;
 mod milestones;
 mod model;
 mod pressure;
+mod rivals;
 mod roadnet;
 mod save;
 mod save_ext;
@@ -35,6 +36,7 @@ pub use dynamic::Rival;
 pub use ledger_view::LedgerNow;
 pub use model::*;
 pub use pressure::*;
+pub use rivals::{Personality, RivalView};
 pub use save::{AUTOSAVE_SLOTS, FIRST_LASTING_VERSION, LoadError, SAVE_VERSION, autosave_path};
 pub use streets::{RoadBuildState, RoadStage, StreetState};
 pub use traffic::RoadTraffic;
@@ -352,6 +354,8 @@ pub struct Sim {
     pub(crate) pending: Option<traffic::Pending>,
     pub(crate) roads_version: u32,
     pub(crate) rival: Rival,
+    /// The other rival towns and every rival's population and trade with the town.
+    pub(crate) rivals: rivals::Rivals,
     pub departures: u32,
     pub fires_total: u32,
     pub(crate) month_index: u32,
@@ -453,6 +457,7 @@ impl Sim {
             pending: None,
             roads_version: 0,
             rival: Rival::new(seed),
+            rivals: rivals::Rivals::new(seed),
             departures: 0,
             fires_total: 0,
             month_index: 0,
@@ -725,6 +730,7 @@ impl Sim {
             f(st as u64);
         }
         f(self.unlocked as u64);
+        self.rivals.fingerprint(&mut f);
         f(self.runs.len() as u64);
         for r in &self.runs {
             f(r.class as u64);
@@ -968,6 +974,14 @@ impl Sim {
     // ----- the why panel -----
 
     pub fn why(&self, lot: usize) -> Why {
+        let mut y = self.why_base(lot);
+        if let Some(line) = self.rival_why(lot) {
+            y.reason = format!("{} {line}", y.reason);
+        }
+        y
+    }
+
+    fn why_base(&self, lot: usize) -> Why {
         let l = &self.lots[lot];
         let title = l
             .civic
@@ -1287,3 +1301,6 @@ mod tests_limits;
 
 #[cfg(test)]
 mod tests_milestones;
+
+#[cfg(test)]
+mod tests_rivals;

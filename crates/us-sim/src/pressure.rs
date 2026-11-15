@@ -442,7 +442,12 @@ impl Sim {
             challenger: challenger.clone(),
             issue: ap.worst,
         });
-        let issue = ap.worst.text();
+        let mut issue = ap.worst.text();
+        if matches!(ap.worst, Issue::Taxes | Issue::Jobs)
+            && let Some(rival) = self.rival_taking_most()
+        {
+            issue = format!("{issue}, with people leaving for {rival}");
+        }
         if won {
             self.elections_won += 1;
             self.log(
