@@ -26,6 +26,7 @@ pub mod park;
 pub mod parts;
 pub mod rail;
 mod renderer;
+pub mod roadpaint;
 mod rng;
 mod scene;
 pub mod trains;

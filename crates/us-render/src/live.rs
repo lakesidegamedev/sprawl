@@ -303,8 +303,26 @@ pub fn roads_ground_state_on(land: &Land, roads: &[RoadDraw], culs: &[Pt]) -> Me
     g.mesh
 }
 
+/// Like `roads_ground_state_on`, with roads of other chunks that only shape the junctions.
+pub fn roads_ground_state_ctx_on(
+    land: &Land,
+    roads: &[RoadDraw],
+    culs: &[Pt],
+    context: &[RoadDraw],
+) -> Mesh {
+    let mut g = Ground::on(land);
+    add_roads_with(&mut g, roads, culs, context);
+    g.mesh
+}
+
 /// Add roads, turning bulbs, markings and rails to a ground builder.
 pub fn add_roads(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt]) {
+    add_roads_with(g, roads, culs, &[]);
+}
+
+/// Like `add_roads`. `context` are roads drawn elsewhere that meet these: they are not drawn
+/// here, they only decide where junctions are.
+pub fn add_roads_with(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt], context: &[RoadDraw]) {
     let mut order: Vec<usize> = (0..roads.len())
         .filter(|&i| roads[i].class != RoadClass::Rail)
         .collect();
@@ -350,9 +368,6 @@ pub fn add_roads(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt]) {
         if let Some(p) = r.works {
             road_works(g, r, hw, p);
         } else {
-            if matches!(r.class, RoadClass::Arterial | RoadClass::Highway) {
-                g.ribbon(r.points, 0.22, 0.0, layer::MARK, YELLOW);
-            }
             // snow banked along both edges, under the road surface so side streets cut through
             // it: the shader shows it in winter only
             if r.class != RoadClass::Highway {
@@ -368,6 +383,7 @@ pub fn add_roads(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt]) {
             }
         }
     }
+    crate::roadpaint::paint(g, roads, context);
     for r in roads {
         if r.class == RoadClass::Rail {
             g.ribbon(r.points, 2.6, 0.0, layer::RAIL, BALLAST);
