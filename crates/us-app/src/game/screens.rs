@@ -559,10 +559,11 @@ impl Game {
             self.ui.loans_open = l;
             self.ui.budget_open = bu;
             self.ui.levers_open = lv;
-            self.ui.districts_open = keep == 8;
-            self.ui.ordinances_open = keep == 9;
+            // positions in `order` above
+            self.ui.districts_open = keep == 9;
+            self.ui.ordinances_open = keep == 10;
             self.ui.trams.open = keep == 11;
-            if keep != 8 {
+            if keep != 9 {
                 self.ui.paint = None;
             }
         }
