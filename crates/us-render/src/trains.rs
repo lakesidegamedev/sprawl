@@ -487,7 +487,11 @@ mod tests {
             let inst = t.instances(&paths, k as f32 * 3.0);
             for set in &inst.sets {
                 for i in set {
-                    assert!((i.pos[1] - 100.0).abs() < 0.01, "off the rail: {:?}", i.pos);
+                    assert!(
+                        ((i.pos[1] - 100.0).abs() - LANE).abs() < 0.01,
+                        "off the rail: {:?}",
+                        i.pos
+                    );
                     assert!((-0.1..=2000.1).contains(&i.pos[0]));
                     seen += 1;
                 }
