@@ -13,6 +13,7 @@
 //! Only integer arithmetic and IEEE `+ - * / sqrt` are used, and every random roll is a hash of
 //! `(seed, lot, day)`, so the same inputs give the same state on every platform.
 
+mod avenues;
 mod civic;
 mod density;
 mod dynamic;
@@ -29,6 +30,7 @@ mod streets;
 mod traffic;
 mod value;
 
+pub use avenues::{RoadError, RoadPlan, UpgradePlan};
 pub use density::max_level_at;
 pub use dynamic::Rival;
 pub use ledger_view::LedgerNow;
@@ -350,6 +352,7 @@ pub struct Sim {
     pub(crate) avg_cong: f32,
     pub(crate) pending: Option<traffic::Pending>,
     pub(crate) roads_version: u32,
+    pub(crate) avenues: avenues::Avenues,
     pub(crate) rival: Rival,
     pub departures: u32,
     pub fires_total: u32,
@@ -447,6 +450,7 @@ impl Sim {
             avg_cong: 0.0,
             pending: None,
             roads_version: 0,
+            avenues: avenues::Avenues::default(),
             rival: Rival::new(seed),
             departures: 0,
             fires_total: 0,
@@ -717,6 +721,7 @@ impl Sim {
         for st in self.stalled {
             f(st as u64);
         }
+        self.avenue_hash(&mut f);
         f(self.runs.len() as u64);
         for r in &self.runs {
             f(r.class as u64);
@@ -960,6 +965,14 @@ impl Sim {
     // ----- the why panel -----
 
     pub fn why(&self, lot: usize) -> Why {
+        let mut w = self.why_base(lot);
+        if let Some(note) = self.avenue_note(self.lots[lot].pos) {
+            w.reason = format!("{} {note}", w.reason);
+        }
+        w
+    }
+
+    fn why_base(&self, lot: usize) -> Why {
         let l = &self.lots[lot];
         let title = l
             .civic
@@ -1271,6 +1284,8 @@ mod tests_pressure;
 #[cfg(test)]
 mod tests_save;
 
+#[cfg(test)]
+mod tests_avenues;
 #[cfg(test)]
 mod tests_streets;
 

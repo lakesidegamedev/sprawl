@@ -22,6 +22,7 @@ pub(crate) fn sections(s: &Sim) -> Vec<([u8; 4], Vec<u8>)> {
     };
     // features add their sections here, one line each, in the order they were added:
     // push(b"EXMP", &|s, w| s.save_example(w));
+    push(b"AVEN", &|s, w| s.save_avenues(w));
     let _ = &mut push;
     out
 }
@@ -33,6 +34,7 @@ pub(crate) fn load_section(s: &mut Sim, tag: [u8; 4], bytes: &[u8]) -> Res<()> {
     let r = &mut r;
     match &tag {
         // b"EXMP" => s.load_example(r)?,
+        b"AVEN" => s.load_avenues(r)?,
         _ => {
             let _ = (s, r.left());
         }

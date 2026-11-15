@@ -228,7 +228,8 @@ impl Sim {
             let rate = class.map_or(0.0, |c| self.tax.get(c) as f64 / 10.0);
             let burden = (rate - 7.0) * TAX_BURDEN_PER_PCT;
             let traffic = self.lot_traffic(i);
-            let v = BASE
+            let (av_access, av_noise) = self.avenue_effect(l.pos);
+            let v = BASE + av_access - av_noise
                 + W_ACCESS * access
                 + W_JOBS * jobs_near
                 + W_SERVICES * services
