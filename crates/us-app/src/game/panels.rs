@@ -49,7 +49,7 @@ fn dept_color(d: Dept) -> Color32 {
 pub(super) fn lab(ui: &mut Ui, text: impl AsRef<str>, size: f32) {
     let size = size.max(12.0);
     ui.label(
-        RichText::new(text.as_ref().to_uppercase())
+        RichText::new(theme::case(text.as_ref()))
             .font(pixel(size))
             .color(TEXT),
     );
@@ -58,7 +58,7 @@ pub(super) fn lab(ui: &mut Ui, text: impl AsRef<str>, size: f32) {
 pub(super) fn lab_c(ui: &mut Ui, text: impl AsRef<str>, size: f32, col: Color32) {
     let size = size.max(12.0);
     ui.label(
-        RichText::new(text.as_ref().to_uppercase())
+        RichText::new(theme::case(text.as_ref()))
             .font(pixel(size))
             .color(col),
     );
@@ -68,7 +68,7 @@ pub(super) fn wrapped(ui: &mut Ui, text: impl AsRef<str>, size: f32, col: Color3
     let size = size.max(12.0);
     ui.add(
         egui::Label::new(
-            RichText::new(text.as_ref().to_uppercase())
+            RichText::new(theme::case(text.as_ref()))
                 .font(pixel(size))
                 .color(col),
         )
@@ -80,7 +80,7 @@ pub(super) fn btn(ui: &mut Ui, text: &str, on: bool, size: f32) -> egui::Respons
     let size = size.max(12.0);
     ui.add(
         egui::Button::new(
-            RichText::new(text.to_uppercase())
+            RichText::new(theme::case(text))
                 .font(pixel(size))
                 .color(if on { LINE } else { INK }),
         )

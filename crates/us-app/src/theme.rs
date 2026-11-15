@@ -20,7 +20,49 @@ pub const GOOD: Color32 = Color32::from_rgb(63, 191, 138);
 pub const BAD: Color32 = Color32::from_rgb(229, 96, 94);
 pub const TEXT: Color32 = Color32::from_rgb(232, 238, 245);
 
+/// The interface look. Slate is the 1.1 look (owner pick); `URBAN_SPRAWL_THEME=classic|graphite`
+/// shows the 1.0 pixel look or the other candidate, for comparison only.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Look {
+    Classic,
+    Slate,
+    Graphite,
+}
+
+pub fn look() -> Look {
+    static L: std::sync::OnceLock<Look> = std::sync::OnceLock::new();
+    *L.get_or_init(|| match std::env::var("URBAN_SPRAWL_THEME").as_deref() {
+        Ok("classic") => Look::Classic,
+        Ok("graphite") => Look::Graphite,
+        _ => Look::Slate,
+    })
+}
+
+/// A modern look: clean type for text and numbers, the pixel face only for headings.
+pub fn modern() -> bool {
+    look() != Look::Classic
+}
+
+/// Text as the look writes it: upper case in the pixel look, as written otherwise.
+pub fn case(s: &str) -> String {
+    if modern() {
+        s.to_string()
+    } else {
+        s.to_uppercase()
+    }
+}
+
+/// The interface face at a size: the pixel face in the 1.0 look, the clean face otherwise.
 pub fn pixel(size: f32) -> FontId {
+    if modern() {
+        FontId::new(size * 1.12, FontFamily::Name("ui".into()))
+    } else {
+        FontId::new(size, FontFamily::Name("pixel".into()))
+    }
+}
+
+/// The pixel face, always: headings and the logo.
+pub fn pixel_face(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("pixel".into()))
 }
 
@@ -44,6 +86,36 @@ pub fn install(ctx: &egui::Context) {
     fonts
         .families
         .insert(FontFamily::Name("pixel-light".into()), vec!["silk".into()]);
+    for (key, bytes) in [
+        ("inter", &include_bytes!("../assets/Inter-Regular.ttf")[..]),
+        (
+            "inter-medium",
+            &include_bytes!("../assets/Inter-Medium.ttf")[..],
+        ),
+        (
+            "inter-semi",
+            &include_bytes!("../assets/Inter-SemiBold.ttf")[..],
+        ),
+    ] {
+        fonts.font_data.insert(
+            key.into(),
+            std::sync::Arc::new(FontData::from_static(bytes)),
+        );
+    }
+    let ui_face = if look() == Look::Graphite {
+        "inter-medium"
+    } else {
+        "inter-semi"
+    };
+    fonts
+        .families
+        .insert(FontFamily::Name("ui".into()), vec![ui_face.into()]);
+    if modern() {
+        // plain text (tips, inputs) in the clean face too
+        fonts
+            .families
+            .insert(FontFamily::Proportional, vec!["inter".into()]);
+    }
     ctx.set_fonts(fonts);
 
     let mut v = egui::Visuals::dark();
@@ -84,6 +156,30 @@ pub fn install(ctx: &egui::Context) {
     w.active.bg_fill = Color32::from_rgb(120, 92, 36);
     w.active.weak_bg_fill = Color32::from_rgb(120, 92, 36);
     w.active.bg_stroke = Stroke::new(2.0, ACCENT);
+    if modern() {
+        let (fill, raised, edge, r) = look_colours();
+        v.panel_fill = fill;
+        v.window_fill = fill;
+        v.window_stroke = Stroke::new(1.0, edge);
+        v.window_corner_radius = r.into();
+        v.menu_corner_radius = r.into();
+        v.window_shadow = soft_shadow();
+        v.popup_shadow = soft_shadow();
+        for st in [
+            &mut v.widgets.noninteractive,
+            &mut v.widgets.inactive,
+            &mut v.widgets.hovered,
+            &mut v.widgets.active,
+            &mut v.widgets.open,
+        ] {
+            st.corner_radius = (r.saturating_sub(2)).into();
+            st.bg_stroke = Stroke::new(1.0, edge);
+        }
+        v.widgets.inactive.bg_fill = raised;
+        v.widgets.inactive.weak_bg_fill = raised;
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT);
+        v.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT);
+    }
     ctx.set_visuals(v);
     ctx.global_style_mut(|s| {
         s.spacing.item_spacing = egui::vec2(8.0, 8.0);
@@ -100,7 +196,44 @@ pub fn install(ctx: &egui::Context) {
     });
 }
 
+/// Panel fill, raised control fill, edge and corner radius of a modern look.
+pub fn look_colours() -> (Color32, Color32, Color32, u8) {
+    match look() {
+        Look::Graphite => (
+            Color32::from_rgb(17, 19, 23),
+            Color32::from_rgb(30, 33, 39),
+            Color32::from_rgb(46, 50, 58),
+            4,
+        ),
+        _ => (
+            Color32::from_rgb(18, 30, 43),
+            Color32::from_rgb(29, 45, 62),
+            Color32::from_rgb(48, 68, 90),
+            8,
+        ),
+    }
+}
+
+/// A tight drop shadow under modern panels: depth without haze.
+pub fn soft_shadow() -> egui::epaint::Shadow {
+    egui::epaint::Shadow {
+        offset: [0, 4],
+        blur: 12,
+        spread: 0,
+        color: Color32::from_rgba_unmultiplied(0, 0, 0, 110),
+    }
+}
+
 pub fn panel() -> Frame {
+    if modern() {
+        let (fill, _, edge, r) = look_colours();
+        return Frame::new()
+            .fill(fill)
+            .stroke(Stroke::new(1.0, edge))
+            .corner_radius(r)
+            .inner_margin(Margin::same(14))
+            .shadow(soft_shadow());
+    }
     Frame::new()
         .fill(PANEL)
         .stroke(Stroke::new(2.0, EDGE))
@@ -114,6 +247,18 @@ pub fn panel() -> Frame {
 }
 
 pub fn bar() -> Frame {
+    if modern() {
+        let (fill, _, edge, _) = look_colours();
+        return Frame::new()
+            .fill(Color32::from_rgba_unmultiplied(
+                fill.r(),
+                fill.g(),
+                fill.b(),
+                240,
+            ))
+            .stroke(Stroke::new(1.0, edge))
+            .inner_margin(Margin::symmetric(14, 8));
+    }
     Frame::new()
         .fill(PANEL_DARK)
         .stroke(Stroke::new(2.0, EDGE))
@@ -121,7 +266,12 @@ pub fn bar() -> Frame {
 }
 
 pub fn heading(text: &str, size: f32) -> egui::RichText {
-    egui::RichText::new(text).font(pixel(size)).color(INK)
+    let col = if look() == Look::Graphite {
+        ACCENT
+    } else {
+        INK
+    };
+    egui::RichText::new(text).font(pixel_face(size)).color(col)
 }
 
 /// Smallest finger target, in points.
