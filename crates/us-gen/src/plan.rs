@@ -5,6 +5,7 @@ use crate::geom::{
     dist_pt_ring, dist_ring_line, length, min_rect, open_ring, point_in_ring, pt, rotate_all, sin,
 };
 use crate::index::{SegIndex, uncovered_pieces};
+use crate::junctions;
 use crate::lots;
 use crate::patterns::{Layout, Line, curvy_local, grid_lines, pods};
 use crate::polygonize::{polygonize, split_polygon};
@@ -772,6 +773,19 @@ pub fn build(
                 lay.culs = cs;
             }
         }
+        if st.version >= 3 && matches!(zone, Zone::Inner | Zone::Outer) && junctions::bends(pattern)
+        {
+            lay.streets = lay
+                .streets
+                .iter()
+                .map(|l| junctions::bend_with_ground(l, p, terrain))
+                .collect();
+            lay.lanes = lay
+                .lanes
+                .iter()
+                .map(|l| junctions::bend_with_ground(l, p, terrain))
+                .collect();
+        }
         if zone != Zone::Park && rng.f64() < 0.05 && d > 600.0 {
             zone = Zone::Park;
             pattern = Pattern::Park;
@@ -824,6 +838,17 @@ pub fn build(
     }
     join_stranded(&mut drafts, &mut additions, river);
     promote_collectors(&mut drafts, st.collector_len);
+    if st.version >= 3 {
+        let mut wet = vec![river.band(-90.0, 90.0)];
+        if let Some(l) = lake {
+            wet.push(l.ring(70.0));
+        }
+        let mut rng3 = Rng::new(seed, 0x3d03);
+        junctions::link_culs(&mut drafts, &additions);
+        junctions::through_collectors(&mut drafts, 1300.0);
+        junctions::roundabouts(&mut drafts, terrain, &wet, &mut rng3);
+        junctions::ramps(&mut drafts, terrain, &wet);
+    }
     Built { drafts, additions }
 }
 

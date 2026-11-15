@@ -5,6 +5,7 @@
 
 mod geom;
 mod index;
+mod junctions;
 mod lots;
 mod patterns;
 mod plan;
@@ -90,8 +91,10 @@ impl Preset {
 
 /// The newest generator rules. Version 1 is the generator of 1.0.0 preview 6 and 7; saves made
 /// then rebuild their town with it. Version 2 adds railway stations, town centres that set how
-/// dense each lot is, and keeps lots out of parks and street ends off the railway.
-pub const GEN_VERSION: u32 = 2;
+/// dense each lot is, and keeps lots out of parks and street ends off the railway. Version 3
+/// adds roundabouts, highway ramps, through collectors, fewer dead ends and grid streets that
+/// bend with the ground.
+pub const GEN_VERSION: u32 = 3;
 
 /// Knobs of the generator. `generate` uses the tuned values of each preset; the realism tuner
 /// searches over these.

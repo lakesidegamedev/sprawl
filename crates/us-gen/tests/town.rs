@@ -996,3 +996,90 @@ fn every_preset_is_about_twice_as_dense_as_before() {
         );
     }
 }
+
+fn is_ring(r: &Road) -> bool {
+    r.class == RoadClass::Collector
+        && r.points.len() == 33
+        && r.points[0].dist(*r.points.last().unwrap()) < 1e-6
+}
+
+#[test]
+fn version_three_towns_have_roundabouts_that_roads_join() {
+    let mut rings = 0;
+    for t in towns().iter() {
+        for r in t.roads.iter().filter(|r| is_ring(r)) {
+            rings += 1;
+            let c = {
+                let n = r.points.len() as f64;
+                Pt {
+                    x: r.points.iter().map(|p| p.x).sum::<f64>() / n,
+                    y: r.points.iter().map(|p| p.y).sum::<f64>() / n,
+                }
+            };
+            // arms: other roads with an end on the ring
+            let arms = t
+                .roads
+                .iter()
+                .filter(|o| !std::ptr::eq(*o, r) && o.class != RoadClass::Rail)
+                .filter(|o| {
+                    [o.points[0], *o.points.last().unwrap()].iter().any(|e| {
+                        r.points
+                            .windows(2)
+                            .any(|w| seg_closest(*e, w[0], w[1]) < 1.0)
+                    })
+                })
+                .count();
+            assert!(
+                arms >= 3,
+                "{} seed {}: roundabout at ({:.0}, {:.0}) has {arms} roads on it",
+                t.preset.name(),
+                t.seed,
+                c.x,
+                c.y
+            );
+            // nothing but the arms comes within the ring's outer edge
+            for o in t.roads.iter().filter(|o| !std::ptr::eq(*o, r)) {
+                for p in &o.points {
+                    assert!(
+                        d(*p, c) > 15.0 || o.class == RoadClass::Rail,
+                        "a road runs into the island"
+                    );
+                }
+            }
+        }
+    }
+    assert!(rings >= 20, "only {rings} roundabouts in 60 towns");
+}
+
+#[test]
+fn version_three_towns_have_ramps_between_highway_and_arterial() {
+    let mut ramps = 0;
+    for t in towns().iter() {
+        let hwy: Vec<&Road> = t
+            .roads
+            .iter()
+            .filter(|r| r.class == RoadClass::Highway)
+            .collect();
+        for r in t.roads.iter().filter(|r| r.class == RoadClass::Collector) {
+            if r.points.len() != 15 {
+                continue;
+            }
+            let touches = |p: Pt, line: &Road| {
+                line.points
+                    .windows(2)
+                    .any(|w| seg_closest(p, w[0], w[1]) < 1.0)
+            };
+            let on_hwy = hwy
+                .iter()
+                .any(|h| touches(r.points[0], h) || touches(*r.points.last().unwrap(), h));
+            let on_art = t.roads.iter().any(|a| {
+                a.class == RoadClass::Arterial
+                    && (touches(r.points[0], a) || touches(*r.points.last().unwrap(), a))
+            });
+            if on_hwy && on_art {
+                ramps += 1;
+            }
+        }
+    }
+    assert!(ramps >= 20, "only {ramps} ramps in 60 towns");
+}
