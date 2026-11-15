@@ -26,6 +26,9 @@ pub(crate) fn sections(s: &Sim) -> Vec<([u8; 4], Vec<u8>)> {
     push(b"MILE", &|s, w| s.save_mile(w));
     push(b"RIVL", &|s, w| s.save_rivals(w));
     push(b"AVEN", &|s, w| s.save_avenues(w));
+    if !s.fire_is_default() {
+        push(b"FIRE", &|s, w| s.save_fires(w));
+    }
     if !s.dist.is_default() {
         push(b"DIST", &|s, w| s.save_districts(w));
     }
@@ -41,6 +44,7 @@ pub(crate) fn load_section(s: &mut Sim, tag: [u8; 4], bytes: &[u8]) -> Res<()> {
         b"RIVL" => s.load_rivals(r)?,
         b"AVEN" => s.load_avenues(r)?,
         b"DIST" => s.load_districts(r)?,
+        b"FIRE" => s.load_fires(r)?,
         _ => {
             let _ = (s, r.left());
         }
