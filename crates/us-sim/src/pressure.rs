@@ -339,7 +339,8 @@ impl Sim {
             .map(|s| if n > 0.0 { s / n } else { 0.5 })
             .collect();
         let mean = means.iter().sum::<f64>() / 5.0;
-        let services = (mean - 0.45) * 40.0;
+        let (ord_services, ord_traffic) = self.ord_approval_parts();
+        let services = (mean - 0.45) * 40.0 + ord_services;
         let mut weakest = 0;
         for k in 1..5 {
             if means[k] < means[weakest] {
@@ -355,7 +356,7 @@ impl Sim {
         } else {
             0.0
         };
-        let traffic = -(self.avg_cong as f64) * 25.0;
+        let traffic = -(self.avg_cong as f64) * 25.0 + ord_traffic;
         let limit = self.credit_limit().max(1);
         let mut debt = -(self.debt() as f64 / limit as f64) * 15.0;
         if self.treasury < 0 {
@@ -443,19 +444,20 @@ impl Sim {
             issue: ap.worst,
         });
         let issue = ap.worst.text();
+        let extra = self.challenger_line(ap.worst);
         if won {
             self.elections_won += 1;
             self.log(
                 EventKind::Election,
                 format!(
-                    "You won re-election with {share}% of the vote. {challenger} ran on {issue}."
+                    "You won re-election with {share}% of the vote. {challenger} ran on {issue}.{extra}"
                 ),
                 None,
             );
         } else {
             self.log(
                 EventKind::Election,
-                format!("{challenger} ran on {issue} and won the election."),
+                format!("{challenger} ran on {issue} and won the election.{extra}"),
                 None,
             );
             self.end_game(GameOverReason::LostElection {

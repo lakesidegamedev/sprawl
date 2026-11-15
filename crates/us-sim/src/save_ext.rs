@@ -22,7 +22,9 @@ pub(crate) fn sections(s: &Sim) -> Vec<([u8; 4], Vec<u8>)> {
     };
     // features add their sections here, one line each, in the order they were added:
     // push(b"EXMP", &|s, w| s.save_example(w));
-    let _ = &mut push;
+    if !s.dist.is_default() {
+        push(b"DIST", &|s, w| s.save_districts(w));
+    }
     out
 }
 
@@ -33,6 +35,7 @@ pub(crate) fn load_section(s: &mut Sim, tag: [u8; 4], bytes: &[u8]) -> Res<()> {
     let r = &mut r;
     match &tag {
         // b"EXMP" => s.load_example(r)?,
+        b"DIST" => s.load_districts(r)?,
         _ => {
             let _ = (s, r.left());
         }
