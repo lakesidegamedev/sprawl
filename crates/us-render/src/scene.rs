@@ -35,7 +35,8 @@ pub const FIELDS: [Rgb; 6] = [
 pub const WATER: Rgb = [66, 132, 200];
 pub const SAND: Rgb = [214, 200, 150];
 pub const ASPHALT: Rgb = [108, 108, 120];
-pub const ASPHALT_HWY: Rgb = [96, 96, 108];
+/// Highways share the streets' asphalt so ramps and junctions join without a seam.
+pub const ASPHALT_HWY: Rgb = ASPHALT;
 pub const EDGE: Rgb = [44, 46, 56];
 pub const YELLOW: Rgb = [226, 196, 70];
 pub const BALLAST: Rgb = [128, 104, 84];
@@ -120,7 +121,13 @@ struct Extras {
     chimneys: Vec<[f32; 3]>,
     walkers: Vec<Walker>,
     lamps: Vec<Instance>,
+    fleet: Vec<crate::fleet::Veh>,
+    props: [Vec<Instance>; 5],
+    population: Option<u32>,
     trains: crate::trains::Trains,
+    trams: crate::trams::Trams,
+    vehicles: Vec<crate::emergency::EmVehicle>,
+    blazes: Vec<crate::emergency::EmBlaze>,
     centre: [f32; 2],
     overlay: Option<OverlayState>,
     overlay_rev: u64,
@@ -134,7 +141,15 @@ pub struct FrameInstances {
     pub puffs: Vec<Instance>,
     pub people: Vec<Instance>,
     pub lamps: Vec<Instance>,
+    /// Buses, delivery trucks, garbage trucks, pickups and vans, by `fleet::Vehicle::index`.
+    pub fleet: [Vec<Instance>; 5],
+    /// Traffic lights, bus shelters, billboards, benches and bins, by `fleet::Prop::index`.
+    pub props: [Vec<Instance>; 5],
+    pub water: Vec<Instance>,
     pub trains: crate::trains::TrainInstances,
+    /// Fire engines, police cars and ambulances.
+    pub rigs: [Vec<Instance>; 3],
+    pub flames: Vec<Instance>,
 }
 
 pub struct Scene {
@@ -150,6 +165,8 @@ pub struct Scene {
     pub hall: Vec3,
     /// The game date and hour. `None` draws the plain noon look.
     pub calendar: Option<Calendar>,
+    /// Snow, wet, clouds, wind and flood water (see [`WeatherLook`]).
+    pub weather: crate::weather::WeatherLook,
     /// Animation clock in seconds: cars, smoke and people move with it.
     pub time: f32,
     x: Extras,
@@ -168,6 +185,7 @@ impl Scene {
             chunks: Vec::new(),
             hall,
             calendar: None,
+            weather: Default::default(),
             time: 0.0,
             x: Extras::default(),
         }
@@ -224,6 +242,7 @@ impl Scene {
             ),
             land,
             calendar: None,
+            weather: Default::default(),
             time: 0.0,
             x: Extras::default(),
         };
@@ -261,6 +280,8 @@ impl Scene {
         self.x.trains = crate::trains::Trains::plan(&self.x.paths, service);
         self.x.walkers = instances::make_walkers(&self.x.paths, self.x.centre, 260.0);
         self.x.cars = instances::make_cars(&self.x.paths, &self.x.volumes);
+        self.x.props = crate::fleet::make_props(&self.x.paths, &self.x.lots, self.x.centre);
+        self.rebuild_fleet();
         self.refresh_chimneys();
     }
 
@@ -367,8 +388,51 @@ impl Scene {
         self.x.trains = crate::trains::Trains::plan(&self.x.paths, service);
     }
 
+    /// The tram lines: where they run, where they stop and how often. Does nothing when the
+    /// service is unchanged.
+    pub fn set_trams(&mut self, service: crate::trams::TramService) {
+        if self.x.trams.service == service {
+            return;
+        }
+        self.x.trams = crate::trams::Trams::plan(service, &self.land);
+    }
+
+    /// Fire engines, police cars, ambulances and burning buildings to draw (replaces the last
+    /// set). Call each frame with where they are now.
+    pub fn set_emergency(
+        &mut self,
+        vehicles: Vec<crate::emergency::EmVehicle>,
+        blazes: Vec<crate::emergency::EmBlaze>,
+    ) {
+        self.x.vehicles = vehicles;
+        self.x.blazes = blazes;
+    }
+
+    /// The town's population: it sets how many buses, delivery trucks, garbage trucks, pickups
+    /// and vans run. Without it the fleet is sized from the number of lots.
+    pub fn set_population(&mut self, population: u32) {
+        if self.x.population == Some(population) {
+            return;
+        }
+        self.x.population = Some(population);
+        self.rebuild_fleet();
+    }
+
+    fn rebuild_fleet(&mut self) {
+        let pop = self.x.population.unwrap_or(self.x.lots.len() as u32 * 3);
+        self.x.fleet = crate::fleet::make_fleet(&self.x.paths, &self.x.lots, pop);
+    }
+
     pub fn set_calendar(&mut self, c: Option<Calendar>) {
         self.calendar = c;
+    }
+
+    /// Set the weather look; the flood patches are compared first so an unchanged frame costs
+    /// nothing.
+    pub fn set_weather(&mut self, w: crate::weather::WeatherLook) {
+        if self.weather != w {
+            self.weather = w;
+        }
     }
 
     /// Cars, smoke puffs and people at the scene's current clock. Empty in a map view.
@@ -376,12 +440,24 @@ impl Scene {
         if self.x.overlay.is_some() {
             return FrameInstances::default();
         }
+        let z = |x: f32, y: f32| self.land.height(x, y);
+        let rigs = crate::emergency::vehicle_instances(&self.x.vehicles, &z, self.time);
+        let (flames, smoke) = crate::emergency::blaze_instances(&self.x.blazes, &z, self.time);
+        let mut trains = self.x.trains.instances(&self.x.paths, self.time);
+        self.x.trams.add_instances(&mut trains, self.time);
+        let mut puffs = instances::puff_instances(&self.x.chimneys, self.time);
+        puffs.extend(smoke);
         FrameInstances {
             cars: instances::car_instances(&self.x.paths, &self.x.cars, self.time),
-            puffs: instances::puff_instances(&self.x.chimneys, self.time),
+            puffs,
             people: instances::walker_instances(&self.x.paths, &self.x.walkers, self.time),
             lamps: self.x.lamps.clone(),
-            trains: self.x.trains.instances(&self.x.paths, self.time),
+            fleet: crate::fleet::fleet_instances(&self.x.paths, &self.x.fleet, self.time),
+            props: self.x.props.clone(),
+            trains,
+            rigs,
+            flames,
+            water: self.weather.water_instances(|x, y| self.land.height(x, y)),
         }
     }
 

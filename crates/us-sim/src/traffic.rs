@@ -149,7 +149,7 @@ impl Sim {
     fn start_traffic(&mut self) {
         let mut t = self.town.clone();
         t.roads = (0..self.runs.len())
-            .filter(|&i| self.run_visible_idx(i))
+            .filter(|&i| self.run_visible_idx(i) && self.wx.flooded_runs.binary_search(&i).is_err())
             .map(|i| Road {
                 class: self.runs[i].class,
                 points: self.runs[i].points.clone(),
@@ -179,7 +179,7 @@ impl Sim {
             .map(|r| (r.class, r.points.clone()))
             .collect();
         let visible: Vec<bool> = (0..self.runs.len())
-            .map(|i| self.run_visible_idx(i))
+            .map(|i| self.run_visible_idx(i) && self.wx.flooded_runs.binary_search(&i).is_err())
             .collect();
         let handle = std::thread::Builder::new()
             .name("us-traffic".into())
@@ -381,9 +381,11 @@ impl Sim {
         }
     }
 
-    fn rebuild_traffic_cells(&mut self) {
+    pub(crate) fn rebuild_traffic_cells(&mut self) {
         let n = (self.town.size / CELL).ceil() as usize + 1;
         let mut cells = vec![0.0f32; n * n];
+        let tram = self.trams_open() > 0;
+        let tram_keep = (1.0 - self.tram_street_share()) as f32;
         for (r, run) in self.runs.iter().enumerate() {
             let c = self.run_traffic.get(r).map_or(0.0, |t| t.congestion());
             if c <= 0.0 || !self.run_visible_idx(r) {
@@ -398,6 +400,11 @@ impl Sim {
                         ((p.y / CELL) as usize).min(n - 1),
                     );
                     let v = &mut cells[cy * n + cx];
+                    let c = if tram && self.tram_along(p) {
+                        c * tram_keep
+                    } else {
+                        c
+                    };
                     *v = v.max(c);
                 }
             }

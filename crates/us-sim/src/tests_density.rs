@@ -37,7 +37,9 @@ fn dense_towns_grow_and_stay_solvent_without_gridlock() {
             s.avg_congestion(),
             s.additions_left()
         );
-        assert!(s.built_count() > 250, "built {}", s.built_count());
+        // denser central lots, and floods and fires in river towns, mean fewer buildings for the
+        // same people; the people and jobs checks below say the town grew
+        assert!(s.built_count() > 200, "built {}", s.built_count());
         assert!(s.population() > 1500, "population {}", s.population());
         assert!(s.jobs() > 300, "jobs {}", s.jobs());
         // the town pays its way: income covers at least most of what it spends

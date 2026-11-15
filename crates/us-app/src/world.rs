@@ -6,11 +6,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use us_gen::{LotKind, Preset, Pt, RoadClass, Town, Zone};
-use us_render::levels::{building_site, burned};
+use us_render::levels::{building_site_for, burned};
 use us_render::live::{
-    RoadDraw, abandoned, base_ground_far_on, base_ground_on, roads_ground_state_on, zone_ground_on,
+    RoadDraw, abandoned, base_ground_far_on, base_ground_on, grown, roads_ground_state_ctx_on,
+    zone_ground_on,
 };
 use us_render::obj::{Obj, Sit};
+use us_render::site::{step_of, step_progress};
 use us_render::{
     Chunk, CivicModel, Land, LotInfo, Mesh, Rng, RoadInfo, Scene, build_civic,
     build_lot_level_dense, kit,
@@ -36,8 +38,10 @@ pub struct Look {
     pub state: u8,
     /// Building level 1 to 5 the model is drawn at (the new level while a site).
     pub level: u8,
-    /// Progress step of a building site, 0 to 4.
+    /// Progress step of a building site, 0 to `STEPS - 1`.
     pub step: u8,
+    /// Level of the building being replaced while a site, 0 for a bare lot.
+    pub from: u8,
 }
 
 /// Roadworks on one road run.
@@ -92,6 +96,9 @@ pub struct LiveScene {
     /// Lots or roads changed since the scene was last told the geometry.
     geo_dirty: bool,
     geo_at: Instant,
+    /// The chunk that holds every tram track, and what it was last drawn from.
+    tram_chunk: Option<usize>,
+    tram_key: Vec<u32>,
 }
 
 fn cell_of(x: f64, y: f64) -> Cell {
@@ -101,14 +108,16 @@ fn cell_of(x: f64, y: f64) -> Cell {
     )
 }
 
-fn look_of(l: &LotState, day: i32) -> Look {
+fn look_of(l: &LotState, day: i32, burning: bool) -> Look {
     let level = l.level.clamp(1, 5);
     match l.phase {
         Phase::Hidden | Phase::Vacant | Phase::Cleared { .. } => Look::default(),
-        _ if l.fire.is_some() => Look {
+        // a fire still burning shows the building standing, with flames and smoke over it
+        _ if l.fire.is_some() && !burning => Look {
             state: 3,
             level,
             step: 0,
+            from: 0,
         },
         Phase::Building { start, end } => {
             let p = (day - start) as f32 / (end - start).max(1) as f32;
@@ -119,18 +128,21 @@ fn look_of(l: &LotState, day: i32) -> Look {
                 } else {
                     level
                 },
-                step: (p * 5.0).clamp(0.0, 4.0) as u8,
+                step: step_of(p),
+                from: if l.next_level > 0 { level } else { 0 },
             }
         }
         Phase::Built { .. } => Look {
             state: 2,
             level,
             step: 0,
+            from: 0,
         },
         Phase::Empty { .. } => Look {
             state: 4,
             level,
             step: 0,
+            from: 0,
         },
     }
 }
@@ -198,7 +210,9 @@ fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8, density: f32) -
                 }
                 placed.push([lx, ly]);
                 let (rad, h) = (rng.range(1.8, 2.8), rng.range(5.0, 8.0));
-                trees.push((lx, ly, kit::tree(rad, h, rng.pick(&green))));
+                let col = rng.pick(&green);
+                let roll = rng.f32();
+                trees.push((lx, ly, us_render::kit_more::tree_species(roll, rad, h, col)));
                 break;
             }
         }
@@ -219,12 +233,34 @@ fn look_obj(
     let mut d = lot_model(preset, seed, l, level, density);
     let mut rng = Rng::new(seed ^ 0xb0b0, i as u64);
     let mut dress = |o: &Obj| match look.state {
-        1 => building_site(o, (look.step as f32 + 0.5) / 5.0),
+        1 => {
+            let old =
+                (look.from > 0).then(|| lot_model(preset, seed, l, look.from, density).building);
+            let tall = look.level >= 4 || l.kind == LotKind::Office;
+            building_site_for(o, old.as_ref(), tall, step_progress(look.step))
+        }
         3 => burned(o, &mut rng),
         4 => abandoned(o),
         _ => o.clone(),
     };
-    if look.state != 0 && look.state != 2 {
+    if look.state == 1 {
+        d.building = dress(&d.building);
+        // trees come back at the end of the job, small first, and grow to size
+        let k = match look.step {
+            0..=7 => 0.0,
+            8 => 0.3,
+            9 => 0.5,
+            10 => 0.75,
+            _ => 0.9,
+        };
+        if k == 0.0 {
+            d.trees.clear();
+        } else {
+            for t in &mut d.trees {
+                t.2 = grown(&t.2, k);
+            }
+        }
+    } else if look.state != 0 && look.state != 2 {
         d.building = dress(&d.building);
         for t in &mut d.trees {
             t.2 = dress(&t.2);
@@ -419,6 +455,8 @@ impl LiveScene {
             triangles: 0,
             geo_dirty: true,
             geo_at: Instant::now(),
+            tram_chunk: None,
+            tram_key: vec![u32::MAX],
         };
         if show_hall {
             ls.mark(hall_cell);
@@ -573,7 +611,53 @@ impl LiveScene {
                 .collect(),
             None => Vec::new(),
         };
-        let mesh = roads_ground_state_on(&self.land, &draws, &culs);
+        // roads of the skeleton and of the neighbouring additions that meet these ones: they only
+        // decide where junctions are, each is drawn by its own group
+        let context: Vec<RoadDraw> = match group {
+            None => Vec::new(),
+            Some(_) => {
+                let (mut lo, mut hi) = (
+                    Pt {
+                        x: f64::MAX,
+                        y: f64::MAX,
+                    },
+                    Pt {
+                        x: f64::MIN,
+                        y: f64::MIN,
+                    },
+                );
+                for d in &draws {
+                    for p in d.points {
+                        lo = Pt {
+                            x: lo.x.min(p.x),
+                            y: lo.y.min(p.y),
+                        };
+                        hi = Pt {
+                            x: hi.x.max(p.x),
+                            y: hi.y.max(p.y),
+                        };
+                    }
+                }
+                runs.iter()
+                    .enumerate()
+                    .filter(|(i, r)| r.addition != group && sim.road_visible(*i))
+                    .filter(|(_, r)| {
+                        r.points.iter().any(|p| {
+                            p.x > lo.x - 30.0
+                                && p.x < hi.x + 30.0
+                                && p.y > lo.y - 30.0
+                                && p.y < hi.y + 30.0
+                        })
+                    })
+                    .map(|(i, r)| RoadDraw {
+                        class: r.class,
+                        points: r.points.as_slice(),
+                        works: self.works_progress(i, day),
+                    })
+                    .collect()
+            }
+        };
+        let mesh = roads_ground_state_ctx_on(&self.land, &draws, &culs, &context);
         let (zlo, zhi) = self.z_range(2.0);
         let (lo, hi) = match group {
             None => (
@@ -625,6 +709,7 @@ impl LiveScene {
     /// Tell the trains how often to run and where they stop: open depots, grain elevators and
     /// the town's size decide it.
     pub fn set_rail_service(&mut self, sim: &Sim) {
+        self.scene.set_population(sim.population().max(0) as u32);
         let rates = sim.train_rates();
         let depots = sim
             .open_depots()
@@ -644,6 +729,102 @@ impl LiveScene {
             depots,
             elevators,
         });
+        self.sync_trams(sim);
+    }
+
+    /// Draw the tram tracks as the lines are built and tell the scene where trams run.
+    fn sync_trams(&mut self, sim: &Sim) {
+        use us_render::trams::{BuildStage, TrackDraw, TramLineService, TramService};
+        let lines = sim.tram_lines();
+        let mut key = vec![sim.trams_version()];
+        for l in &lines {
+            key.push(
+                match l.state {
+                    us_sim::TramState::Track => 0,
+                    us_sim::TramState::Wires => 100,
+                    us_sim::TramState::Open => 200,
+                } + (l.progress * 12.0) as u32,
+            );
+        }
+        let per_hour = sim.tram_rate();
+        self.scene.set_trams(TramService {
+            lines: lines
+                .iter()
+                .map(|l| TramLineService {
+                    points: l.points.iter().map(|p| [p.x as f32, p.y as f32]).collect(),
+                    stop_at: l.stop_at.iter().map(|&s| s as f32).collect(),
+                    per_hour,
+                    open: l.state == us_sim::TramState::Open,
+                })
+                .collect(),
+        });
+        if key == self.tram_key {
+            return;
+        }
+        self.tram_key = key;
+        let draws: Vec<TrackDraw> = lines
+            .iter()
+            .map(|l| TrackDraw {
+                points: &l.points,
+                stage: match l.state {
+                    us_sim::TramState::Track => BuildStage::Track,
+                    us_sim::TramState::Wires => BuildStage::Wires,
+                    us_sim::TramState::Open => BuildStage::Open,
+                },
+                progress: l.progress,
+            })
+            .collect();
+        let mesh = us_render::trams::track_mesh(&self.land, &draws);
+        let (zlo, zhi) = self.z_range(8.0);
+        let size = self.town.size as f32;
+        self.rev += 1;
+        let chunk = Chunk {
+            rev: self.rev,
+            mesh,
+            far: None,
+            lo: Vec3::new(-100.0, -100.0, zlo),
+            hi: Vec3::new(size + 100.0, size + 100.0, zhi),
+        };
+        match self.tram_chunk {
+            Some(ci) => self.scene.chunks[ci] = chunk,
+            None => {
+                self.scene.chunks.push(chunk);
+                self.tram_chunk = Some(self.scene.chunks.len() - 1);
+            }
+        }
+    }
+
+    /// Fire engines, police cars, ambulances, flames and smoke at the visual hour of today.
+    pub fn set_emergency(&mut self, sim: &Sim, hour: f32) {
+        use us_render::emergency::{EmBlaze, EmVehicle, RigKind};
+        let now = sim.day as f64 * 86_400.0 + hour as f64 * 3600.0;
+        let vehicles = sim
+            .vehicles_at(now)
+            .into_iter()
+            .map(|v| EmVehicle {
+                kind: match v.kind {
+                    us_sim::VehicleKind::FireEngine => RigKind::FireEngine,
+                    us_sim::VehicleKind::PoliceCar => RigKind::PoliceCar,
+                    us_sim::VehicleKind::Ambulance => RigKind::Ambulance,
+                },
+                pos: [v.pos.x as f32, v.pos.y as f32],
+                heading: v.heading as f32,
+                moving: v.moving,
+            })
+            .collect();
+        let blazes = sim
+            .blazes_at(now)
+            .into_iter()
+            .map(|b| {
+                let l = &sim.lots()[b.lot];
+                EmBlaze {
+                    pos: [b.pos.x as f32, b.pos.y as f32],
+                    stage: b.stage,
+                    top: 4.0 + 3.0 * (l.level.clamp(1, 5) as f32),
+                }
+            })
+            .collect();
+        self.scene.set_emergency(vehicles, blazes);
     }
 
     /// Follow road changes: new class or new streets show as roadworks that finish over time.
@@ -815,7 +996,7 @@ impl LiveScene {
         self.sync_roads(sim);
         let day = sim.day;
         for (i, l) in sim.lots().iter().enumerate() {
-            let k = look_of(l, day);
+            let k = look_of(l, day, l.fire.is_some() && sim.is_burning(i));
             if k != self.look[i] {
                 let was = self.look[i];
                 self.look[i] = k;

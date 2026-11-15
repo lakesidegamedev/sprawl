@@ -523,6 +523,8 @@ pub enum EventKind {
     GameOver,
     /// A capacity ran short or came back (see `Capacity`).
     Limit,
+    /// Storms, floods, heat and the forecast.
+    Weather,
 }
 
 /// A dated line for the news feed.

@@ -1,4 +1,4 @@
-//! The studio look: Silkscreen pixel type, solid panels, hard shadows, no glow.
+//! The Slate look: navy panels, 1 px borders, 8 px corners, Inter for text and numbers, the pixel face for headings only.
 
 #![allow(deprecated)]
 
@@ -12,7 +12,6 @@ pub const LINE: Color32 = Color32::from_rgb(11, 22, 34);
 pub const EDGE: Color32 = Color32::from_rgb(34, 54, 74);
 /// Type on controls and headings.
 pub const INK: Color32 = Color32::from_rgb(232, 238, 245);
-pub const PANEL: Color32 = Color32::from_rgb(19, 33, 47);
 pub const PANEL_DARK: Color32 = Color32::from_rgb(11, 22, 34);
 pub const RAISED: Color32 = Color32::from_rgb(26, 43, 60);
 pub const ACCENT: Color32 = Color32::from_rgb(226, 176, 74);
@@ -20,45 +19,171 @@ pub const GOOD: Color32 = Color32::from_rgb(63, 191, 138);
 pub const BAD: Color32 = Color32::from_rgb(229, 96, 94);
 pub const TEXT: Color32 = Color32::from_rgb(232, 238, 245);
 
-pub fn pixel(size: f32) -> FontId {
+/// Phosphor icon glyphs (MIT) in the "icons" font family. Only the ones the game uses.
+pub mod icon {
+    pub const HAMMER: &str = "\u{e80e}";
+    pub const ROAD: &str = "\u{e838}";
+    pub const DISTRICTS: &str = "\u{e464}";
+    pub const ORDINANCES: &str = "\u{eb7a}";
+    pub const TAXES: &str = "\u{e3ec}";
+    pub const BUDGET: &str = "\u{e78e}";
+    pub const BONDS: &str = "\u{e0b4}";
+    pub const GRAPHS: &str = "\u{e154}";
+    pub const NEWS: &str = "\u{e344}";
+    pub const RIVALS: &str = "\u{e67e}";
+    pub const VOTERS: &str = "\u{e68e}";
+    pub const MAP: &str = "\u{e31a}";
+    /// A bus front: public transit (the tram window).
+    pub const TRAM: &str = "\u{e106}";
+    pub const SUN: &str = "\u{e472}";
+    pub const CLOUD: &str = "\u{e1aa}";
+    pub const RAIN: &str = "\u{e1b4}";
+    pub const SNOW: &str = "\u{e1b8}";
+    pub const STORM: &str = "\u{e1b2}";
+    pub const WIND: &str = "\u{e5d2}";
+    pub const PAUSE: &str = "\u{e39e}";
+    pub const MENU: &str = "\u{e2f0}";
+    pub const CLOSE: &str = "\u{e4f6}";
+    pub const PEOPLE: &str = "\u{e4d6}";
+    pub const CALENDAR: &str = "\u{e10a}";
+    pub const TREND_UP: &str = "\u{e4ae}";
+    pub const TREND_DOWN: &str = "\u{e4ac}";
+}
+
+/// Text as written: sentence case. Kept so call sites read the same everywhere.
+pub fn ui_font(size: f32) -> FontId {
+    FontId::new(size * 1.12, FontFamily::Name("ui".into()))
+}
+
+/// The pixel face: window and screen titles and the logo only.
+pub fn pixel_face(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("pixel".into()))
 }
 
+/// The icon font at a size.
+pub fn icon_font(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name("icons".into()))
+}
+
+/// An icon as rich text.
+pub fn icon_text(glyph: &str, size: f32, col: Color32) -> egui::RichText {
+    egui::RichText::new(glyph).font(icon_font(size)).color(col)
+}
+
+// ----- motion -----
+
+static REDUCE_MOTION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Set once per frame from the settings.
+pub fn set_reduce_motion(on: bool) {
+    REDUCE_MOTION.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn reduce_motion() -> bool {
+    REDUCE_MOTION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Seconds for a normal transition, 0 when motion is reduced.
+pub fn dur(secs: f32) -> f32 {
+    if reduce_motion() { 0.0 } else { secs }
+}
+
+/// Ease a number toward its target in `secs` (screen figures count up, bars fill).
+pub fn ease(
+    ctx: &egui::Context,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    target: f32,
+    secs: f32,
+) -> f32 {
+    ctx.animate_value_with_time(egui::Id::new(id), target, dur(secs))
+}
+
+/// 0..1 for an on or off state, eased.
+pub fn ease_bool(
+    ctx: &egui::Context,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    on: bool,
+    secs: f32,
+) -> f32 {
+    ctx.animate_bool_with_time_and_easing(
+        egui::Id::new(id),
+        on,
+        dur(secs),
+        egui::emath::easing::cubic_out,
+    )
+}
+
+/// 0..1 that restarts each time the thing named `id` appears after a gap, so panels slide in
+/// every time they open, not only the first.
+pub fn opening(ctx: &egui::Context, id: &str, secs: f32) -> f32 {
+    let key = egui::Id::new(("open-seen", id));
+    let pass = ctx.cumulative_pass_nr();
+    let (last, gen_) = ctx
+        .data(|d| d.get_temp::<(u64, u32)>(key))
+        .unwrap_or((0, 0));
+    let gen_ = if pass > last + 2 { gen_ + 1 } else { gen_ };
+    ctx.data_mut(|d| d.insert_temp(key, (pass, gen_)));
+    ease_bool(ctx, (id, gen_), true, secs)
+}
+
+/// A light-weight eased integer for the top bar (counts to the new value).
+pub fn count_to(
+    ctx: &egui::Context,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    target: i64,
+) -> i64 {
+    ease(ctx, id, target as f32, 0.35).round() as i64
+}
+
+/// Panel fill, raised control fill, edge colour and corner radius of the Slate look.
+pub const FILL: Color32 = Color32::from_rgb(18, 30, 43);
+pub const RAISED_FILL: Color32 = Color32::from_rgb(29, 45, 62);
+pub const EDGE_LIGHT: Color32 = Color32::from_rgb(48, 68, 90);
+pub const MUTED: Color32 = Color32::from_rgb(150, 166, 186);
+pub const RADIUS: u8 = 8;
+
 pub fn install(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    fonts.font_data.insert(
-        "silk-bold".into(),
-        std::sync::Arc::new(FontData::from_static(include_bytes!(
-            "../assets/Silkscreen-Bold.ttf"
-        ))),
-    );
-    fonts.font_data.insert(
-        "silk".into(),
-        std::sync::Arc::new(FontData::from_static(include_bytes!(
-            "../assets/Silkscreen-Regular.ttf"
-        ))),
-    );
+    for (key, bytes) in [
+        (
+            "silk-bold",
+            &include_bytes!("../assets/Silkscreen-Bold.ttf")[..],
+        ),
+        ("inter", &include_bytes!("../assets/Inter-Regular.ttf")[..]),
+        (
+            "inter-semi",
+            &include_bytes!("../assets/Inter-SemiBold.ttf")[..],
+        ),
+        ("phosphor", &include_bytes!("../assets/Phosphor.ttf")[..]),
+    ] {
+        fonts.font_data.insert(
+            key.into(),
+            std::sync::Arc::new(FontData::from_static(bytes)),
+        );
+    }
     fonts
         .families
         .insert(FontFamily::Name("pixel".into()), vec!["silk-bold".into()]);
     fonts
         .families
-        .insert(FontFamily::Name("pixel-light".into()), vec!["silk".into()]);
+        .insert(FontFamily::Name("ui".into()), vec!["inter-semi".into()]);
+    fonts
+        .families
+        .insert(FontFamily::Name("icons".into()), vec!["phosphor".into()]);
+    // plain text (tips, inputs) in the clean face too
+    fonts
+        .families
+        .insert(FontFamily::Proportional, vec!["inter".into()]);
     ctx.set_fonts(fonts);
 
     let mut v = egui::Visuals::dark();
-    v.panel_fill = PANEL;
-    v.window_fill = PANEL;
-    v.window_stroke = Stroke::new(2.0, EDGE);
-    v.window_corner_radius = 0.into();
-    v.menu_corner_radius = 0.into();
-    v.window_shadow = egui::epaint::Shadow {
-        offset: [4, 4],
-        blur: 0,
-        spread: 0,
-        color: Color32::from_rgba_unmultiplied(0, 0, 0, 150),
-    };
-    v.popup_shadow = v.window_shadow;
+    v.panel_fill = FILL;
+    v.window_fill = FILL;
+    v.window_stroke = Stroke::new(1.0, EDGE_LIGHT);
+    v.window_corner_radius = RADIUS.into();
+    v.menu_corner_radius = RADIUS.into();
+    v.window_shadow = soft_shadow();
+    v.popup_shadow = soft_shadow();
     v.override_text_color = Some(TEXT);
     v.selection.bg_fill = ACCENT;
     v.selection.stroke = Stroke::new(1.0, LINE);
@@ -70,25 +195,27 @@ pub fn install(ctx: &egui::Context) {
         &mut w.active,
         &mut w.open,
     ] {
-        s.corner_radius = 0.into();
-        s.bg_stroke = Stroke::new(2.0, EDGE);
+        s.corner_radius = (RADIUS - 2).into();
+        s.bg_stroke = Stroke::new(1.0, EDGE_LIGHT);
         s.fg_stroke = Stroke::new(1.5, INK);
     }
-    w.noninteractive.bg_fill = PANEL;
-    w.noninteractive.weak_bg_fill = PANEL;
-    w.inactive.bg_fill = RAISED;
-    w.inactive.weak_bg_fill = RAISED;
+    w.noninteractive.bg_fill = FILL;
+    w.noninteractive.weak_bg_fill = FILL;
+    w.inactive.bg_fill = Color32::from_rgb(52, 76, 102);
+    w.inactive.weak_bg_fill = RAISED_FILL;
     w.hovered.bg_fill = Color32::from_rgb(40, 64, 88);
     w.hovered.weak_bg_fill = Color32::from_rgb(40, 64, 88);
-    w.hovered.bg_stroke = Stroke::new(2.0, ACCENT);
+    w.hovered.bg_stroke = Stroke::new(1.0, ACCENT);
     w.active.bg_fill = Color32::from_rgb(120, 92, 36);
     w.active.weak_bg_fill = Color32::from_rgb(120, 92, 36);
-    w.active.bg_stroke = Stroke::new(2.0, ACCENT);
+    w.active.bg_stroke = Stroke::new(1.0, ACCENT);
     ctx.set_visuals(v);
     ctx.global_style_mut(|s| {
         s.spacing.item_spacing = egui::vec2(8.0, 8.0);
         s.spacing.button_padding = egui::vec2(12.0, 6.0);
         s.spacing.slider_width = 200.0;
+        // hover and press states ease in about 150 ms
+        s.animation_time = 0.15;
         if cfg!(target_os = "ios") {
             // fingers, not a pointer: every control is at least 44 points tall and wide
             s.spacing.interact_size = egui::vec2(44.0, 44.0);
@@ -100,28 +227,39 @@ pub fn install(ctx: &egui::Context) {
     });
 }
 
+/// A tight drop shadow under panels: depth without haze.
+pub fn soft_shadow() -> egui::epaint::Shadow {
+    egui::epaint::Shadow {
+        offset: [0, 4],
+        blur: 12,
+        spread: 0,
+        color: Color32::from_rgba_unmultiplied(0, 0, 0, 110),
+    }
+}
+
 pub fn panel() -> Frame {
     Frame::new()
-        .fill(PANEL)
-        .stroke(Stroke::new(2.0, EDGE))
-        .inner_margin(Margin::same(12))
-        .shadow(egui::epaint::Shadow {
-            offset: [4, 4],
-            blur: 0,
-            spread: 0,
-            color: Color32::from_rgba_unmultiplied(0, 0, 0, 150),
-        })
+        .fill(FILL)
+        .stroke(Stroke::new(1.0, EDGE_LIGHT))
+        .corner_radius(RADIUS)
+        .inner_margin(Margin::same(14))
+        .shadow(soft_shadow())
 }
 
 pub fn bar() -> Frame {
     Frame::new()
-        .fill(PANEL_DARK)
-        .stroke(Stroke::new(2.0, EDGE))
+        .fill(Color32::from_rgba_unmultiplied(18, 30, 43, 244))
+        .stroke(Stroke::new(1.0, EDGE_LIGHT))
         .inner_margin(Margin::symmetric(14, 8))
 }
 
+/// A heading in the pixel face. Headings are the one place text is upper case.
 pub fn heading(text: &str, size: f32) -> egui::RichText {
-    egui::RichText::new(text).font(pixel(size)).color(INK)
+    // the pixel face is drawn on an 8 px grid: other sizes blur its steps
+    let size = ((size / 8.0).round().max(1.0)) * 8.0;
+    egui::RichText::new(text.to_uppercase())
+        .font(pixel_face(size))
+        .color(INK)
 }
 
 /// Smallest finger target, in points.
@@ -162,7 +300,7 @@ pub fn button(ui: &mut egui::Ui, text: &str) -> egui::Response {
         40.0
     };
     ui.add(
-        egui::Button::new(egui::RichText::new(text).font(pixel(16.0)).color(INK))
+        egui::Button::new(egui::RichText::new(text).font(ui_font(16.0)).color(INK))
             .min_size(egui::vec2(w, h)),
     )
 }

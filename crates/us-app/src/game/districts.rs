@@ -3,7 +3,7 @@
 
 use super::panels::{lab, lab_c, window, wrapped};
 use super::{Game, money};
-use crate::theme::{self, ACCENT, BAD, EDGE, GOOD, INK, LINE, RAISED, TEXT, pixel};
+use crate::theme::{self, ACCENT, BAD, EDGE, GOOD, INK, LINE, RAISED, TEXT, ui_font};
 use egui::{Color32, Context, Pos2, RichText, Stroke, Ui, vec2};
 use us_gen::Pt;
 use us_sim::{MAX_DISTRICTS, OrdScope, Ordinance};
@@ -13,16 +13,16 @@ const MUTED: Color32 = Color32::from_rgb(170, 176, 196);
 fn swatch(ui: &mut Ui, rgb: [u8; 3]) {
     let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), egui::Sense::hover());
     ui.painter()
-        .rect_filled(r, 0.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+        .rect_filled(r, 3.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
     ui.painter()
-        .rect_stroke(r, 0.0, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+        .rect_stroke(r, 3.0, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
 }
 
 /// A toggle button that is big enough to touch on a phone.
 fn toggle(ui: &mut Ui, text: &str, on: bool, touch: bool) -> egui::Response {
     let b = egui::Button::new(
-        RichText::new(text.to_uppercase())
-            .font(pixel(12.0))
+        RichText::new(text.to_string())
+            .font(ui_font(12.0))
             .color(if on { LINE } else { INK }),
     )
     .fill(if on { ACCENT } else { RAISED })
@@ -64,11 +64,11 @@ impl Game {
         let was = self.sim.district_of_addition(a);
         let now = self.sim.toggle_addition(d, a);
         let text = if now {
-            format!("ADDED TO {}.", name.to_uppercase())
+            format!("Added to {}.", name)
         } else if was == Some(d) {
-            format!("TAKEN OUT OF {}.", name.to_uppercase())
+            format!("Taken out of {}.", name)
         } else {
-            "FARMLAND CANNOT JOIN A DISTRICT.".to_string()
+            "Farmland cannot join a district.".to_string()
         };
         self.banner = Some((text, 3.0));
         self.ui.dist_stats_age = 9.0;
@@ -157,8 +157,8 @@ impl Game {
                                     self.ui.view = super::panels::MapView::District;
                                     self.banner = Some((
                                         format!(
-                                            "PAINTING {}: CLICK A NEIGHBOURHOOD TO ADD OR REMOVE IT.",
-                                            name.to_uppercase()
+                                            "Painting {}: click a neighbourhood to add or remove it.",
+                                            name
                                         ),
                                         6.0,
                                     ));
@@ -173,7 +173,7 @@ impl Game {
                                 lab(
                                     ui,
                                     format!(
-                                        "{count} NEIGHBOURHOODS  {} PEOPLE  {} JOBS  {} BUILDINGS",
+                                        "{count} neighbourhoods  {} people  {} jobs  {} buildings",
                                         s.people, s.jobs, s.buildings
                                     ),
                                     11.0,
@@ -181,7 +181,7 @@ impl Game {
                                 lab(
                                     ui,
                                     format!(
-                                        "LAND VALUE {:.0}%  BUILDING LEVEL {:.1}",
+                                        "Land value {:.0}%  building level {:.1}",
                                         s.avg_land_value * 100.0,
                                         s.avg_level
                                     ),
@@ -190,7 +190,7 @@ impl Game {
                                 lab(
                                     ui,
                                     format!(
-                                        "TAX {} A MONTH  ORDINANCES {} A MONTH",
+                                        "Tax {} a month  ordinances {} a month",
                                         money(s.tax_income),
                                         money(s.ordinance_cost)
                                     ),
@@ -263,14 +263,14 @@ impl Game {
                         );
                         let est = self.sim.ordinance_estimate(o, None);
                         let (text, col) = if o == Ordinance::BusinessBreak {
-                            (format!("LOSES ABOUT {} A MONTH IN TAX", money(-est)), BAD)
+                            (format!("Loses about {} a month in tax", money(-est)), BAD)
                         } else if est < 0 {
                             (
-                                format!("COSTS ABOUT {} A MONTH TOWN WIDE", money(-est)),
+                                format!("Costs about {} a month town wide", money(-est)),
                                 BAD,
                             )
                         } else {
-                            ("NO MONTHLY FEE".to_string(), GOOD)
+                            ("No monthly fee".to_string(), GOOD)
                         };
                         lab_c(ui, text, 11.0, col);
                         ui.horizontal_wrapped(|ui| {
@@ -312,7 +312,7 @@ impl Game {
             let cost = self.sim.ordinance_costs();
             lab_c(
                 ui,
-                format!("ORDINANCES COST {} A MONTH NOW", money(cost)),
+                format!("Ordinances cost {} a month now", money(cost)),
                 12.0,
                 if cost > 0 { BAD } else { GOOD },
             );

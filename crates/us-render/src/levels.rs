@@ -125,6 +125,13 @@ fn annex(o: &mut Obj, rng: &mut Rng, tall: f32) {
 
 fn generic(region: Region, kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
     let base = kit::build_lot_in(region, kind, rng);
+    dress(base, kind, level, rng)
+}
+
+/// A base model of a kind grown to a building level: bigger and taller, with rooftop or yard
+/// units from level 3, an annex from level 4 and a flag mast at level 5. Factories get the
+/// chimneys that `chimneys` reports.
+pub(crate) fn dress(base: Obj, kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
     let ground_kind = matches!(
         kind,
         LotKind::Parking | LotKind::Park | LotKind::Sports | LotKind::Farm | LotKind::Water
@@ -250,6 +257,9 @@ pub fn build_lot_level_dense(
     let region = Region::of(preset);
     let level = level.clamp(1, MAX_LEVEL);
     let tall = (density - 0.75).max(0.0) / 0.25;
+    if let Some(o) = crate::kit_more::variant(region, kind, level, density, rng) {
+        return kit::fit_to_lot(o, radius);
+    }
     let obj = match kind {
         LotKind::Office if level >= 4 && tall > 0.0 => {
             let base = if level == 4 { 10.0 } else { 14.0 };
@@ -277,6 +287,9 @@ pub fn build_lot_level_dense(
 /// The model for one lot at a building level from 1 to 5 in a region.
 pub fn build_lot_level_in(region: Region, kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
     let level = level.clamp(1, MAX_LEVEL);
+    if let Some(o) = crate::kit_more::variant(region, kind, level, 0.5, rng) {
+        return o;
+    }
     match kind {
         LotKind::House => match level {
             1 => scaled(&kit::house(region, rng), 0.8, 0.8, 0.88),
@@ -339,51 +352,17 @@ fn mix(c: Rgb, to: Rgb, k: f32) -> Rgb {
     [m(c[0], to[0]), m(c[1], to[1]), m(c[2], to[2])]
 }
 
-/// A building site: the new model rising to `progress` (0 to 1) inside a hoarding fence, with a
-/// tower crane while it is still going up.
+/// A building site: the new model going up in stages inside a hoarding fence, with a crane. A
+/// tower crane is used when the building is tall (about four floors or more).
 pub fn building_site(new: &Obj, progress: f32) -> Obj {
-    let p = progress.clamp(0.0, 1.0);
-    let mut o = crate::live::construction(new, p);
-    let b = new.footprint();
-    let (x0, y0, x1, y1) = (b[0] - 1.5, b[1] - 1.5, b[2] + 1.5, b[3] + 1.5);
-    let fence: Rgb = [232, 150, 52];
-    let post = 0.15;
-    o.slab(x0, y0, 0.0, x1, y0 + post, 1.1, fence);
-    o.slab(x0, y1 - post, 0.0, x1, y1, 1.1, fence);
-    o.slab(x0, y0, 0.0, x0 + post, y1, 1.1, fence);
-    o.slab(x1 - post, y0, 0.0, x1, y1, 1.1, fence);
-    if p < 0.95 {
-        let top = top_of(new).max(6.0) + 5.0;
-        let (cx, cy) = (x1 - 0.5, y0 + 0.5);
-        o.bx(
-            cx - 0.3,
-            cy - 0.3,
-            0.0,
-            cx + 0.3,
-            cy + 0.3,
-            top,
-            [232, 190, 60],
-        );
-        o.bx(
-            cx - (x1 - x0) * 0.9,
-            cy - 0.25,
-            top,
-            cx + 2.0,
-            cy + 0.25,
-            top + 0.5,
-            [232, 190, 60],
-        );
-        o.bx(
-            cx - 3.0,
-            cy - 0.5,
-            top - 1.4,
-            cx - 2.0,
-            cy + 0.5,
-            top,
-            [90, 94, 100],
-        );
-    }
-    o
+    let tall = massing(new)[4] >= 12.0;
+    crate::site::site(new, crate::site::Spec { old: None, tall }, progress)
+}
+
+/// A building site for a known job: `old` is the building coming down first (a rebuild), `tall`
+/// picks the tower crane.
+pub fn building_site_for(new: &Obj, old: Option<&Obj>, tall: bool, progress: f32) -> Obj {
+    crate::site::site(new, crate::site::Spec { old, tall }, progress)
 }
 
 /// A burned-out lot: the old model charred and gutted to a stump, with a few glowing-orange

@@ -73,6 +73,8 @@ struct Ctx<'a> {
     boxes: Vec<(Pt, Pt)>,
     hall: Pt,
     offices_left: u32,
+    /// Generator version 3 rules: downtown gets its first towers before anything else.
+    v3: bool,
     /// Generator version 2 rules: centres shape the lot kinds, parks stay clear.
     v2: bool,
     centres: Vec<Centre>,
@@ -265,8 +267,9 @@ pub fn make_lots(
     terrain: &Terrain,
     rng: &mut Rng,
     preset: Preset,
-    v2: bool,
+    version: u32,
 ) -> (Vec<Lot>, Vec<Station>, Vec<Centre>) {
+    let v2 = version >= 2;
     let mut h = DiskHash::new();
     for d in drafts {
         road_disks(&mut h, &d.line, d.class.half_width());
@@ -274,12 +277,32 @@ pub fn make_lots(
     for c in culs {
         h.add(c.pos.x, c.pos.y, 9.0);
     }
+    // the island of a roundabout stays clear
+    for d in drafts {
+        if d.class == RoadClass::Collector
+            && d.line.len() == 33
+            && d.line[0].dist(d.line[32]) < 1e-6
+        {
+            let n = 32.0;
+            let c = pt(
+                d.line[..32].iter().map(|p| p.x).sum::<f64>() / n,
+                d.line[..32].iter().map(|p| p.y).sum::<f64>() / n,
+            );
+            if d.line
+                .iter()
+                .all(|p| (p.dist(c) - crate::junctions::RING_R).abs() < 0.3)
+            {
+                h.add(c.x, c.y, crate::junctions::RING_R - 6.0);
+            }
+        }
+    }
     h.add(hall.x, hall.y, hall_r + 10.0);
     let mut ctx = Ctx {
         additions,
         boxes: additions.iter().map(|a| bbox(&a.polygon)).collect(),
         hall,
         offices_left: if v2 { 14 } else { 5 },
+        v3: version >= 3,
         v2,
         centres: Vec::new(),
         parks: (0..additions.len())
@@ -495,6 +518,26 @@ pub fn make_lots(
             h.add(next.centre.x, next.centre.y, next.radius);
             lots.push(next.clone());
             cur = next;
+        }
+    }
+    if ctx.v3 {
+        // version 3: every town has a couple of towers downtown, whatever the draw gave it:
+        // the most central flats and shops become offices (the model is fitted to the lot)
+        let have = lots.iter().filter(|l| l.kind == LotKind::Office).count();
+        if have < 2 {
+            let mut cands: Vec<(f64, usize)> = lots
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| {
+                    l.zone == Zone::Core && matches!(l.kind, LotKind::Apartments | LotKind::Shop)
+                })
+                .map(|(i, l)| (ctx.central(l.centre), i))
+                .filter(|(c, _)| *c >= 0.55)
+                .collect();
+            cands.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+            for &(_, i) in cands.iter().take(2 - have) {
+                lots[i].kind = LotKind::Office;
+            }
         }
     }
     for l in &mut lots {

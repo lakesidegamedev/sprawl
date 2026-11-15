@@ -82,6 +82,7 @@ impl Sim {
                 if next >= 3 {
                     self.merge_neighbours(i, class);
                 }
+                self.log_big_job(i, next);
                 upgrades += 1;
                 up_at.get_or_insert(pos);
             } else if l.level > 1 && lv < down_lv && roll_m > 1.0 - DECLINE_CHANCE {

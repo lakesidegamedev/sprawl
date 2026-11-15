@@ -340,7 +340,8 @@ impl Sim {
             .collect();
         let mean = means.iter().sum::<f64>() / 5.0;
         let (ord_services, ord_traffic) = self.ord_approval_parts();
-        let services = (mean - 0.45) * 40.0 + self.stadium_approval() + ord_services;
+        let services =
+            (mean - 0.45) * 40.0 + self.stadium_approval() + ord_services + self.weather_approval();
         let mut weakest = 0;
         for k in 1..5 {
             if means[k] < means[weakest] {

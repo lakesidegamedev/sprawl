@@ -1,7 +1,7 @@
 //! Line and area charts for the monthly history. Solid lines and flat fills only: no gradients,
 //! no glow.
 
-use crate::theme::{ACCENT, EDGE, INK, LINE, PANEL_DARK, pixel};
+use crate::theme::{ACCENT, EDGE, INK, LINE, PANEL_DARK, ui_font};
 use egui::epaint::Mesh;
 use egui::{Align2, Color32, Pos2, Rect, Sense, Shape, Stroke, Ui, vec2};
 
@@ -112,19 +112,25 @@ const MARGIN_L: f32 = 78.0;
 pub fn draw(ui: &mut Ui, size: egui::Vec2, c: &Chart) {
     let (resp, painter) = ui.allocate_painter(size, Sense::hover());
     let rect = resp.rect;
-    painter.rect_filled(rect, 0.0, PANEL_DARK);
-    painter.rect_stroke(rect, 0.0, Stroke::new(2.0, EDGE), egui::StrokeKind::Inside);
+    painter.rect_filled(rect, 3.0, PANEL_DARK);
+    painter.rect_stroke(rect, 3.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
     let n = c.days.len();
     let shown: Vec<usize> = (0..c.series.len())
         .filter(|&i| c.visible.get(i).copied().unwrap_or(true))
         .collect();
     if n == 0 || shown.is_empty() {
         let msg = if n == 0 {
-            "NO DATA YET: LET A MONTH PASS"
+            "No data yet: let a month pass"
         } else {
-            "ALL SERIES ARE OFF"
+            "All series are off"
         };
-        painter.text(rect.center(), Align2::CENTER_CENTER, msg, pixel(12.0), INK);
+        painter.text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            msg,
+            ui_font(12.0),
+            INK,
+        );
         return;
     }
     let plot = Rect::from_min_max(rect.min + vec2(MARGIN_L, 12.0), rect.max - vec2(14.0, 26.0));
@@ -194,7 +200,7 @@ pub fn draw(ui: &mut Ui, size: egui::Vec2, c: &Chart) {
             Pos2::new(plot.left() - 6.0, y),
             Align2::RIGHT_CENTER,
             c.fmt.short(t),
-            pixel(12.0),
+            ui_font(12.0),
             INK,
         );
         t += step;
@@ -202,7 +208,7 @@ pub fn draw(ui: &mut Ui, size: egui::Vec2, c: &Chart) {
 
     // x labels: a year at every January when the range is long, else month names
     const MON: [&str; 12] = [
-        "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     let by_month = n <= 14;
     let stride = if by_month {
@@ -244,7 +250,7 @@ pub fn draw(ui: &mut Ui, size: egui::Vec2, c: &Chart) {
             Pos2::new(x, plot.bottom() + 6.0),
             Align2::CENTER_TOP,
             text,
-            pixel(12.0),
+            ui_font(12.0),
             INK,
         );
     }
@@ -338,18 +344,18 @@ pub fn draw(ui: &mut Ui, size: egui::Vec2, c: &Chart) {
         let head = format!("{} {}", MON[month as usize - 1], year);
         let fmt = c.fmt;
         resp.on_hover_ui_at_pointer(|ui| {
-            ui.label(egui::RichText::new(head).font(pixel(12.0)).color(ACCENT));
+            ui.label(egui::RichText::new(head).font(ui_font(12.0)).color(ACCENT));
             for &s in &shown {
                 ui.horizontal(|ui| {
                     let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-                    ui.painter().rect_filled(r, 0.0, c.series[s].color);
+                    ui.painter().rect_filled(r, 3.0, c.series[s].color);
                     ui.label(
                         egui::RichText::new(format!(
                             "{}  {}",
                             c.series[s].name,
                             fmt.full(c.series[s].vals[i])
                         ))
-                        .font(pixel(12.0))
+                        .font(ui_font(12.0))
                         .color(INK),
                     );
                 });
@@ -362,8 +368,8 @@ pub fn draw(ui: &mut Ui, size: egui::Vec2, c: &Chart) {
 pub fn spark(ui: &mut Ui, size: egui::Vec2, vals: &[f64], color: Color32, tip: &str) {
     let (resp, painter) = ui.allocate_painter(size, Sense::hover());
     let r = resp.rect;
-    painter.rect_filled(r, 0.0, PANEL_DARK);
-    painter.rect_stroke(r, 0.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
+    painter.rect_filled(r, 3.0, PANEL_DARK);
+    painter.rect_stroke(r, 3.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
     if vals.len() >= 2 {
         let lo = vals.iter().copied().fold(f64::MAX, f64::min);
         let hi = vals.iter().copied().fold(f64::MIN, f64::max);
@@ -384,5 +390,5 @@ pub fn spark(ui: &mut Ui, size: egui::Vec2, vals: &[f64], color: Color32, tip: &
         painter.add(Shape::line(pts, Stroke::new(2.0, color)));
         painter.circle_filled(last, 2.5, color);
     }
-    resp.on_hover_text(egui::RichText::new(tip).font(pixel(12.0)));
+    resp.on_hover_text(egui::RichText::new(tip).font(ui_font(12.0)));
 }

@@ -256,8 +256,23 @@ fn calendar_steps() {
     assert_eq!(at(6.0).phase(), DayPhase::Dawn);
     assert_eq!(at(12.0).lit_windows(), 0.0);
     assert!(at(22.0).lit_windows() > at(18.0).lit_windows());
-    // stepped: the same hour block gives the same light
-    assert_eq!(at(12.1).light(), at(12.9).light());
+    // smooth: no jump between neighbouring minutes, at any hour
+    for m in 0..24 * 60 - 1 {
+        let (a, b) = (at(m as f32 / 60.0), at((m + 1) as f32 / 60.0));
+        for i in 0..3 {
+            assert!((a.tone()[i] - b.tone()[i]).abs() < 0.03);
+            assert!(
+                (a.light()[i] - b.light()[i]).abs() < 0.04,
+                "light jumps at minute {m}: {:?} {:?}",
+                a.light(),
+                b.light()
+            );
+        }
+        assert!((a.lit_windows() - b.lit_windows()).abs() < 0.03);
+        assert!((a.lamps() - b.lamps()).abs() < 0.03);
+    }
+    assert_eq!(at(12.0).lamps(), 0.0);
+    assert_eq!(at(23.0).lamps(), 1.0);
     let l = at(22.0).light();
     assert!(l[2] > 0.5);
 }
@@ -286,5 +301,51 @@ fn smoke_comes_from_factories() {
         let before = over(&s);
         s.set_lot(w, Some(4), LotState::Normal);
         assert!(over(&s) > before);
+    }
+}
+
+#[test]
+fn building_sites_build_up_step_by_step() {
+    use us_render::levels::building_site_for;
+    use us_render::site::{STEPS, clip_height, step_progress};
+    use us_render::{Region, build_lot_level_in};
+    let top = |o: &us_render::Obj| {
+        o.polys
+            .iter()
+            .flat_map(|p| p.pts.iter().map(|v| v[2]))
+            .fold(0.0f32, f32::max)
+    };
+    for (kind, level) in [
+        (us_gen::LotKind::Office, 5u8),
+        (us_gen::LotKind::Apartments, 3),
+        (us_gen::LotKind::House, 1),
+    ] {
+        let new = build_lot_level_in(Region::Mixed, kind, level, &mut Rng::new(5, 1));
+        let old = build_lot_level_in(Region::Mixed, kind, 1, &mut Rng::new(6, 1));
+        for rebuild in [false, true] {
+            let mut counts = BTreeSet::new();
+            let mut last = None;
+            for s in 0..STEPS {
+                let o =
+                    building_site_for(&new, rebuild.then_some(&old), level >= 4, step_progress(s));
+                assert!(!o.polys.is_empty());
+                counts.insert(o.polys.len());
+                last = Some(o);
+            }
+            assert!(
+                counts.len() >= 6,
+                "{kind:?}: only {} distinct pictures",
+                counts.len()
+            );
+            // the last step is the finished building with the crane gone
+            let last = last.unwrap();
+            assert!(
+                (top(&last) - top(&new)).abs() < 0.01,
+                "crane left at the end"
+            );
+        }
+        // clipping never leaves anything above the cut
+        let cut = top(&new) * 0.5;
+        assert!(top(&clip_height(&new, cut)) <= cut + 0.01);
     }
 }

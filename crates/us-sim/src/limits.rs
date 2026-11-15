@@ -41,7 +41,14 @@ impl Sim {
     }
 
     /// Demand and supply of one capacity right now.
+    /// Demand includes what today's weather adds (heat waves, storms, deep cold).
     pub fn capacity(&self, c: Capacity) -> CapacityStatus {
+        self.capacity_with(c, true)
+    }
+
+    /// The same, with or without today's weather. The monthly growth check leaves it out, so a
+    /// hot day on the first of the month does not stop building for a month.
+    pub(crate) fn capacity_with(&self, c: Capacity, weather: bool) -> CapacityStatus {
         let pop = self.population();
         let (mut water, mut power, mut seats, mut clinics) = (0i64, 0i64, 0i64, 0i64);
         for l in &self.lots {
@@ -89,7 +96,11 @@ impl Sim {
         };
         CapacityStatus {
             capacity: c,
-            demand,
+            demand: if weather {
+                demand * self.weather_use_pct(c) / 100
+            } else {
+                demand
+            },
             supply,
         }
     }
@@ -162,7 +173,7 @@ impl Sim {
         let was = self.stalled;
         let was_warn = self.warned;
         let mut news: Vec<(String, Option<Pt>)> = Vec::new();
-        for st in self.capacities() {
+        for st in Capacity::ALL.map(|c| self.capacity_with(c, false)) {
             let i = st.capacity.index();
             // pause growth when full; resume with some room so it does not flicker
             self.stalled[i] = if was[i] {
@@ -212,7 +223,9 @@ impl Sim {
         let homes_attr = ratio.clamp(0.3, 1.2)
             * self.tax_factor(Class::Homes)
             * rival(self, Class::Homes)
-            * mood.clamp(0.6, 1.4);
+            * mood.clamp(0.6, 1.4)
+            // people hold off from a town that has just been flooded or lost power
+            * (1.0 - 0.1 * self.weather_trouble());
         let shops_attr = self.tax_factor(Class::Shops) * rival(self, Class::Shops);
         let ind_attr = self.tax_factor(Class::Industry) * rival(self, Class::Industry);
         // the town wants people for the jobs it has, customers for its shops, workers for its

@@ -3,7 +3,7 @@
 #![allow(deprecated)]
 
 use crate::cam::CamCtl;
-use crate::theme::{self, ACCENT, BAD, INK, TEXT, heading, pixel};
+use crate::theme::{self, ACCENT, BAD, INK, TEXT, heading, ui_font};
 use crate::world::LiveScene;
 use egui::{Align2, Color32, Pos2, RichText, Stroke, vec2};
 use glam::Vec3;
@@ -17,9 +17,12 @@ use us_sim::{Difficulty, Phase, Sim, hall_sites};
 use winit::keyboard::KeyCode;
 
 mod charts;
+mod chrome;
 mod districts;
 mod panels;
 mod screens;
+mod trams;
+mod weather_fx;
 
 use screens::{Mode, Nav};
 pub mod touch;
@@ -28,7 +31,7 @@ const DAY_SECONDS: f64 = 1.3;
 const SPEEDS: [f64; 4] = [0.0, 1.0, 3.0, 8.0];
 /// Real seconds for one full visual day and night at 1x.
 const LIGHT_DAY_SECONDS: f32 = 240.0;
-const SPEED_LABELS: [&str; 4] = ["II", "1X", "3X", "8X"];
+const SPEED_LABELS: [&str; 4] = ["II", "1x", "3x", "8x"];
 
 pub struct Settings {
     pub fullscreen: bool,
@@ -36,6 +39,8 @@ pub struct Settings {
     pub high_shadows: bool,
     /// Day and night cycle (true) or always day (false).
     pub day_night: bool,
+    /// Fewer animations: panels, figures and the camera jump instead of easing.
+    pub reduce_motion: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -227,7 +232,7 @@ fn to_screen(ndc: (f32, f32), w: u32, h: u32, ppp: f32) -> Pos2 {
 }
 
 pub(super) fn label(ui: &mut egui::Ui, text: &str, size: f32) {
-    ui.label(RichText::new(text).font(pixel(size)).color(TEXT));
+    ui.label(RichText::new(text).font(ui_font(size)).color(TEXT));
 }
 
 impl State {
@@ -255,6 +260,7 @@ impl State {
                 ui_scale: 1.0,
                 high_shadows: true,
                 day_night: true,
+                reduce_motion: std::env::var("URBAN_SPRAWL_REDUCE_MOTION").is_ok_and(|v| v == "1"),
             },
             preset: Preset::Grid,
             seed_text: random_seed().to_string(),
@@ -526,8 +532,8 @@ impl State {
                 g.autosave_year = year;
                 let town = g.name.clone();
                 match crate::saves::write_autosave(&crate::saves::save_dir(), &mut g.sim, &town) {
-                    Ok(_) => g.toast("AUTOSAVED", false),
-                    Err(e) => g.toast(format!("AUTOSAVE FAILED: {e}").to_uppercase(), true),
+                    Ok(_) => g.toast("Autosaved", false),
+                    Err(e) => g.toast(format!("Autosave failed: {e}").to_string(), true),
                 }
                 self.refresh_saves();
             }
@@ -739,6 +745,15 @@ impl State {
     pub fn ui(&mut self, ui: &mut egui::Ui, w: u32, h: u32) {
         let ctx = ui.ctx().clone();
         theme::set_compact(&ctx, theme::wants_compact(&ctx));
+        theme::set_reduce_motion(self.settings.reduce_motion);
+        let anim = if self.settings.reduce_motion {
+            0.0
+        } else {
+            0.15
+        };
+        if (ctx.global_style().animation_time - anim).abs() > f32::EPSILON {
+            ctx.global_style_mut(|s| s.animation_time = anim);
+        }
         match self.screen {
             Screen::Menu => self.menu_ui(&ctx),
             Screen::NewTown => self.new_town_ui(&ctx),
@@ -749,7 +764,7 @@ impl State {
                     .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
                     .show(&ctx, |ui| {
                         theme::panel().show(ui, |ui| {
-                            ui.label(heading("BUILDING THE COUNTRYSIDE...", 24.0));
+                            ui.label(heading("Building the countryside...", 24.0));
                         });
                     });
             }
@@ -769,7 +784,7 @@ impl State {
         let compact = theme::is_compact(ui.ctx());
         ui.vertical_centered(|ui| {
             ui.label(heading(
-                "URBAN SPRAWL",
+                "Urban sprawl",
                 if short {
                     28.0
                 } else if compact {
@@ -779,8 +794,8 @@ impl State {
                 },
             ));
             ui.label(
-                RichText::new(crate::VERSION_LABEL.to_uppercase())
-                    .font(pixel(if short { 12.0 } else { 16.0 }))
+                RichText::new(crate::VERSION_LABEL.to_string())
+                    .font(ui_font(if short { 12.0 } else { 16.0 }))
                     .color(ACCENT),
             );
             ui.add_space(if short { 2.0 } else { 8.0 });
@@ -801,7 +816,7 @@ impl State {
                 if short {
                 } else if let Some(a) = &status.account {
                     ui.vertical_centered(|ui| {
-                        label(ui, &format!("SIGNED IN AS {}", a.name.to_uppercase()), 14.0);
+                        label(ui, &format!("Signed in as {}", a.name), 14.0);
                         if status.launcher {
                             label(
                                 ui,
@@ -829,24 +844,24 @@ impl State {
             }
             ui.vertical_centered(|ui| {
                 if let Some(c) = self.continue_info.clone()
-                    && theme::button(ui, "CONTINUE").clicked()
+                    && theme::button(ui, "Continue").clicked()
                 {
                     self.load_save(&c.path);
                 }
-                if theme::button(ui, "NEW TOWN").clicked() {
+                if theme::button(ui, "New town").clicked() {
                     self.screen = Screen::NewTown;
                 }
-                if theme::button(ui, "LOAD GAME").clicked() {
+                if theme::button(ui, "Load game").clicked() {
                     self.refresh_saves();
                     self.load_note.clear();
                     self.screen = Screen::Load;
                 }
-                if theme::button(ui, "SETTINGS").clicked() {
+                if theme::button(ui, "Settings").clicked() {
                     self.screen = Screen::Settings;
                 }
                 // iOS apps are closed from the home screen, never by the app
                 #[cfg(not(target_os = "ios"))]
-                if theme::button(ui, "QUIT").clicked() {
+                if theme::button(ui, "Quit").clicked() {
                     self.quit = true;
                 }
             });
@@ -855,60 +870,73 @@ impl State {
 
     fn settings_ui(&mut self, ctx: &egui::Context) {
         theme::centered(ctx, "settings", 24, |ui| {
-            ui.label(heading("SETTINGS", 32.0));
+            ui.label(heading("Settings", 32.0));
             ui.add_space(6.0);
             #[cfg(not(target_os = "ios"))]
             {
-                label(ui, "WINDOW", 14.0);
+                label(ui, "Window", 14.0);
                 ui.horizontal(|ui| {
                     ui.selectable_value(
                         &mut self.settings.fullscreen,
                         false,
-                        RichText::new("WINDOWED").font(pixel(16.0)),
+                        RichText::new("Windowed").font(ui_font(16.0)),
                     );
                     ui.selectable_value(
                         &mut self.settings.fullscreen,
                         true,
-                        RichText::new("FULLSCREEN").font(pixel(16.0)),
+                        RichText::new("Fullscreen").font(ui_font(16.0)),
                     );
                 });
             }
-            label(ui, "UI SCALE", 14.0);
+            label(ui, "UI scale", 14.0);
             ui.add(egui::Slider::new(&mut self.settings.ui_scale, 0.8..=1.8).step_by(0.1));
-            label(ui, "SHADOWS", 14.0);
+            label(ui, "Shadows", 14.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(
                     &mut self.settings.high_shadows,
                     true,
-                    RichText::new("CRISP").font(pixel(16.0)),
+                    RichText::new("Crisp").font(ui_font(16.0)),
                 );
                 ui.selectable_value(
                     &mut self.settings.high_shadows,
                     false,
-                    RichText::new("FAST").font(pixel(16.0)),
+                    RichText::new("Fast").font(ui_font(16.0)),
                 );
             });
-            label(ui, "DAY AND NIGHT", 14.0);
+            label(ui, "Day and night", 14.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(
                     &mut self.settings.day_night,
                     true,
-                    RichText::new("CYCLE").font(pixel(16.0)),
+                    RichText::new("Cycle").font(ui_font(16.0)),
                 );
                 ui.selectable_value(
                     &mut self.settings.day_night,
                     false,
-                    RichText::new("ALWAYS DAY").font(pixel(16.0)),
+                    RichText::new("Always day").font(ui_font(16.0)),
+                );
+            });
+            label(ui, "Reduce motion", 14.0);
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut self.settings.reduce_motion,
+                    false,
+                    RichText::new("Off").font(ui_font(16.0)),
+                );
+                ui.selectable_value(
+                    &mut self.settings.reduce_motion,
+                    true,
+                    RichText::new("On").font(ui_font(16.0)),
                 );
             });
             #[cfg(not(target_os = "ios"))]
             {
-                label(ui, "F11 TOGGLES FULLSCREEN IN GAME", 12.0);
+                label(ui, "F11 toggles fullscreen in game", 12.0);
                 ui.add_space(8.0);
                 self.account_ui(ui);
             }
             ui.add_space(10.0);
-            if theme::button(ui, "BACK").clicked() {
+            if theme::button(ui, "Back").clicked() {
                 if self.settings_from_game && self.game.is_some() {
                     // back to the pause menu of the running town
                     self.settings_from_game = false;
@@ -934,10 +962,10 @@ impl State {
     fn account_ui(&mut self, ui: &mut egui::Ui) {
         let status = self.lakeside.status();
         let busy = self.account_busy.load(Ordering::SeqCst);
-        label(ui, "LAKESIDE ACCOUNT", 14.0);
+        label(ui, "Lakeside account", 14.0);
         if let Some(a) = &status.account {
             label(ui, &format!("Signed in to Lakeside as {}", a.name), 12.0);
-            if theme::button(ui, "SIGN OUT").clicked() {
+            if theme::button(ui, "Sign out").clicked() {
                 self.lakeside.sign_out();
                 self.note("Signed out.");
             }
@@ -945,10 +973,10 @@ impl State {
             label(ui, "Checking your Lakeside launcher sign-in...", 12.0);
         } else if busy {
             label(ui, "Finish signing in in your browser.", 12.0);
-            if theme::button(ui, "CANCEL").clicked() {
+            if theme::button(ui, "Cancel").clicked() {
                 self.lakeside.cancel_sign_in();
             }
-        } else if theme::button(ui, "SIGN IN").clicked() {
+        } else if theme::button(ui, "Sign in").clicked() {
             let lk = self.lakeside.clone();
             let note = self.account_note.clone();
             let flag = self.account_busy.clone();
@@ -965,7 +993,7 @@ impl State {
                 flag.store(false, Ordering::SeqCst);
             });
         }
-        label(ui, "UPDATES", 14.0);
+        label(ui, "Updates", 14.0);
         if status.launcher {
             label(
                 ui,
@@ -974,7 +1002,7 @@ impl State {
             );
         } else if status.updater_enabled
             && !busy
-            && theme::button(ui, "CHECK FOR UPDATES").clicked()
+            && theme::button(ui, "Check for updates").clicked()
         {
             let lk = self.lakeside.clone();
             let note = self.account_note.clone();
@@ -1105,263 +1133,112 @@ impl State {
         } else {
             theme::bar()
         };
-        let hud = egui::Panel::top("hud").frame(bar_frame).show(ui, |ui| {
-            if compact {
-                let wide = ui.available_width() >= 640.0;
-                let small = |s: String, col: Color32| RichText::new(s).font(pixel(12.0)).color(col);
-                let row1 = |ui: &mut egui::Ui, g: &Game| {
-                    if g.placed {
-                        // month and year: the day does not earn its room on a phone
-                        let d = g.sim.date().text().to_uppercase();
-                        ui.label(small(
-                            d.split_once(' ').map_or(d.clone(), |x| x.1.to_string()),
-                            INK,
-                        ));
-                        ui.label(small(format!("POP {}", g.stats.pop), INK));
-                        ui.label(small(
-                            format!("${}", short_money(g.sim.treasury)),
-                            if g.sim.treasury < 0 { BAD } else { INK },
-                        ));
-                        let net = g.stats.income - g.stats.expense;
-                        ui.label(small(
-                            format!(
-                                "{}${}/MO",
-                                if net < 0 { "-" } else { "+" },
-                                short_money(net.abs())
-                            ),
-                            if net < 0 { BAD } else { theme::GOOD },
-                        ));
-                    } else {
-                        ui.label(small("PLACE THE TOWN HALL".into(), INK));
-                    }
-                };
-                let row2 = |ui: &mut egui::Ui, g: &mut Game| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    let chip = |ui: &mut egui::Ui, g: &mut Game| {
+        let hud = if !compact {
+            g.desktop_bar(ui, &who, fps)
+        } else {
+            egui::Panel::top("hud").frame(bar_frame).show(ui, |ui| {
+                {
+                    let wide = ui.available_width() >= 640.0;
+                    let small =
+                        |s: String, col: Color32| RichText::new(s).font(ui_font(12.0)).color(col);
+                    let row1 = |ui: &mut egui::Ui, g: &Game| {
                         if g.placed {
-                            g.approval_chip(ui, true);
+                            // month and year: the day does not earn its room on a phone
+                            let d = g.sim.date().text().to_string();
+                            ui.label(small(
+                                d.split_once(' ').map_or(d.clone(), |x| x.1.to_string()),
+                                INK,
+                            ));
+                            ui.label(small(format!("Pop {}", g.stats.pop), INK));
+                            ui.label(small(
+                                format!("${}", short_money(g.sim.treasury)),
+                                if g.sim.treasury < 0 { BAD } else { INK },
+                            ));
+                            let net = g.stats.income - g.stats.expense;
+                            ui.label(small(
+                                format!(
+                                    "{}${}/mo",
+                                    if net < 0 { "-" } else { "+" },
+                                    short_money(net.abs())
+                                ),
+                                if net < 0 { BAD } else { theme::GOOD },
+                            ));
+                        } else {
+                            ui.label(small("Place the town hall".into(), INK));
                         }
                     };
-                    split_row(ui, theme::TOUCH, g, chip, |ui, g| {
+                    let row2 = |ui: &mut egui::Ui, g: &mut Game| {
                         ui.spacing_mut().item_spacing.x = 4.0;
-                        let b =
-                            egui::Button::new(RichText::new("MENU").font(pixel(12.0)).color(INK))
-                                .min_size(vec2(48.0, theme::TOUCH));
-                        if ui.add(b).clicked() {
-                            g.menu_open = true;
-                        }
-                        if g.placed {
-                            for i in (0..4).rev() {
-                                let on = g.speed == i;
-                                let b = egui::Button::new(
-                                    RichText::new(SPEED_LABELS[i])
-                                        .font(pixel(12.0))
-                                        .color(if on { theme::LINE } else { INK }),
-                                )
-                                .fill(if on { ACCENT } else { theme::RAISED })
-                                .min_size(vec2(theme::TOUCH, theme::TOUCH));
-                                if ui.add(b).clicked() {
-                                    g.speed = i;
-                                }
+                        let chip = |ui: &mut egui::Ui, g: &mut Game| {
+                            if g.placed {
+                                g.approval_chip(ui, true);
                             }
-                        }
-                    });
-                };
-                if wide {
-                    split_row(
-                        ui,
-                        theme::TOUCH,
-                        g,
-                        |ui, g| {
-                            ui.spacing_mut().item_spacing.x = 10.0;
-                            row1(ui, g);
-                        },
-                        |ui, g| {
-                            let b = egui::Button::new(
-                                RichText::new("MENU").font(pixel(12.0)).color(INK),
-                            )
-                            .min_size(vec2(48.0, theme::TOUCH));
-                            if ui.add(b).clicked() {
+                        };
+                        split_row(ui, theme::TOUCH, g, chip, |ui, g| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            if chrome::menu_button(ui, vec2(48.0, theme::TOUCH)).clicked() {
                                 g.menu_open = true;
                             }
                             if g.placed {
                                 for i in (0..4).rev() {
                                     let on = g.speed == i;
-                                    let b = egui::Button::new(
-                                        RichText::new(SPEED_LABELS[i])
-                                            .font(pixel(12.0))
-                                            .color(if on { theme::LINE } else { INK }),
+                                    if chrome::speed_button(
+                                        ui,
+                                        i,
+                                        on,
+                                        vec2(theme::TOUCH, theme::TOUCH),
                                     )
-                                    .fill(if on { ACCENT } else { theme::RAISED })
-                                    .min_size(vec2(theme::TOUCH, theme::TOUCH));
-                                    if ui.add(b).clicked() {
+                                    .clicked()
+                                    {
                                         g.speed = i;
                                     }
                                 }
-                                ui.add_space(6.0);
-                                g.approval_chip(ui, true);
                             }
-                        },
-                    );
-                } else {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        row1(ui, g)
-                    });
-                    row2(ui, g);
-                }
-                return;
-            }
-            // phones in portrait: two rows instead of one
-            let narrow = ui.ctx().content_rect().width() < 1100.0;
-            let tight = ui.ctx().content_rect().width() < 1500.0;
-            let left = |ui: &mut egui::Ui, g: &mut Game| {
-                let light = INK;
-                let t = |s: String| {
-                    RichText::new(s)
-                        .font(pixel(if narrow {
-                            13.0
-                        } else if tight {
-                            14.0
-                        } else {
-                            16.0
-                        }))
-                        .color(light)
-                };
-                if !narrow && ui.available_width() > 1500.0 {
-                    ui.label(
-                        RichText::new("URBAN SPRAWL")
-                            .font(pixel(if narrow {
-                                13.0
-                            } else if tight {
-                                14.0
-                            } else {
-                                16.0
-                            }))
-                            .color(ACCENT),
-                    );
-                    ui.add_space(14.0);
-                }
-                if g.placed {
-                    ui.label(t(g.sim.date().text().to_uppercase()));
-                    ui.add_space(10.0);
-                    ui.label(t(format!("POP {}", g.stats.pop)));
-                    ui.add_space(10.0);
-                    let tc = if g.sim.treasury < 0 {
-                        Color32::from_rgb(255, 130, 120)
-                    } else {
-                        light
-                    };
-                    ui.label(
-                        RichText::new(format!("TREASURY {}", money(g.sim.treasury)))
-                            .font(pixel(if narrow {
-                                13.0
-                            } else if tight {
-                                14.0
-                            } else {
-                                16.0
-                            }))
-                            .color(tc),
-                    );
-                    ui.add_space(10.0);
-                    let net = g.stats.income - g.stats.expense;
-                    let nc = if net < 0 {
-                        Color32::from_rgb(255, 130, 120)
-                    } else {
-                        Color32::from_rgb(150, 230, 160)
-                    };
-                    ui.label(
-                        RichText::new(format!(
-                            "{}{}/MO",
-                            if net < 0 { "" } else { "+" },
-                            money(net)
-                        ))
-                        .font(pixel(if narrow {
-                            13.0
-                        } else if tight {
-                            14.0
-                        } else {
-                            16.0
-                        }))
-                        .color(nc),
-                    );
-                    ui.add_space(10.0);
-                    g.approval_chip(ui, false);
-                    g.sparks_ui(ui);
-                } else {
-                    ui.label(t("PLACE THE TOWN HALL".to_string()));
-                }
-            };
-            let controls = |ui: &mut egui::Ui, g: &mut Game| {
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new("MENU").font(pixel(14.0)).color(INK))
-                            .min_size(if narrow {
-                                vec2(70.0, 44.0)
-                            } else {
-                                vec2(0.0, 0.0)
-                            }),
-                    )
-                    .clicked()
-                {
-                    g.menu_open = true;
-                }
-                if let Some(n) = &who {
-                    ui.label(
-                        RichText::new(format!("SIGNED IN: {}", n.to_uppercase()))
-                            .font(pixel(10.0))
-                            .color(Color32::from_rgb(170, 176, 196)),
-                    );
-                }
-                if !tight {
-                    ui.label(
-                        RichText::new(format!("{fps:.0} FPS"))
-                            .font(pixel(12.0))
-                            .color(Color32::from_rgb(170, 176, 196)),
-                    );
-                }
-                if g.placed {
-                    let order: Vec<usize> = if narrow {
-                        (0..4).collect()
-                    } else {
-                        (0..4).rev().collect()
-                    };
-                    for i in order {
-                        let on = g.speed == i;
-                        let b = egui::Button::new(
-                            RichText::new(SPEED_LABELS[i])
-                                .font(pixel(14.0))
-                                .color(if on { theme::LINE } else { INK }),
-                        )
-                        .fill(if on { ACCENT } else { theme::RAISED })
-                        .min_size(if narrow {
-                            vec2(52.0, 44.0)
-                        } else {
-                            vec2(38.0, 26.0)
                         });
-                        if ui.add(b).clicked() {
-                            g.speed = i;
-                        }
+                    };
+                    if wide {
+                        split_row(
+                            ui,
+                            theme::TOUCH,
+                            g,
+                            |ui, g| {
+                                ui.spacing_mut().item_spacing.x = 10.0;
+                                row1(ui, g);
+                            },
+                            |ui, g| {
+                                if chrome::menu_button(ui, vec2(48.0, theme::TOUCH)).clicked() {
+                                    g.menu_open = true;
+                                }
+                                if g.placed {
+                                    for i in (0..4).rev() {
+                                        let on = g.speed == i;
+                                        if chrome::speed_button(
+                                            ui,
+                                            i,
+                                            on,
+                                            vec2(theme::TOUCH, theme::TOUCH),
+                                        )
+                                        .clicked()
+                                        {
+                                            g.speed = i;
+                                        }
+                                    }
+                                    ui.add_space(6.0);
+                                    g.approval_chip(ui, true);
+                                }
+                            },
+                        );
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            row1(ui, g)
+                        });
+                        row2(ui, g);
                     }
                 }
-            };
-            if narrow {
-                ui.vertical(|ui| {
-                    ui.horizontal_wrapped(|ui| left(ui, g));
-                    ui.horizontal(|ui| controls(ui, g));
-                });
-            } else {
-                // the controls on the right are laid out first; the town's figures get the
-                // room that is left and drop what does not fit, so nothing is drawn under a
-                // button whatever the window width
-                split_row(ui, 28.0, g, left, controls);
-            }
-        });
-        let top_y = if compact {
-            hud.response.rect.bottom() + 6.0
-        } else {
-            96.0
+            })
         };
+        let top_y = hud.response.rect.bottom() + if compact { 6.0 } else { 12.0 };
 
         if g.placed && compact {
             let dock = egui::Panel::bottom("dock")
@@ -1370,9 +1247,7 @@ impl State {
             // sheets are placed from where the bar really is, so they never cover it
             panels::set_dock_top(ctx, dock.response.rect.top());
         } else if g.placed {
-            egui::Panel::top("tools")
-                .frame(theme::bar())
-                .show(ui, |ui| g.toolbar_ui(ui));
+            g.rail_ui(ui);
         }
 
         if g.placed {
@@ -1383,9 +1258,9 @@ impl State {
         // banner
         let banner = if !g.placed {
             Some(if compact {
-                "TAP A CROSSROADS TO PLACE THE TOWN HALL".to_string()
+                "Tap a crossroads to place the town hall".to_string()
             } else {
-                "CLICK A CROSSROADS TO PLACE THE TOWN HALL".to_string()
+                "Click a crossroads to place the town hall".to_string()
             })
         } else {
             g.banner.as_ref().map(|b| b.0.clone())
@@ -1403,13 +1278,13 @@ impl State {
                         if compact {
                             ui.set_max_width(ctx.content_rect().width() - 40.0);
                             ui.add(
-                                egui::Label::new(heading(&b, 14.0)).wrap(),
+                                egui::Label::new(RichText::new(&b).font(ui_font(14.0)).color(INK)).wrap(),
                             );
                             if !g.placed {
                                 ui.add(
                                     egui::Label::new(
-                                        RichText::new("TAP AN OLD CROSSROADS (WHITE SQUARES).")
-                                            .font(pixel(11.0))
+                                        RichText::new("Tap an old crossroads (white squares).")
+                                            .font(ui_font(11.0))
                                             .color(TEXT),
                                     )
                                     .wrap(),
@@ -1417,9 +1292,12 @@ impl State {
                             }
                             return;
                         }
-                        ui.label(heading(&b, 18.0));
+                        ui.set_max_width(440.0);
+                        ui.add(
+                            egui::Label::new(RichText::new(&b).font(ui_font(16.0)).color(INK)).wrap(),
+                        );
                         if !g.placed {
-                            label(ui, "THE WHITE SQUARES ARE OLD CROSSROADS. THE ONE NEAREST YOUR CURSOR GLOWS ORANGE. YOUR MAIN STREET WILL RUN TO THE HIGHWAY.", 12.0);
+                            label(ui, "The white squares are old crossroads. The one nearest your cursor glows orange. Your main street will run to the highway.", 12.0);
                         }
                     });
                 });
@@ -1433,25 +1311,22 @@ impl State {
                 None
             } else if day < 60 {
                 Some(
-                    "PEOPLE MOVE IN AS BUILDINGS FINISH. CLICK ANY BUILDING TO SEE WHY IT WAS BUILT.",
+                    "People move in as buildings finish. Click any building to see why it was built.",
                 )
             } else if day < 150 {
-                Some("TAXES PAY FOR THE TOWN. WATCH THE TREASURY AND THE MONTHLY NUMBER BESIDE IT.")
+                Some("Taxes pay for the town. Watch the treasury and the monthly number beside it.")
             } else if day < 300 {
                 Some(
-                    "LOW TAX GROWS FASTER BUT FILLS THE TREASURY SLOWER. HIGH TAX EMPTIES BUILDINGS. TRY THE SLIDER.",
+                    "Low tax grows faster but fills the treasury slower. High tax empties buildings. Try the slider.",
                 )
             } else {
                 None
             };
             let pop = g.stats.pop;
-            let unlock_hint = g.sim.next_unlock().map(|(k, n)| {
-                format!(
-                    "NEXT: {} AT {} PEOPLE",
-                    k.label().to_uppercase(),
-                    charts::group(n)
-                )
-            });
+            let unlock_hint = g
+                .sim
+                .next_unlock()
+                .map(|(k, n)| format!("Next: {} at {} people", k.label(), charts::group(n)));
             let mut hide_tip = false;
             if compact {
                 // one short stack: the goal on one line, then up to two news toasts
@@ -1462,8 +1337,8 @@ impl State {
                     .show(ctx, |ui| {
                         ui.set_max_width(wmax);
                         let mut goal_text = match goal {
-                            Some(n) => format!("GOAL {n} PEOPLE ({pop})"),
-                            None => "KEEP YOUR TOWN GROWING".to_string(),
+                            Some(n) => format!("Goal {n} people ({pop})"),
+                            None => "Keep your town growing".to_string(),
                         };
                         if let Some(u) = &unlock_hint {
                             goal_text.push('\n');
@@ -1474,15 +1349,20 @@ impl State {
                                 .inner_margin(egui::Margin::symmetric(8, 4))
                                 .show(ui, |ui| {
                                     ui.set_max_width(wmax - 20.0);
-                                    ui.add(egui::Label::new(heading(b, 12.0)).wrap());
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(b).font(ui_font(12.0)).color(INK),
+                                        )
+                                        .wrap(),
+                                    );
                                 });
                         }
                         egui::Frame::new()
                             .fill(Color32::from_rgba_unmultiplied(11, 22, 34, 215))
-                            .stroke(Stroke::new(2.0, theme::EDGE))
+                            .stroke(Stroke::new(1.0, theme::EDGE))
                             .inner_margin(egui::Margin::symmetric(8, 4))
                             .show(ui, |ui| {
-                                ui.label(RichText::new(goal_text).font(pixel(12.0)).color(INK));
+                                ui.label(RichText::new(goal_text).font(ui_font(12.0)).color(INK));
                             });
                         for (text, _, bad) in g.coach.toasts.iter().rev().take(
                             if ctx.content_rect().width() > 700.0 {
@@ -1497,11 +1377,9 @@ impl State {
                                     ui.set_max_width(wmax - 20.0);
                                     ui.add(
                                         egui::Label::new(
-                                            RichText::new(text).font(pixel(11.0)).color(if *bad {
-                                                BAD
-                                            } else {
-                                                TEXT
-                                            }),
+                                            RichText::new(text)
+                                                .font(ui_font(11.0))
+                                                .color(if *bad { BAD } else { TEXT }),
                                         )
                                         .wrap(),
                                     );
@@ -1511,15 +1389,18 @@ impl State {
             }
             if !compact {
                 egui::Area::new(egui::Id::new("goal"))
-                    .anchor(Align2::LEFT_TOP, vec2(14.0, 96.0))
+                    .anchor(Align2::LEFT_TOP, vec2(chrome::RAIL_W + 14.0, top_y))
                     .show(ctx, |ui| {
                         theme::panel().show(ui, |ui| {
                             ui.set_width(320.0);
-                            label(ui, "GOAL", 12.0);
+                            let goal_text =
+                                |s: String| RichText::new(s).font(ui_font(16.0)).color(INK);
+                            label(ui, "Goal", 12.0);
                             match goal {
-                                Some(n) => ui
-                                    .label(heading(&format!("REACH {n} PEOPLE ({pop} NOW)"), 16.0)),
-                                None => ui.label(heading("KEEP YOUR TOWN GROWING", 16.0)),
+                                Some(n) => {
+                                    ui.label(goal_text(format!("Reach {n} people ({pop} now)")))
+                                }
+                                None => ui.label(goal_text("Keep your town growing".to_string())),
                             };
                             if let Some(u) = &unlock_hint {
                                 label(ui, u, 11.0);
@@ -1528,12 +1409,12 @@ impl State {
                                 ui.add_space(4.0);
                                 ui.add(
                                     egui::Label::new(
-                                        RichText::new(t).font(pixel(11.0)).color(TEXT),
+                                        RichText::new(t).font(ui_font(11.0)).color(TEXT),
                                     )
                                     .wrap(),
                                 );
                                 if ui
-                                    .button(RichText::new("GOT IT").font(pixel(11.0)).color(INK))
+                                    .button(RichText::new("Got it").font(ui_font(11.0)).color(INK))
                                     .clicked()
                                 {
                                     hide_tip = true;
@@ -1546,9 +1427,10 @@ impl State {
                 g.coach.tip_hidden = true;
             }
             // event feed
+            let inset = g.right_inset();
             if !compact && !g.coach.toasts.is_empty() {
                 egui::Area::new(egui::Id::new("toasts"))
-                    .anchor(Align2::RIGHT_TOP, vec2(-14.0, 96.0))
+                    .anchor(Align2::RIGHT_TOP, vec2(-inset, top_y))
                     .interactable(false)
                     .show(ctx, |ui| {
                         for (text, _, bad) in g.coach.toasts.iter().rev() {
@@ -1556,7 +1438,7 @@ impl State {
                                 ui.set_width(300.0);
                                 ui.add(
                                     egui::Label::new(
-                                        RichText::new(text).font(pixel(12.0)).color(if *bad {
+                                        RichText::new(text).font(ui_font(12.0)).color(if *bad {
                                             BAD
                                         } else {
                                             TEXT
@@ -1602,6 +1484,9 @@ impl State {
             if g.ui.ordinances_open {
                 g.ordinances_ui(ctx, screen_w);
             }
+            if g.ui.trams.open {
+                g.trams_ui(ctx, screen_w);
+            }
             g.legend_ui(ctx);
             // why panel
             if let Some(sel) = g.sel {
@@ -1623,13 +1508,14 @@ impl State {
                     // a sheet or a modal screen is open: the phone has room for one
                 } else if compact {
                     let mut close = false;
-                    let st = status.to_uppercase();
-                    let bl = built.map(|b| b.to_uppercase());
+                    let st = chrome::sentence(&status);
+                    let bl = built.as_deref().map(chrome::sentence);
                     close |= panels::sheet(ctx, &title, |ui| {
-                        label(ui, &st, 12.0);
+                        ui.label(RichText::new(&st).font(ui_font(12.5)).color(ACCENT));
                         if let Some(b) = &bl {
                             label(ui, b, 12.0);
                         }
+                        chrome::section(ui, "Why it is here");
                         ui.add(
                             egui::Label::new(RichText::new(&reason).size(15.0).color(TEXT)).wrap(),
                         );
@@ -1641,47 +1527,26 @@ impl State {
                         g.sel = None;
                     }
                 } else {
-                    egui::Area::new(egui::Id::new("why"))
-                        .anchor(Align2::RIGHT_BOTTOM, vec2(-14.0, -14.0))
-                        .show(ctx, |ui| {
-                            theme::panel().show(ui, |ui| {
-                                ui.set_width(300.0);
-                                ui.label(heading(&title.to_uppercase(), 18.0));
-                                label(ui, &status.to_uppercase(), 12.0);
-                                if let Some(b) = built {
-                                    label(ui, &b.to_uppercase(), 12.0);
-                                }
-                                ui.add_space(4.0);
-                                ui.add(
-                                    egui::Label::new(RichText::new(reason).size(15.0).color(TEXT))
-                                        .wrap(),
-                                );
-                                if let Sel::Lot(i) = sel {
-                                    g.why_extra(ui, i);
-                                }
-                                ui.add_space(4.0);
-                                if ui
-                                    .button(RichText::new("CLOSE").font(pixel(12.0)).color(INK))
-                                    .clicked()
-                                {
-                                    g.sel = None;
-                                }
-                            });
-                        });
+                    g.inspector_ui(ui, sel);
                 }
             }
+            if !compact {
+                g.views_popover(ctx);
+            }
         }
+        // rain and snow over the map only: what the bars, rail and inspector left free
+        g.paint_weather(ctx, ui.available_rect_before_wrap());
 
         let help = if cfg!(target_os = "ios") {
             if compact {
-                "DRAG PAN   PINCH ZOOM   TWIST ROTATE   TAP SELECT"
+                "Drag pan   pinch zoom   twist rotate   tap select"
             } else {
-                "DRAG TO PAN   PINCH TO ZOOM   TWIST TO ROTATE   TWO FINGERS UP OR DOWN TO TILT   TAP TO SELECT   HOLD TO ASK WHY"
+                "Drag to pan   pinch to zoom   twist to rotate   two fingers up or down to tilt   tap to select   hold to ask why"
             }
         } else if compact {
-            "DRAG PAN   PINCH ZOOM   TWIST ROTATE   TAP SELECT"
+            "Drag pan   pinch zoom   twist rotate   tap select"
         } else {
-            "WASD PAN   Q E ROTATE   RIGHT DRAG ORBIT   WHEEL ZOOM   0 1 2 3 SPEED   SPACE PAUSE   P K O B G J V I H R PANELS   Y ROADS   M MAP VIEW"
+            "WASD pan   Q E rotate   right drag orbit   wheel zoom   0 1 2 3 speed   space pause   P K O B G J V I H R F panels   Y roads   M map view"
         };
         if !(compact && g.any_sheet()) {
             egui::Area::new(egui::Id::new("help"))
@@ -1700,12 +1565,22 @@ impl State {
                 .show(ctx, |ui| {
                     egui::Frame::new()
                         .fill(Color32::from_rgba_unmultiplied(11, 22, 34, 190))
-                        .inner_margin(egui::Margin::symmetric(8, 3))
+                        .corner_radius(6)
+                        .inner_margin(egui::Margin::symmetric(10, 4))
                         .show(ui, |ui| {
+                            if !compact {
+                                ui.set_max_width(
+                                    (ctx.content_rect().width()
+                                        - chrome::RAIL_W
+                                        - chrome::INSPECTOR_W
+                                        - 40.0)
+                                        .max(300.0),
+                                );
+                            }
                             ui.add(
                                 egui::Label::new(
                                     RichText::new(help)
-                                        .font(pixel(if compact { 11.0 } else { 10.0 }))
+                                        .font(ui_font(if compact { 11.0 } else { 10.0 }))
                                         .color(Color32::from_rgb(200, 208, 222)),
                                 )
                                 .wrap(),
@@ -1724,29 +1599,25 @@ impl State {
         }
         if g.menu_open && g.election.is_none() && !g.sim.is_game_over() {
             theme::centered(ctx, "pause", 24, |ui| {
-                ui.label(heading("PAUSED", 32.0));
+                ui.label(heading("Paused", 32.0));
                 label(
                     ui,
-                    &format!(
-                        "{}, SEED {}",
-                        screens::town_name(g.preset.label()).to_uppercase(),
-                        g.seed
-                    ),
+                    &format!("{}, seed {}", screens::town_name(g.preset.label()), g.seed),
                     12.0,
                 );
                 if g.rules.is_sandbox() {
                     label(
                         ui,
                         if g.rules.unlimited_money {
-                            "SANDBOX, UNLIMITED MONEY"
+                            "Sandbox, unlimited money"
                         } else {
-                            "SANDBOX"
+                            "Sandbox"
                         },
                         12.0,
                     );
                 }
                 if let Some(n) = &who {
-                    label(ui, &format!("SIGNED IN AS {}", n.to_uppercase()), 12.0);
+                    label(ui, &format!("Signed in as {}", n), 12.0);
                 }
                 if !g.menu_note.is_empty() {
                     ui.add(
@@ -1760,12 +1631,12 @@ impl State {
                         .wrap(),
                     );
                 }
-                if theme::button(ui, "RESUME").clicked() {
+                if theme::button(ui, "Resume").clicked() {
                     g.menu_open = false;
                     g.menu_note.clear();
                 }
                 if g.placed {
-                    if theme::button(ui, "SAVE").clicked() {
+                    if theme::button(ui, "Save").clicked() {
                         do_save = Some(None);
                     }
                     let mut cancel_as = false;
@@ -1774,13 +1645,13 @@ impl State {
                             egui::TextEdit::singleline(text)
                                 .desired_width(220.0)
                                 .hint_text("Name this save")
-                                .font(pixel(16.0)),
+                                .font(ui_font(16.0)),
                         );
                         ui.horizontal(|ui| {
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        RichText::new("SAVE").font(pixel(14.0)).color(INK),
+                                        RichText::new("Save").font(ui_font(14.0)).color(INK),
                                     )
                                     .min_size(vec2(100.0, theme::TOUCH)),
                                 )
@@ -1792,7 +1663,7 @@ impl State {
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        RichText::new("CANCEL").font(pixel(14.0)).color(INK),
+                                        RichText::new("Cancel").font(ui_font(14.0)).color(INK),
                                     )
                                     .min_size(vec2(100.0, theme::TOUCH)),
                                 )
@@ -1801,27 +1672,27 @@ impl State {
                                 cancel_as = true;
                             }
                         });
-                    } else if theme::button(ui, "SAVE AS").clicked() {
+                    } else if theme::button(ui, "Save as").clicked() {
                         g.save_as = Some(g.name.clone());
                     }
                     if cancel_as {
                         g.save_as = None;
                     }
                 }
-                if theme::button(ui, "LOAD").clicked() {
+                if theme::button(ui, "Load").clicked() {
                     open_load = true;
                 }
-                if theme::button(ui, "SETTINGS").clicked() {
+                if theme::button(ui, "Settings").clicked() {
                     open_settings = true;
                 }
-                if theme::button(ui, "QUIT TO MENU").clicked() {
+                if theme::button(ui, "Quit to menu").clicked() {
                     to_menu = true;
                 }
                 #[cfg(not(target_os = "ios"))]
-                if theme::button(ui, "QUIT GAME").clicked() {
+                if theme::button(ui, "Quit game").clicked() {
                     quit = true;
                 }
-                label(ui, "THE GAME ALSO SAVES ITSELF EVERY GAME YEAR", 10.0);
+                label(ui, "The game also saves itself every game year", 10.0);
             });
         }
         if let Some(name) = do_save {
@@ -1937,6 +1808,9 @@ impl Game {
         self.live
             .scene
             .set_calendar(Some(Calendar::from_date(d.month, d.day, hour)));
+        self.live.set_emergency(&self.sim, hour);
+        let look = self.weather_look();
+        self.live.scene.set_weather(look);
     }
 
     fn toast(&mut self, text: impl Into<String>, bad: bool) {
@@ -1970,7 +1844,7 @@ impl Game {
             self.coach.reveal_cool = 30.0;
             self.toast(
                 format!(
-                    "A NEW NEIGHBOURHOOD OPENS: {n} NEW STREET{}",
+                    "A new neighbourhood opens: {n} new street{}",
                     if n == 1 { "" } else { "S" }
                 ),
                 false,
@@ -1983,7 +1857,7 @@ impl Game {
         {
             let goal = POP_GOALS[self.coach.goal_idx];
             self.coach.goal_idx += 1;
-            self.toast(format!("GOAL REACHED: {goal} PEOPLE LIVE HERE"), false);
+            self.toast(format!("Goal reached: {goal} people live here"), false);
         }
 
         // first of each landmark kind
@@ -2003,10 +1877,10 @@ impl Game {
                 }
             }
             const MSG: [&str; 4] = [
-                "THE FIRST SHOP OPENS. SHOPS BRING JOBS AND TAX",
-                "THE FIRST SCHOOL OPENS",
-                "THE FIRST CHURCH IS BUILT",
-                "THE FIRE STATION IS READY",
+                "The first shop opens. Shops bring jobs and tax",
+                "The first school opens",
+                "The first church is built",
+                "The fire station is ready",
             ];
             for i in 0..4 {
                 if found[i] && !self.coach.seen_kind[i] {
@@ -2022,7 +1896,7 @@ impl Game {
             if !self.coach.neg_flagged {
                 self.coach.neg_flagged = true;
                 self.toast(
-                    "THE TREASURY IS BELOW ZERO. RAISE THE TAX OR SLOW DOWN",
+                    "The treasury is below zero. Raise the tax or slow down",
                     true,
                 );
             }
@@ -2034,7 +1908,7 @@ impl Game {
                     self.coach.warn_cool = 60.0;
                     self.toast(
                         format!(
-                            "THE TREASURY RUNS OUT IN ABOUT {} MONTH{} AT THIS RATE. RAISE THE TAX",
+                            "The treasury runs out in about {} month{} at this rate. Raise the tax",
                             months.max(1),
                             if months <= 1 { "" } else { "S" }
                         ),
@@ -2057,7 +1931,7 @@ impl Game {
         self.cam
             .look_at(Vec3::new(site.x as f32, site.y as f32, 0.0), 650.0);
         self.banner = Some((
-            "TOWN HALL PLACED. THE MAIN STREET JOINS THE HIGHWAY.".into(),
+            "Town hall placed. The main street joins the highway.".into(),
             7.0,
         ));
     }

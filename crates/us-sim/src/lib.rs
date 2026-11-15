@@ -15,15 +15,18 @@
 
 mod avenues;
 mod civic;
+mod climate;
 mod density;
 mod districts;
 mod dynamic;
 mod econ;
+mod fires;
 mod growth;
 mod ledger_view;
 mod limits;
 mod milestones;
 mod model;
+mod place;
 mod pressure;
 pub mod rail;
 mod rivals;
@@ -32,14 +35,17 @@ mod save;
 mod save_ext;
 mod streets;
 mod traffic;
+mod trams;
 mod value;
 
 pub use avenues::{RoadError, RoadPlan, UpgradePlan};
+pub use climate::{Sky, Weather, WeatherCosts};
 pub use density::max_level_at;
 pub use districts::{
     DISTRICT_COLOURS, District, DistrictStats, MAX_DISTRICTS, OrdScope, Ordinance,
 };
-pub use dynamic::Rival;
+pub use dynamic::{FIRE_DAYS, Rival};
+pub use fires::{BlazeView, Vehicle, VehicleKind};
 pub use ledger_view::LedgerNow;
 pub use model::*;
 pub use pressure::*;
@@ -47,6 +53,7 @@ pub use rivals::{Personality, RivalView};
 pub use save::{AUTOSAVE_SLOTS, FIRST_LASTING_VERSION, LoadError, SAVE_VERSION, autosave_path};
 pub use streets::{RoadBuildState, RoadStage, StreetState};
 pub use traffic::RoadTraffic;
+pub use trams::{MAX_LINES as MAX_TRAM_LINES, TramError, TramLineView, TramPlan, TramState};
 
 use us_gen::{LotKind, Pt, RoadClass, Town, Zone, pt};
 
@@ -363,6 +370,8 @@ pub struct Sim {
     pub(crate) pending: Option<traffic::Pending>,
     pub(crate) roads_version: u32,
     pub(crate) avenues: avenues::Avenues,
+    /// Tram lines (saved in the `TRAM` section).
+    pub(crate) trams: trams::Trams,
     pub(crate) rival: Rival,
     /// The other rival towns and every rival's population and trade with the town.
     pub(crate) rivals: rivals::Rivals,
@@ -399,6 +408,10 @@ pub struct Sim {
     pub(crate) growth_spent: i64,
     /// Districts and ordinances (saved in the `DIST` section).
     pub(crate) dist: districts::DistrictState,
+    /// Fires in progress and emergency vehicles (saved in the `FIRE` section).
+    pub(crate) fx: fires::FireState,
+    /// What the weather has done (saved in the `WTHR` section).
+    pub(crate) wx: climate::Climate,
 }
 
 impl Sim {
@@ -469,6 +482,7 @@ impl Sim {
             pending: None,
             roads_version: 0,
             avenues: avenues::Avenues::default(),
+            trams: trams::Trams::default(),
             rival: Rival::new(seed),
             rivals: rivals::Rivals::new(seed),
             departures: 0,
@@ -502,6 +516,8 @@ impl Sim {
             last_kind_street: -1000,
             growth_spent: 0,
             dist: Default::default(),
+            fx: Default::default(),
+            wx: Default::default(),
         };
         // reveal order: nearest to the hall first
         let mut ord: Vec<(i64, usize)> = (0..n_add)
@@ -746,6 +762,8 @@ impl Sim {
         f(self.unlocked as u64);
         self.rivals.fingerprint(&mut f);
         self.avenue_hash(&mut f);
+        self.tram_hash(&mut f);
+        self.fire_hash(&mut f);
         f(self.runs.len() as u64);
         for r in &self.runs {
             f(r.class as u64);
@@ -791,6 +809,7 @@ impl Sim {
             }
         }
         self.dist.hash_into(&mut f);
+        self.wx.hash_into(&mut f);
         h
     }
 
@@ -870,13 +889,17 @@ impl Sim {
             self.treasury -= cost;
             self.growth_spent += cost;
         }
-        let days =
-            kind_build_days(self.lots[li].kind) + (roll(self.seed, li as u64, 5) * 10.0) as i32;
+        let days = self.codes_build_days(
+            li,
+            kind_build_days(self.lots[li].kind) + (roll(self.seed, li as u64, 5) * 10.0) as i32,
+        );
         self.lots[li].phase = Phase::Building {
             start: self.day,
             end: self.day + days,
         };
         self.changed_lots.push(li);
+        let big = if level > 1 { level } else { 1 };
+        self.log_big_job(li, big);
         true
     }
 
@@ -919,8 +942,10 @@ impl Sim {
             }
         }
 
+        self.step_weather();
         self.step_fires();
         self.step_traffic();
+        self.step_trams();
         if self.values_stale {
             self.recompute_values();
         }
@@ -971,7 +996,10 @@ impl Sim {
         let rate = 0.8 * PACE * growth_mult(tax) * (1.0 + (built / (700.0 * PACE)).min(1.5));
         // the mood of the market: all three classes together
         let rate = rate * (0.6 + 0.8 * self.mean_demand());
-        self.acc += rate;
+        // a power cut or a dry water supply stops the builders for the day
+        if !self.shortage_today() {
+            self.acc += rate;
+        }
         self.step_streets();
         while self.acc >= 1.0 {
             self.acc -= 1.0;
@@ -997,7 +1025,16 @@ impl Sim {
         if let Some(note) = self.avenue_note(self.lots[lot].pos) {
             y.reason = format!("{} {note}", y.reason);
         }
+        if self.lots[lot].phase != Phase::Hidden
+            && let Some(note) = self.tram_note(self.lots[lot].pos)
+        {
+            y.reason = format!("{} {note}", y.reason);
+        }
+        if let Some(line) = self.fire_why(lot) {
+            y.reason = format!("{} {line}", y.reason);
+        }
         y.ordinances = self.ordinance_lines(lot);
+        y.ordinances.extend(self.weather_lines(lot));
         y
     }
 
@@ -1339,6 +1376,17 @@ mod tests_rivals;
 
 #[cfg(test)]
 mod tests_districts;
+#[cfg(test)]
+mod tests_place;
 
 #[cfg(test)]
 mod tests_rail;
+
+#[cfg(test)]
+mod tests_trams;
+
+#[cfg(test)]
+mod tests_fires;
+
+#[cfg(test)]
+mod tests_weather;

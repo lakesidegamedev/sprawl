@@ -226,14 +226,14 @@ impl Sim {
         let hs = (self.fx_count(CivicKind::HighSchool) as f64 * 0.025).min(0.075);
         let st = (self.fx_count(CivicKind::Stadium) as f64 * 0.02).min(0.06);
         let un = (self.fx_count(CivicKind::University) as f64 * 0.04).min(0.08);
-        (hs + st + un).min(0.15)
+        (hs + st + un).min(0.15) + self.tram_shop_demand()
     }
 
     /// Share more people arrive: transit stops and universities draw them.
     pub(crate) fn arrival_bonus(&self) -> f64 {
         let t = (self.fx_count(CivicKind::Transit) as f64 * 0.02).min(0.08);
         let u = (self.fx_count(CivicKind::University) as f64 * 0.06).min(0.12);
-        1.0 + t + u
+        1.0 + t + u + self.tram_arrival_bonus()
     }
 
     /// Share of the families that would leave who stay because there is a hospital.
@@ -248,9 +248,10 @@ impl Sim {
 
     /// Congestion town-wide after transit stops ease it and stadiums add to it.
     pub(crate) fn civic_adjusted_congestion(&self, avg: f64) -> f64 {
-        let relief = (self.fx_count(CivicKind::Transit) as f64 * 0.05).min(0.2);
+        let relief =
+            (self.fx_count(CivicKind::Transit) as f64 * 0.05).min(0.2) + self.tram_relief();
         let add = self.fx_count(CivicKind::Stadium) as f64 * 0.03;
-        (avg * (1.0 - relief) + add).clamp(0.0, 1.0)
+        (avg * (1.0 - relief) + add + self.weather_congestion()).clamp(0.0, 1.0)
     }
 
     /// A line to add to the news when a capacity is full and a bigger building is unlocked.

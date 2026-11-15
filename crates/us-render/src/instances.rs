@@ -13,6 +13,8 @@ use us_gen::{Pt, RoadClass};
 pub const MARKER: Rgb = [255, 0, 255];
 /// Headlight colour: lit at night.
 pub const HEADLIGHT: Rgb = [255, 236, 150];
+/// Tail light colour: bright red at night, dull red by day.
+pub const TAILLIGHT: Rgb = [222, 36, 44];
 
 pub const CAR_ID_BASE: u32 = 8_000_000;
 pub const PUFF_ID_BASE: u32 = 9_500_000;
@@ -44,7 +46,7 @@ pub fn tint(c: Rgb) -> u32 {
     0x0100_0000 | (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32
 }
 
-fn emit(o: &Obj) -> Mesh {
+pub(crate) fn emit(o: &Obj) -> Mesh {
     let mut m = Mesh::default();
     let mut id = 0u32;
     o.emit(&mut m, &mut id, 0.0, 0.0, 0.0, 1.0);
@@ -65,6 +67,20 @@ pub fn car_mesh() -> Mesh {
                 [2.12, y - 0.25, 0.8],
             ],
             HEADLIGHT,
+            false,
+            true,
+            true,
+        );
+    }
+    for y in [-0.65f32, 0.65] {
+        o.poly(
+            &[
+                [-2.12, y + 0.25, 0.5],
+                [-2.12, y - 0.25, 0.5],
+                [-2.12, y - 0.25, 0.8],
+                [-2.12, y + 0.25, 0.8],
+            ],
+            TAILLIGHT,
             false,
             true,
             true,
