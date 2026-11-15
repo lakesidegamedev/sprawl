@@ -27,6 +27,7 @@ pub mod parts;
 pub mod rail;
 mod renderer;
 mod rng;
+pub mod site;
 mod scene;
 pub mod trains;
 

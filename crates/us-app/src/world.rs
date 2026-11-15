@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use us_gen::{LotKind, Preset, Pt, RoadClass, Town, Zone};
-use us_render::levels::{building_site, burned};
+use us_render::levels::{building_site_for, burned};
+use us_render::site::{step_of, step_progress};
 use us_render::live::{
     RoadDraw, abandoned, base_ground_far_on, base_ground_on, roads_ground_state_on, zone_ground_on,
 };
@@ -36,8 +37,10 @@ pub struct Look {
     pub state: u8,
     /// Building level 1 to 5 the model is drawn at (the new level while a site).
     pub level: u8,
-    /// Progress step of a building site, 0 to 4.
+    /// Progress step of a building site, 0 to `STEPS - 1`.
     pub step: u8,
+    /// Level of the building being replaced while a site, 0 for a bare lot.
+    pub from: u8,
 }
 
 /// Roadworks on one road run.
@@ -109,6 +112,7 @@ fn look_of(l: &LotState, day: i32) -> Look {
             state: 3,
             level,
             step: 0,
+            from: 0,
         },
         Phase::Building { start, end } => {
             let p = (day - start) as f32 / (end - start).max(1) as f32;
@@ -119,18 +123,21 @@ fn look_of(l: &LotState, day: i32) -> Look {
                 } else {
                     level
                 },
-                step: (p * 5.0).clamp(0.0, 4.0) as u8,
+                step: step_of(p),
+                from: if l.next_level > 0 { level } else { 0 },
             }
         }
         Phase::Built { .. } => Look {
             state: 2,
             level,
             step: 0,
+            from: 0,
         },
         Phase::Empty { .. } => Look {
             state: 4,
             level,
             step: 0,
+            from: 0,
         },
     }
 }
@@ -219,7 +226,11 @@ fn look_obj(
     let mut d = lot_model(preset, seed, l, level, density);
     let mut rng = Rng::new(seed ^ 0xb0b0, i as u64);
     let mut dress = |o: &Obj| match look.state {
-        1 => building_site(o, (look.step as f32 + 0.5) / 5.0),
+        1 => {
+            let old = (look.from > 0).then(|| lot_model(preset, seed, l, look.from, density).building);
+            let tall = look.level >= 4 || l.kind == LotKind::Office;
+            building_site_for(o, old.as_ref(), tall, step_progress(look.step))
+        }
         3 => burned(o, &mut rng),
         4 => abandoned(o),
         _ => o.clone(),
