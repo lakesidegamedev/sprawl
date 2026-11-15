@@ -250,6 +250,9 @@ pub fn build_lot_level_dense(
     let region = Region::of(preset);
     let level = level.clamp(1, MAX_LEVEL);
     let tall = (density - 0.75).max(0.0) / 0.25;
+    if let Some(o) = crate::kit_more::variant(region, kind, level, density, rng) {
+        return kit::fit_to_lot(o, radius);
+    }
     let obj = match kind {
         LotKind::Office if level >= 4 && tall > 0.0 => {
             let base = if level == 4 { 10.0 } else { 14.0 };
@@ -277,6 +280,9 @@ pub fn build_lot_level_dense(
 /// The model for one lot at a building level from 1 to 5 in a region.
 pub fn build_lot_level_in(region: Region, kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
     let level = level.clamp(1, MAX_LEVEL);
+    if let Some(o) = crate::kit_more::variant(region, kind, level, 0.5, rng) {
+        return o;
+    }
     match kind {
         LotKind::House => match level {
             1 => scaled(&kit::house(region, rng), 0.8, 0.8, 0.88),

@@ -198,7 +198,9 @@ fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8, density: f32) -
                 }
                 placed.push([lx, ly]);
                 let (rad, h) = (rng.range(1.8, 2.8), rng.range(5.0, 8.0));
-                trees.push((lx, ly, kit::tree(rad, h, rng.pick(&green))));
+                let col = rng.pick(&green);
+                let roll = rng.f32();
+                trees.push((lx, ly, us_render::kit_more::tree_species(roll, rad, h, col)));
                 break;
             }
         }
@@ -625,6 +627,7 @@ impl LiveScene {
     /// Tell the trains how often to run and where they stop: open depots, grain elevators and
     /// the town's size decide it.
     pub fn set_rail_service(&mut self, sim: &Sim) {
+        self.scene.set_population(sim.population().max(0) as u32);
         let rates = sim.train_rates();
         let depots = sim
             .open_depots()
