@@ -356,6 +356,7 @@ impl Sim {
             if let StreetState::Building { end, .. } = self.streets[s].state {
                 if day >= end {
                     self.open_street(s);
+                    self.on_street_opened(s);
                     self.open_alleys_beside(s);
                     continue;
                 }

@@ -119,9 +119,10 @@ impl Sim {
             return;
         }
         if self.pending.is_none()
-            && self.day % TRAFFIC_EVERY_DAYS == TRAFFIC_OFFSET
+            && (self.day % TRAFFIC_EVERY_DAYS == TRAFFIC_OFFSET || self.avenues.traffic_kick)
             && self.built_count() >= MIN_BUILT_FOR_TRAFFIC
         {
+            self.avenues.traffic_kick = false;
             self.start_traffic();
         }
     }

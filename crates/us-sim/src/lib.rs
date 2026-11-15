@@ -13,6 +13,7 @@
 //! Only integer arithmetic and IEEE `+ - * / sqrt` are used, and every random roll is a hash of
 //! `(seed, lot, day)`, so the same inputs give the same state on every platform.
 
+mod avenues;
 mod civic;
 mod density;
 mod dynamic;
@@ -31,6 +32,7 @@ mod streets;
 mod traffic;
 mod value;
 
+pub use avenues::{RoadError, RoadPlan, UpgradePlan};
 pub use density::max_level_at;
 pub use dynamic::Rival;
 pub use ledger_view::LedgerNow;
@@ -353,6 +355,7 @@ pub struct Sim {
     pub(crate) avg_cong: f32,
     pub(crate) pending: Option<traffic::Pending>,
     pub(crate) roads_version: u32,
+    pub(crate) avenues: avenues::Avenues,
     pub(crate) rival: Rival,
     /// The other rival towns and every rival's population and trade with the town.
     pub(crate) rivals: rivals::Rivals,
@@ -456,6 +459,7 @@ impl Sim {
             avg_cong: 0.0,
             pending: None,
             roads_version: 0,
+            avenues: avenues::Avenues::default(),
             rival: Rival::new(seed),
             rivals: rivals::Rivals::new(seed),
             departures: 0,
@@ -731,6 +735,7 @@ impl Sim {
         }
         f(self.unlocked as u64);
         self.rivals.fingerprint(&mut f);
+        self.avenue_hash(&mut f);
         f(self.runs.len() as u64);
         for r in &self.runs {
             f(r.class as u64);
@@ -977,6 +982,9 @@ impl Sim {
         let mut y = self.why_base(lot);
         if let Some(line) = self.rival_why(lot) {
             y.reason = format!("{} {line}", y.reason);
+        }
+        if let Some(note) = self.avenue_note(self.lots[lot].pos) {
+            y.reason = format!("{} {note}", y.reason);
         }
         y
     }
@@ -1293,6 +1301,8 @@ mod tests_pressure;
 #[cfg(test)]
 mod tests_save;
 
+#[cfg(test)]
+mod tests_avenues;
 #[cfg(test)]
 mod tests_streets;
 

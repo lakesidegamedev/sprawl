@@ -25,6 +25,7 @@ pub(crate) fn sections(s: &Sim) -> Vec<([u8; 4], Vec<u8>)> {
     // push(b"EXMP", &|s, w| s.save_example(w));
     push(b"MILE", &|s, w| s.save_mile(w));
     push(b"RIVL", &|s, w| s.save_rivals(w));
+    push(b"AVEN", &|s, w| s.save_avenues(w));
     out
 }
 
@@ -35,6 +36,7 @@ pub(crate) fn load_section(s: &mut Sim, tag: [u8; 4], bytes: &[u8]) -> Res<()> {
     match &tag {
         b"MILE" => s.load_mile(r)?,
         b"RIVL" => s.load_rivals(r)?,
+        b"AVEN" => s.load_avenues(r)?,
         _ => {
             let _ = (s, r.left());
         }

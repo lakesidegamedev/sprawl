@@ -9,12 +9,12 @@ use crate::theme::{
 use crate::world::LiveScene;
 use egui::{Align2, Color32, Context, Pos2, RichText, Sense, Stroke, Ui, vec2};
 use glam::Vec3;
-use us_gen::{Pt, pt};
+use us_gen::{Pt, RoadClass, pt};
 use us_render::{Overlay, OverlayKind, View, project};
 use us_sim::{
     ABANDON_ABOVE_X10, BOND_MONTHS, BOND_RATE_X10, BOND_SIZE, BUDGET_MAX_PCT, BUDGET_MIN_PCT,
-    CivicKind, Class, Date, Dept, Event, EventKind, LedgerNow, LoanError, MapKind, Phase, Service,
-    TAX_MAX_X10, TAX_MIN_X10, class_of,
+    CivicKind, Class, Date, Dept, Event, EventKind, LedgerNow, LoanError, MapKind, Phase,
+    RoadError, Service, TAX_MAX_X10, TAX_MIN_X10, class_of,
 };
 
 // Series colours: one fixed hue per meaning, readable on the dark navy panels.
@@ -350,6 +350,24 @@ const TABS: [&str; 9] = [
     "Traffic",
 ];
 
+/// What the road tool builds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RoadMode {
+    Avenue,
+    Collector,
+    /// Widen a street to the next class.
+    Upgrade,
+}
+
+impl RoadMode {
+    fn class(self) -> RoadClass {
+        match self {
+            RoadMode::Avenue => RoadClass::Arterial,
+            _ => RoadClass::Collector,
+        }
+    }
+}
+
 /// Everything the mayor's screens remember during a session.
 pub struct UiState {
     pub levers_open: bool,
@@ -360,6 +378,10 @@ pub struct UiState {
     pub news_open: bool,
     pub rivals_open: bool,
     pub tool: Option<CivicKind>,
+    /// The road tool, when chosen (only live while the Build window is open).
+    pub road: Option<RoadMode>,
+    /// Points of the road being drawn.
+    pub road_pts: Vec<Pt>,
     /// Screenshot hook: hold the ghost at this spot instead of under the cursor.
     fixed_ghost: Option<Pt>,
     pub view: MapView,
@@ -392,6 +414,8 @@ impl Default for UiState {
             news_open: false,
             rivals_open: false,
             tool: None,
+            road: None,
+            road_pts: Vec::new(),
             fixed_ghost: None,
             view: MapView::Normal,
             tab: 0,
@@ -517,6 +541,11 @@ impl Game {
             self.toggle_voters();
             return true;
         }
+        if matches!(code, K::Enter | K::NumpadEnter) && self.ui.build_open && self.ui.road.is_some()
+        {
+            self.road_confirm();
+            return true;
+        }
         let u = &mut self.ui;
         match code {
             K::KeyP => u.levers_open = !u.levers_open,
@@ -554,6 +583,23 @@ impl Game {
             K::KeyM => {
                 let i = MapView::ALL.iter().position(|&x| x == u.view).unwrap_or(0);
                 u.view = MapView::ALL[(i + 1) % MapView::ALL.len()];
+            }
+            K::KeyY => {
+                u.build_open = true;
+                u.tool = None;
+                u.road = if u.road.is_some() {
+                    None
+                } else {
+                    Some(RoadMode::Avenue)
+                };
+                u.road_pts.clear();
+            }
+            K::Escape if u.build_open && u.road.is_some() => {
+                if u.road_pts.is_empty() {
+                    u.road = None;
+                } else {
+                    u.road_pts.clear();
+                }
             }
             K::Escape if u.tool.is_some() => u.tool = None,
             _ => return false,
@@ -1340,10 +1386,29 @@ impl Game {
                     );
                     if b.clicked() {
                         self.ui.tool = if on { None } else { Some(k) };
+                        self.ui.road = None;
+                        self.ui.road_pts.clear();
                     }
                     lab_c(ui, money(k.cost()), 12.0, if can { GOLD } else { BAD });
                 });
             }
+            ui.add_space(6.0);
+            lab(ui, "ROADS", 12.0);
+            ui.horizontal(|ui| {
+                for (m, name) in [
+                    (RoadMode::Avenue, "AVENUE"),
+                    (RoadMode::Collector, "COLLECTOR"),
+                    (RoadMode::Upgrade, "UPGRADE"),
+                ] {
+                    let on = self.ui.road == Some(m);
+                    if btn(ui, name, on, 11.0).clicked() {
+                        self.ui.road = if on { None } else { Some(m) };
+                        self.ui.tool = None;
+                        self.ui.road_pts.clear();
+                    }
+                }
+            });
+            self.road_panel(ui);
             if let Some(k) = self.ui.tool {
                 ui.separator();
                 lab(ui, k.label(), 14.0);
@@ -1383,6 +1448,305 @@ impl Game {
         }
     }
 
+    /// Whether the road tool is live: chosen, and the Build window open.
+    pub(super) fn road_active(&self) -> Option<RoadMode> {
+        self.ui.road.filter(|_| self.ui.build_open)
+    }
+
+    /// The road tool's text and buttons in the Build window.
+    fn road_panel(&mut self, ui: &mut Ui) {
+        let Some(mode) = self.ui.road else { return };
+        let dim = Color32::from_rgb(170, 176, 196);
+        if mode == RoadMode::Upgrade {
+            wrapped(
+                ui,
+                "Click a street to widen it one class: local to collector, collector to arterial. It keeps carrying traffic during the work. Empty lots beside it are given up; a standing building in the way stops it.",
+                11.0,
+                dim,
+            );
+            if btn(ui, "Stop", false, 11.0).clicked() {
+                self.ui.road = None;
+            }
+            return;
+        }
+        wrapped(
+            ui,
+            "Click points on the map, starting on an open road. End on a road or on open ground. Enter or a double click builds it. Esc or right click cancels. Bridges cost four times as much per metre. Empty lots under the road are given up. A standing building blocks the road: nothing is bought out.",
+            11.0,
+            dim,
+        );
+        let n = self.ui.road_pts.len();
+        lab(ui, format!("POINTS: {n}"), 11.0);
+        if n >= 2 {
+            match self.sim.check_road(mode.class(), &self.ui.road_pts) {
+                Ok(p) => {
+                    lab_c(
+                        ui,
+                        format!(
+                            "{:.0} M, COSTS {}, ABOUT {} A MONTH",
+                            p.length,
+                            money(p.cost),
+                            money(p.upkeep)
+                        ),
+                        11.0,
+                        GOLD,
+                    );
+                    if p.bridge_m > 0.0 {
+                        lab(ui, format!("BRIDGE {:.0} M", p.bridge_m), 10.0);
+                    }
+                    if p.lots_taken > 0 {
+                        lab(ui, format!("{} EMPTY LOTS GIVEN UP", p.lots_taken), 10.0);
+                    }
+                }
+                Err(e) => lab_c(ui, e.text().to_uppercase(), 11.0, BAD),
+            }
+        }
+        lab(ui, "TAKES 3 TO 12 WEEKS TO BUILD", 10.0);
+        ui.horizontal(|ui| {
+            if btn(ui, "Build", n >= 2, 12.0).clicked() {
+                self.road_confirm();
+            }
+            if btn(ui, "Undo point", false, 11.0).clicked() {
+                self.ui.road_pts.pop();
+            }
+            if btn(ui, "Cancel", false, 11.0).clicked() {
+                self.ui.road_pts.clear();
+            }
+        });
+    }
+
+    /// A click on the map while the road tool is chosen.
+    pub(super) fn road_click(&mut self, p: Pt) {
+        let Some(mode) = self.road_active() else {
+            return;
+        };
+        if mode == RoadMode::Upgrade {
+            match self.sim.upgrade_street(p) {
+                Ok(_) => self.toast("STREET WIDENING STARTED.", false),
+                Err(e) => self.toast(e.text().to_uppercase(), true),
+            }
+            return;
+        }
+        if let Some(&last) = self.ui.road_pts.last() {
+            if last.dist(p) < 8.0 {
+                // a double click ends the road
+                self.road_confirm();
+                return;
+            }
+        } else if let Err(e @ RoadError::StartNotOnRoad { .. }) =
+            self.sim.check_road(mode.class(), &[p, pt(p.x + 40.0, p.y)])
+        {
+            self.toast(e.text().to_uppercase(), true);
+            return;
+        }
+        if self.ui.road_pts.len() < 24 {
+            self.ui.road_pts.push(p);
+        }
+    }
+
+    /// Build the road drawn so far.
+    pub(super) fn road_confirm(&mut self) {
+        let Some(mode) = self.road_active() else {
+            return;
+        };
+        if self.ui.road_pts.len() < 2 {
+            self.toast("CLICK AT LEAST TWO POINTS.", true);
+            return;
+        }
+        let pts = std::mem::take(&mut self.ui.road_pts);
+        match self.sim.check_road(mode.class(), &pts) {
+            Ok(plan) => match self.sim.build_road(mode.class(), &pts) {
+                Ok(_) => self.toast(
+                    format!("WORK STARTED ON A ROAD. IT COSTS {}.", money(plan.cost)),
+                    false,
+                ),
+                Err(e) => {
+                    self.ui.road_pts = pts;
+                    self.toast(e.text().to_uppercase(), true);
+                }
+            },
+            Err(e) => {
+                self.ui.road_pts = pts;
+                self.toast(e.text().to_uppercase(), true);
+            }
+        }
+    }
+
+    /// Right click or Esc: drop the road being drawn, or leave the tool.
+    pub(super) fn road_cancel(&mut self) {
+        if self.road_active().is_none() {
+            return;
+        }
+        if self.ui.road_pts.is_empty() {
+            self.ui.road = None;
+        } else {
+            self.ui.road_pts.clear();
+        }
+    }
+
+    /// The road being drawn: its path, length, cost, bridges, and why a spot is refused.
+    fn road_ghost_ui(
+        &mut self,
+        ctx: &Context,
+        painter: &egui::Painter,
+        view: &View,
+        w: u32,
+        h: u32,
+    ) {
+        let Some(mode) = self.road_active() else {
+            return;
+        };
+        let ppp = ctx.pixels_per_point();
+        let hover = ctx.pointer_hover_pos();
+        let cursor = if ctx.egui_wants_pointer_input() {
+            None
+        } else {
+            hover.and_then(|pos| {
+                let ndc = (
+                    pos.x * ppp / w as f32 * 2.0 - 1.0,
+                    1.0 - pos.y * ppp / h as f32 * 2.0,
+                );
+                self.live
+                    .scene
+                    .pick(view, ndc)
+                    .map(|g| pt(g.x as f64, g.y as f64))
+            })
+        };
+        let screen = |me: &Self, p: Pt| {
+            project(
+                view,
+                Vec3::new(
+                    p.x as f32,
+                    p.y as f32,
+                    me.live.ground_at(p.x as f32, p.y as f32) + 1.0,
+                ),
+            )
+            .map(|s| super::to_screen(s, w, h, ppp))
+        };
+        if mode == RoadMode::Upgrade {
+            let Some(c) = cursor else { return };
+            let (text, col, path) = match self.sim.check_upgrade(c) {
+                Ok(pl) => (
+                    format!(
+                        "TO {}  {:.0} M  {}",
+                        pl.to.name(),
+                        pl.length,
+                        money(pl.cost)
+                    ),
+                    GOOD,
+                    pl.points,
+                ),
+                Err(e) => (e.text(), BAD, Vec::new()),
+            };
+            self.draw_path(painter, view, &path, col, 5.0, w, h, ppp);
+            if let Some(a) = screen(self, c) {
+                self.label_at(painter, a + vec2(18.0, 18.0), &text.to_uppercase(), col);
+            }
+            return;
+        }
+        let mut path = self.ui.road_pts.clone();
+        if let Some(c) = cursor {
+            path.push(c);
+        }
+        if path.is_empty() {
+            return;
+        }
+        let verdict = if path.len() >= 2 {
+            Some(self.sim.check_road(mode.class(), &path))
+        } else {
+            None
+        };
+        let (col, shown) = match &verdict {
+            Some(Ok(p)) => (GOOD, p.points.clone()),
+            _ => (BAD, path.clone()),
+        };
+        let col = if verdict.is_none() { GOLD } else { col };
+        self.draw_path(painter, view, &shown, col, 5.0, w, h, ppp);
+        if let Some(Ok(p)) = &verdict {
+            for (a, b) in &p.bridges {
+                self.draw_path(painter, view, &[*a, *b], GOLD, 8.0, w, h, ppp);
+            }
+        }
+        for &q in &self.ui.road_pts {
+            if let Some(s) = screen(self, q) {
+                painter.circle_filled(s, 5.0, INK);
+            }
+        }
+        let text = match &verdict {
+            Some(Ok(p)) => {
+                let mut t = format!("{:.0} M  {}", p.length, money(p.cost));
+                if p.bridge_m > 0.0 {
+                    t += &format!("  BRIDGE {:.0} M", p.bridge_m);
+                }
+                if p.lots_taken > 0 {
+                    t += &format!("  {} LOTS", p.lots_taken);
+                }
+                t
+            }
+            Some(Err(e)) => {
+                if let Some(at) = e.at()
+                    && let Some(s) = screen(self, at)
+                {
+                    painter.circle_stroke(s, 12.0, Stroke::new(3.0, BAD));
+                    painter.line_segment(
+                        [s - vec2(8.0, 8.0), s + vec2(8.0, 8.0)],
+                        Stroke::new(3.0, BAD),
+                    );
+                    painter.line_segment(
+                        [s + vec2(-8.0, 8.0), s + vec2(8.0, -8.0)],
+                        Stroke::new(3.0, BAD),
+                    );
+                }
+                e.text().to_uppercase()
+            }
+            None => "CLICK THE NEXT POINT".into(),
+        };
+        let at = hover.unwrap_or(Pos2::ZERO) + vec2(18.0, 18.0);
+        self.label_at(painter, at, &text, col);
+    }
+
+    fn label_at(&self, painter: &egui::Painter, at: Pos2, text: &str, col: Color32) {
+        let galley = painter.layout_no_wrap(text.to_string(), pixel(11.0), INK);
+        let r = egui::Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 3.0));
+        painter.rect_filled(r, 0.0, PANEL_DARK);
+        painter.rect_stroke(r, 0.0, Stroke::new(2.0, col), egui::StrokeKind::Inside);
+        painter.galley(at, galley, INK);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_path(
+        &self,
+        painter: &egui::Painter,
+        view: &View,
+        path: &[Pt],
+        col: Color32,
+        width: f32,
+        w: u32,
+        h: u32,
+        ppp: f32,
+    ) {
+        let mut line: Vec<Pos2> = Vec::new();
+        for seg in path.windows(2) {
+            let n = (seg[0].dist(seg[1]) / 8.0).ceil().max(1.0) as usize;
+            for k in 0..=n {
+                let p = seg[0].lerp(seg[1], k as f64 / n as f64);
+                if let Some(s) = project(
+                    view,
+                    Vec3::new(
+                        p.x as f32,
+                        p.y as f32,
+                        self.live.ground_at(p.x as f32, p.y as f32) + 1.0,
+                    ),
+                ) {
+                    line.push(super::to_screen(s, w, h, ppp));
+                }
+            }
+        }
+        if line.len() >= 2 {
+            painter.add(egui::Shape::line(line, Stroke::new(width, col)));
+        }
+    }
+
     /// Ghost of the chosen building under the cursor, with its reach and whether it fits.
     pub(super) fn ghost_ui(
         &mut self,
@@ -1392,6 +1756,10 @@ impl Game {
         w: u32,
         h: u32,
     ) {
+        if self.road_active().is_some() {
+            self.road_ghost_ui(ctx, painter, view, w, h);
+            return;
+        }
         let Some(kind) = self.ui.tool else { return };
         let ppp = ctx.pixels_per_point();
         let hover = ctx.pointer_hover_pos();

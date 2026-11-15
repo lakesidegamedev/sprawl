@@ -347,12 +347,16 @@ impl State {
                 travel: 0.0,
             });
         } else if let Some(p) = slot.take()
-            && left
             && !p.dragged
             && !p.on_ui
             && self.screen == Screen::Game
         {
-            self.click = Some(self.cursor);
+            if left {
+                self.click = Some(self.cursor);
+            } else if let Some(g) = self.game.as_mut() {
+                // a still right click drops the road being drawn
+                g.road_cancel();
+            }
         }
     }
 
@@ -478,6 +482,8 @@ impl State {
             } else if let Some(p) = g.live.scene.pick(&view, ndc) {
                 if g.ui.tool.is_some() {
                     g.place_tool(pt(p.x as f64, p.y as f64));
+                } else if g.road_active().is_some() {
+                    g.road_click(pt(p.x as f64, p.y as f64));
                 } else {
                     g.select_at(pt(p.x as f64, p.y as f64));
                     if g.compact && g.sel.is_some() {
