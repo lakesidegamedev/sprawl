@@ -48,6 +48,8 @@ jobs:
           mkdir -p dist "stage/$NAME"
           cp packaging/README.txt "stage/$NAME/README.txt"
           cp crates/us-app/assets/Silkscreen-OFL.txt "stage/$NAME/Silkscreen-OFL.txt"
+          cp crates/us-app/assets/Inter-OFL.txt "stage/$NAME/Inter-OFL.txt"
+          cp crates/us-app/assets/Phosphor-MIT.txt "stage/$NAME/Phosphor-MIT.txt"
           case "${{ matrix.name }}" in
             windows-x64)
               cp target/release/urban-sprawl.exe "stage/$NAME/"

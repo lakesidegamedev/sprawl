@@ -29,4 +29,5 @@ What you decide
   you every four years.
 
 If the game does not start, the log is urban-sprawl.log in your temp folder.
-The Silkscreen font is under the SIL Open Font License (Silkscreen-OFL.txt).
+The Silkscreen and Inter fonts are under the SIL Open Font License (Silkscreen-OFL.txt, Inter-OFL.txt).
+The Phosphor icons are under the MIT licence (Phosphor-MIT.txt).

@@ -4,7 +4,7 @@
 
 use super::panels::{lab, lab_c, window, wrapped};
 use super::{Game, money};
-use crate::theme::{self, ACCENT, BAD, EDGE, GOOD, INK, LINE, RAISED, TEXT, pixel};
+use crate::theme::{self, ACCENT, BAD, EDGE, GOOD, INK, LINE, RAISED, TEXT, ui_font};
 use egui::{Color32, Context, Pos2, RichText, Stroke, Ui, vec2};
 use us_sim::{TramError, TramState};
 
@@ -20,11 +20,11 @@ pub struct TramUi {
 
 fn button(ui: &mut Ui, text: &str, on: bool, touch: bool) -> egui::Response {
     ui.add(
-        egui::Button::new(
-            RichText::new(text.to_uppercase())
-                .font(pixel(12.0))
-                .color(if on { LINE } else { INK }),
-        )
+        egui::Button::new(RichText::new(text).font(ui_font(12.0)).color(if on {
+            LINE
+        } else {
+            INK
+        }))
         .fill(if on { ACCENT } else { RAISED })
         .min_size(vec2(0.0, if touch { theme::TOUCH } else { 22.0 })),
     )
@@ -148,7 +148,7 @@ impl Game {
                                         ));
                                         self.ui.trams.picked.clear();
                                     }
-                                    Err(e) => self.banner = Some((e.text().to_uppercase(), 3.0)),
+                                    Err(e) => self.banner = Some((e.text().to_string(), 3.0)),
                                 }
                             }
                         }

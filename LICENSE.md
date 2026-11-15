@@ -24,4 +24,6 @@ OR ITS USE.
 - The Silkscreen font in `crates/us-app/assets/` is Copyright 2001 The Silkscreen Project Authors,
   licensed under the SIL
   Open Font License 1.1 (`crates/us-app/assets/Silkscreen-OFL.txt`).
+- The Inter font (`Inter-OFL.txt`) is under the SIL Open Font License 1.1; the Phosphor icon font
+  (`Phosphor-MIT.txt`) is under the MIT licence. Both are in `crates/us-app/assets/`.
 - Rust crates used to build the game are under their own licences, listed in `Cargo.lock`.
