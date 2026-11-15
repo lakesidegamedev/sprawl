@@ -214,6 +214,7 @@ pub(super) fn window(
             ui.add_space(2.0);
             egui::ScrollArea::vertical()
                 .max_height(max_h)
+                .min_scrolled_height(max_h.min(560.0))
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.set_width(width - 14.0);
@@ -1392,26 +1393,40 @@ impl Game {
         let c = window(ctx, "build", "Build", 320.0, pos, |ui| {
             wrapped(
                 ui,
-                "Pick a building, then click empty land next to a road the town already has. Esc to stop.",
+                "Pick a building, then click empty land next to a road the town already has. Esc to stop. A full supply holds growth back.",
                 11.0,
                 Color32::from_rgb(170, 176, 196),
             );
             ui.add_space(4.0);
+            lab(ui, "ROADS", 12.0);
+            ui.horizontal(|ui| {
+                for (m, name) in [
+                    (RoadMode::Avenue, "AVENUE"),
+                    (RoadMode::Collector, "COLLECTOR"),
+                    (RoadMode::Upgrade, "UPGRADE"),
+                ] {
+                    let on = self.ui.road == Some(m);
+                    if btn(ui, name, on, 11.0).clicked() {
+                        self.ui.road = if on { None } else { Some(m) };
+                        self.ui.tool = None;
+                        self.ui.road_pts.clear();
+                    }
+                }
+            });
+            self.road_panel(ui);
+            ui.add_space(6.0);
+            lab(ui, "BUILDINGS", 12.0);
             // what the town can carry: when one is full, growth that needs it stops
             for st in self.sim.capacities() {
                 let full = st.is_full();
                 lab_c(
                     ui,
                     format!(
-                        "{}: {} of {} used{}",
+                        "{}: {} of {}{}",
                         st.capacity.label(),
                         st.demand,
                         st.supply,
-                        if full {
-                            ". Full: growth is held back."
-                        } else {
-                            ""
-                        }
+                        if full { ", full" } else { "" }
                     ),
                     11.0,
                     if full {
@@ -1471,23 +1486,6 @@ impl Game {
                     lab_c(ui, money(k.cost()), 12.0, if can { GOLD } else { BAD });
                 });
             }
-            ui.add_space(6.0);
-            lab(ui, "ROADS", 12.0);
-            ui.horizontal(|ui| {
-                for (m, name) in [
-                    (RoadMode::Avenue, "AVENUE"),
-                    (RoadMode::Collector, "COLLECTOR"),
-                    (RoadMode::Upgrade, "UPGRADE"),
-                ] {
-                    let on = self.ui.road == Some(m);
-                    if btn(ui, name, on, 11.0).clicked() {
-                        self.ui.road = if on { None } else { Some(m) };
-                        self.ui.tool = None;
-                        self.ui.road_pts.clear();
-                    }
-                }
-            });
-            self.road_panel(ui);
             if let Some(k) = self.ui.tool {
                 ui.separator();
                 lab(ui, k.label(), 14.0);
