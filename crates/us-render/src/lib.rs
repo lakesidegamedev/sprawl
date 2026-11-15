@@ -27,8 +27,8 @@ pub mod parts;
 pub mod rail;
 mod renderer;
 mod rng;
-pub mod site;
 mod scene;
+pub mod site;
 pub mod trains;
 
 pub use calendar::{Calendar, DayPhase, Season};

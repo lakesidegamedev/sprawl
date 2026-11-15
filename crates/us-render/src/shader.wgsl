@@ -8,7 +8,7 @@ struct Globals {
     shade: vec4<f32>,  // x multiplier for a shadowed face, y shadow depth bias
     screen: vec4<f32>, // width, height of the main targets
     tone: vec4<f32>,   // rgb flat tint of the whole picture, a share of lit windows
-    look: vec4<f32>,   // x season (1 autumn, 2 spring, 3 summer), y snow, z map view (desaturate), w lamps on
+    look: vec4<f32>,   // x season (1 autumn, 2 spring, 3 summer), y snow, z map view (desaturate), w share of lamps and vehicle lights on (0 to 1)
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -195,7 +195,7 @@ fn fs_main(v: VOut) -> FOut {
         discard;
     }
     if (!cel && near(col, 250.0, 232.0, 150.0)) {
-        if (g.tone.w < 0.6 || g.look.z > 0.5) {
+        if (f32(hash_u(v.id) % 1000u) >= g.look.w * 1000.0 || g.look.z > 0.5) {
             discard;
         }
         col = vec3<f32>(214.0, 194.0, 120.0) / 255.0;
@@ -224,8 +224,16 @@ fn fs_main(v: VOut) -> FOut {
                 emissive = true;
             }
         }
-        if (!cel && g.look.w > 0.5 && near(col, 255.0, 236.0, 150.0)) {
-            emissive = true;
+        if (!cel && g.look.w > 0.0 && near(col, 255.0, 236.0, 150.0)) {
+            if (f32(hash_u(v.id) % 1000u) < g.look.w * 1000.0) {
+                emissive = true;
+            }
+        }
+        if (!cel && g.look.w > 0.0 && near(col, 222.0, 36.0, 44.0)) {
+            if (f32(hash_u(v.id) % 1000u) < g.look.w * 1000.0) {
+                col = vec3<f32>(255.0, 52.0, 52.0) / 255.0;
+                emissive = true;
+            }
         }
         // snow
         if (g.look.y > 0.5) {

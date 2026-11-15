@@ -37,7 +37,12 @@ fn main() {
         let mut id = 1u32;
         let mut rng = Rng::new(0x5ee7, 3);
         let new = build_lot_level_in(Region::Mixed, kind, level, &mut rng);
-        let old = build_lot_level_in(Region::Mixed, kind, level.saturating_sub(2).max(1), &mut Rng::new(0x5ee8, 3));
+        let old = build_lot_level_in(
+            Region::Mixed,
+            kind,
+            level.saturating_sub(2).max(1),
+            &mut Rng::new(0x5ee8, 3),
+        );
         for s in 0..STEPS as usize {
             let (cx, cy) = ((s % cols) as f32, (s / cols) as f32);
             let o = building_site_for(
@@ -46,7 +51,14 @@ fn main() {
                 level >= 4,
                 step_progress(s as u8),
             );
-            o.emit(&mut mesh, &mut id, cell * (cx + 0.5), cell * (cy + 0.5), 0.0, 1.0);
+            o.emit(
+                &mut mesh,
+                &mut id,
+                cell * (cx + 0.5),
+                cell * (cy + 0.5),
+                0.0,
+                1.0,
+            );
         }
         let mut g = ground::Ground::default();
         g.rect(
@@ -68,7 +80,13 @@ fn main() {
             hi: Vec3::new(cell * cols as f32 + 60.0, cell * rows as f32 + 60.0, 160.0),
         });
         let centre = Vec3::new(cell * cols as f32 / 2.0, cell * rows as f32 / 2.0, 0.0);
-        let cam = Camera::framing(centre, cell * cols as f32 * 1.1, w as f32 / h as f32, 0.0, 52.0);
+        let cam = Camera::framing(
+            centre,
+            cell * cols as f32 * 1.1,
+            w as f32 / h as f32,
+            0.0,
+            52.0,
+        );
         let style = Style {
             supersample: 2,
             shadow_size: 4096,

@@ -7,11 +7,12 @@ use std::sync::Arc;
 use std::time::Instant;
 use us_gen::{LotKind, Preset, Pt, RoadClass, Town, Zone};
 use us_render::levels::{building_site_for, burned};
-use us_render::site::{step_of, step_progress};
 use us_render::live::{
-    RoadDraw, abandoned, base_ground_far_on, base_ground_on, roads_ground_state_on, zone_ground_on,
+    RoadDraw, abandoned, base_ground_far_on, base_ground_on, grown, roads_ground_state_on,
+    zone_ground_on,
 };
 use us_render::obj::{Obj, Sit};
+use us_render::site::{step_of, step_progress};
 use us_render::{
     Chunk, CivicModel, Land, LotInfo, Mesh, Rng, RoadInfo, Scene, build_civic,
     build_lot_level_dense, kit,
@@ -227,7 +228,8 @@ fn look_obj(
     let mut rng = Rng::new(seed ^ 0xb0b0, i as u64);
     let mut dress = |o: &Obj| match look.state {
         1 => {
-            let old = (look.from > 0).then(|| lot_model(preset, seed, l, look.from, density).building);
+            let old =
+                (look.from > 0).then(|| lot_model(preset, seed, l, look.from, density).building);
             let tall = look.level >= 4 || l.kind == LotKind::Office;
             building_site_for(o, old.as_ref(), tall, step_progress(look.step))
         }
@@ -235,7 +237,24 @@ fn look_obj(
         4 => abandoned(o),
         _ => o.clone(),
     };
-    if look.state != 0 && look.state != 2 {
+    if look.state == 1 {
+        d.building = dress(&d.building);
+        // trees come back at the end of the job, small first, and grow to size
+        let k = match look.step {
+            0..=7 => 0.0,
+            8 => 0.3,
+            9 => 0.5,
+            10 => 0.75,
+            _ => 0.9,
+        };
+        if k == 0.0 {
+            d.trees.clear();
+        } else {
+            for t in &mut d.trees {
+                t.2 = grown(&t.2, k);
+            }
+        }
+    } else if look.state != 0 && look.state != 2 {
         d.building = dress(&d.building);
         for t in &mut d.trees {
             t.2 = dress(&t.2);

@@ -81,11 +81,7 @@ fn trim(p: &Poly, cut: f32) -> Option<Poly> {
         }
         if ain != bin {
             let t = (cut - a[2]) / (b[2] - a[2]);
-            out.push([
-                a[0] + (b[0] - a[0]) * t,
-                a[1] + (b[1] - a[1]) * t,
-                cut,
-            ]);
+            out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, cut]);
         }
     }
     (out.len() >= 3).then(|| Poly {
@@ -143,8 +139,24 @@ pub fn site(new: &Obj, spec: Spec, progress: f32) -> Obj {
         }
         let rub = 0.2 + 0.9 * (1.0 - k);
         let (cx, cy) = ((bx0 + bx1) / 2.0, (by0 + by1) / 2.0);
-        o.bx(cx - 3.2, cy - 2.8, 0.0, cx - 0.6, cy - 1.0, rub, [128, 120, 110]);
-        o.bx(cx + 0.8, cy + 0.6, 0.0, cx + 3.4, cy + 2.6, rub * 0.8, [150, 138, 120]);
+        o.bx(
+            cx - 3.2,
+            cy - 2.8,
+            0.0,
+            cx - 0.6,
+            cy - 1.0,
+            rub,
+            [128, 120, 110],
+        );
+        o.bx(
+            cx + 0.8,
+            cy + 0.6,
+            0.0,
+            cx + 3.4,
+            cy + 2.6,
+            rub * 0.8,
+            [150, 138, 120],
+        );
         excavator(&mut o, x1 - 3.0, y1 - 2.2, k);
     }
 
@@ -158,9 +170,23 @@ pub fn site(new: &Obj, spec: Spec, progress: f32) -> Obj {
         if q > 0.55 && p < FRAME_END {
             // rebar stubs
             let (w, d) = (bx1 - bx0, by1 - by0);
-            for (fx, fy) in [(0.12, 0.12), (0.88, 0.12), (0.12, 0.88), (0.88, 0.88), (0.5, 0.5)] {
+            for (fx, fy) in [
+                (0.12, 0.12),
+                (0.88, 0.12),
+                (0.12, 0.88),
+                (0.88, 0.88),
+                (0.5, 0.5),
+            ] {
                 let (x, y) = (bx0 + w * fx, by0 + d * fy);
-                o.slab(x - 0.07, y - 0.07, 0.05 + t, x + 0.07, y + 0.07, 1.4, [96, 70, 56]);
+                o.slab(
+                    x - 0.07,
+                    y - 0.07,
+                    0.05 + t,
+                    x + 0.07,
+                    y + 0.07,
+                    1.4,
+                    [96, 70, 56],
+                );
             }
         }
         if q < 0.9 {
@@ -217,7 +243,14 @@ pub fn site(new: &Obj, spec: Spec, progress: f32) -> Obj {
     if p < CLAD_END && p >= clear_end * 0.5 {
         let reach = (bx1 - bx0).max(by1 - by0);
         if spec.tall {
-            tower_crane(&mut o, x1 - 0.8, y0 + 0.8, frame_top.max(8.0) + 7.0, reach * 1.1 + 5.0, p);
+            tower_crane(
+                &mut o,
+                x1 - 0.8,
+                y0 + 0.8,
+                frame_top.max(8.0) + 7.0,
+                reach * 1.1 + 5.0,
+                p,
+            );
         } else {
             mobile_crane(&mut o, x0 + 2.4, y0 + 2.2, frame_top.max(3.0) + 1.5);
         }
@@ -285,21 +318,77 @@ fn scaffold(o: &mut Obj, b: [f32; 4], fh: f32, top: f32) {
 /// Things that stand on a working site: a site cabin, a skip, stacks of material.
 fn site_props(o: &mut Obj, x0: f32, y0: f32, x1: f32, y1: f32, p: f32) {
     if p < CLAD_END {
-        o.bx(x0 + 0.5, y1 - 2.3, 0.0, x0 + 3.3, y1 - 0.5, 1.9, [214, 214, 204]);
-        o.bx(x0 + 0.4, y1 - 2.4, 1.9, x0 + 3.4, y1 - 0.4, 2.1, [70, 110, 160]);
-        o.bx(x1 - 2.6, y1 - 2.0, 0.0, x1 - 0.6, y1 - 0.6, 1.0, [60, 120, 70]);
+        o.bx(
+            x0 + 0.5,
+            y1 - 2.3,
+            0.0,
+            x0 + 3.3,
+            y1 - 0.5,
+            1.9,
+            [214, 214, 204],
+        );
+        o.bx(
+            x0 + 0.4,
+            y1 - 2.4,
+            1.9,
+            x0 + 3.4,
+            y1 - 0.4,
+            2.1,
+            [70, 110, 160],
+        );
+        o.bx(
+            x1 - 2.6,
+            y1 - 2.0,
+            0.0,
+            x1 - 0.6,
+            y1 - 0.6,
+            1.0,
+            [60, 120, 70],
+        );
     }
     if p < FRAME_END {
-        o.bx(x0 + 0.6, y0 + 0.5, 0.0, x0 + 2.8, y0 + 1.5, 0.7, [190, 150, 100]);
-        o.bx(x0 + 0.7, y0 + 1.6, 0.0, x0 + 2.6, y0 + 2.4, 0.5, [150, 150, 154]);
+        o.bx(
+            x0 + 0.6,
+            y0 + 0.5,
+            0.0,
+            x0 + 2.8,
+            y0 + 1.5,
+            0.7,
+            [190, 150, 100],
+        );
+        o.bx(
+            x0 + 0.7,
+            y0 + 1.6,
+            0.0,
+            x0 + 2.6,
+            y0 + 2.4,
+            0.5,
+            [150, 150, 154],
+        );
     } else if p < CLAD_END {
-        o.bx(x0 + 0.6, y0 + 0.5, 0.0, x0 + 3.0, y0 + 1.7, 1.0, [196, 120, 96]);
+        o.bx(
+            x0 + 0.6,
+            y0 + 0.5,
+            0.0,
+            x0 + 3.0,
+            y0 + 1.7,
+            1.0,
+            [196, 120, 96],
+        );
     }
 }
 
 fn mixer(o: &mut Obj, x: f32, y: f32) {
     o.bx(x - 2.2, y - 0.9, 0.5, x + 0.4, y + 0.9, 1.0, [90, 94, 100]);
-    o.bx(x + 0.4, y - 0.9, 0.5, x + 1.5, y + 0.9, 2.0, [220, 220, 224]);
+    o.bx(
+        x + 0.4,
+        y - 0.9,
+        0.5,
+        x + 1.5,
+        y + 0.9,
+        2.0,
+        [220, 220, 224],
+    );
     o.bx(x - 1.9, y - 0.8, 1.0, x + 0.2, y + 0.8, 2.3, [236, 130, 50]);
 }
 
@@ -316,12 +405,28 @@ fn excavator(o: &mut Obj, x: f32, y: f32, k: f32) {
         z += 0.5 + k * 0.7;
     }
     let _ = reach;
-    o.bx(xx - 0.8, y - 0.6, z - 0.3, xx + 0.1, y + 0.6, z + 0.2, STEEL);
+    o.bx(
+        xx - 0.8,
+        y - 0.6,
+        z - 0.3,
+        xx + 0.1,
+        y + 0.6,
+        z + 0.2,
+        STEEL,
+    );
 }
 
 fn mobile_crane(o: &mut Obj, x: f32, y: f32, boom_top: f32) {
     o.bx(x - 2.6, y - 1.0, 0.0, x + 2.6, y + 1.0, 0.9, [60, 62, 66]);
-    o.bx(x - 2.6, y - 1.0, 0.9, x - 1.2, y + 1.0, 2.3, [236, 236, 236]);
+    o.bx(
+        x - 2.6,
+        y - 1.0,
+        0.9,
+        x - 1.2,
+        y + 1.0,
+        2.3,
+        [236, 236, 236],
+    );
     o.bx(x - 1.2, y - 1.0, 0.9, x + 2.6, y + 1.0, 1.6, YELLOW);
     // boom in steps leaning toward the plot
     let steps = 5;
@@ -334,28 +439,124 @@ fn mobile_crane(o: &mut Obj, x: f32, y: f32, boom_top: f32) {
     // hook cable
     let hx = x + 2.0 + 0.9 * steps as f32;
     let top = 1.6 + rise * steps as f32;
-    o.slab(hx - 0.04, y - 0.04, top - 2.4, hx + 0.04, y + 0.04, top, STEEL);
-    o.bx(hx - 0.2, y - 0.2, top - 2.9, hx + 0.2, y + 0.2, top - 2.4, [90, 94, 100]);
+    o.slab(
+        hx - 0.04,
+        y - 0.04,
+        top - 2.4,
+        hx + 0.04,
+        y + 0.04,
+        top,
+        STEEL,
+    );
+    o.bx(
+        hx - 0.2,
+        y - 0.2,
+        top - 2.9,
+        hx + 0.2,
+        y + 0.2,
+        top - 2.4,
+        [90, 94, 100],
+    );
 }
 
 fn tower_crane(o: &mut Obj, x: f32, y: f32, mast: f32, jib: f32, p: f32) {
     let w = 0.6;
-    o.bx(x - w / 2.0 - 0.3, y - w / 2.0 - 0.3, 0.0, x + w / 2.0 + 0.3, y + w / 2.0 + 0.3, 0.6, [90, 94, 100]);
-    o.bx(x - w / 2.0, y - w / 2.0, 0.0, x + w / 2.0, y + w / 2.0, mast, YELLOW);
+    o.bx(
+        x - w / 2.0 - 0.3,
+        y - w / 2.0 - 0.3,
+        0.0,
+        x + w / 2.0 + 0.3,
+        y + w / 2.0 + 0.3,
+        0.6,
+        [90, 94, 100],
+    );
+    o.bx(
+        x - w / 2.0,
+        y - w / 2.0,
+        0.0,
+        x + w / 2.0,
+        y + w / 2.0,
+        mast,
+        YELLOW,
+    );
     let mut z = 1.5;
     while z < mast {
-        o.slab(x - w / 2.0 - 0.05, y - w / 2.0 - 0.05, z, x + w / 2.0 + 0.05, y + w / 2.0 + 0.05, z + 0.25, [240, 240, 236]);
+        o.slab(
+            x - w / 2.0 - 0.05,
+            y - w / 2.0 - 0.05,
+            z,
+            x + w / 2.0 + 0.05,
+            y + w / 2.0 + 0.05,
+            z + 0.25,
+            [240, 240, 236],
+        );
         z += 2.0;
     }
     // jib toward the plot (negative x), counter jib behind
-    o.bx(x - jib, y - 0.25, mast, x + 2.4, y + 0.25, mast + 0.5, YELLOW);
-    o.bx(x - 0.2, y - 0.25, mast + 0.5, x + 0.2, y + 0.25, mast + 2.2, YELLOW);
-    o.bx(x + 1.2, y - 0.5, mast - 1.2, x + 2.6, y + 0.5, mast, [90, 94, 100]);
-    o.bx(x - 0.9, y - 0.5, mast - 1.4, x + 0.4, y + 0.5, mast, [236, 236, 236]);
+    o.bx(
+        x - jib,
+        y - 0.25,
+        mast,
+        x + 2.4,
+        y + 0.25,
+        mast + 0.5,
+        YELLOW,
+    );
+    o.bx(
+        x - 0.2,
+        y - 0.25,
+        mast + 0.5,
+        x + 0.2,
+        y + 0.25,
+        mast + 2.2,
+        YELLOW,
+    );
+    o.bx(
+        x + 1.2,
+        y - 0.5,
+        mast - 1.2,
+        x + 2.6,
+        y + 0.5,
+        mast,
+        [90, 94, 100],
+    );
+    o.bx(
+        x - 0.9,
+        y - 0.5,
+        mast - 1.4,
+        x + 0.4,
+        y + 0.5,
+        mast,
+        [236, 236, 236],
+    );
     // trolley, cable and a load that goes up and down with the job
     let tx = x - jib * (0.45 + 0.2 * libm::sinf(p * 9.0));
     let drop = 1.5 + (mast - 3.0) * (0.35 + 0.3 * libm::cosf(p * 7.0)).clamp(0.1, 0.9);
-    o.bx(tx - 0.3, y - 0.3, mast - 0.3, tx + 0.3, y + 0.3, mast, [90, 94, 100]);
-    o.slab(tx - 0.04, y - 0.04, mast - drop, tx + 0.04, y + 0.04, mast - 0.3, STEEL);
-    o.bx(tx - 0.6, y - 0.4, mast - drop - 0.7, tx + 0.6, y + 0.4, mast - drop, [196, 120, 96]);
+    o.bx(
+        tx - 0.3,
+        y - 0.3,
+        mast - 0.3,
+        tx + 0.3,
+        y + 0.3,
+        mast,
+        [90, 94, 100],
+    );
+    o.slab(
+        tx - 0.04,
+        y - 0.04,
+        mast - drop,
+        tx + 0.04,
+        y + 0.04,
+        mast - 0.3,
+        STEEL,
+    );
+    o.bx(
+        tx - 0.6,
+        y - 0.4,
+        mast - drop - 0.7,
+        tx + 0.6,
+        y + 0.4,
+        mast - drop,
+        [196, 120, 96],
+    );
 }

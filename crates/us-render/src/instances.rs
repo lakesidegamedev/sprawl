@@ -13,6 +13,8 @@ use us_gen::{Pt, RoadClass};
 pub const MARKER: Rgb = [255, 0, 255];
 /// Headlight colour: lit at night.
 pub const HEADLIGHT: Rgb = [255, 236, 150];
+/// Tail light colour: bright red at night, dull red by day.
+pub const TAILLIGHT: Rgb = [222, 36, 44];
 
 pub const CAR_ID_BASE: u32 = 8_000_000;
 pub const PUFF_ID_BASE: u32 = 9_500_000;
@@ -65,6 +67,20 @@ pub fn car_mesh() -> Mesh {
                 [2.12, y - 0.25, 0.8],
             ],
             HEADLIGHT,
+            false,
+            true,
+            true,
+        );
+    }
+    for y in [-0.65f32, 0.65] {
+        o.poly(
+            &[
+                [-2.12, y + 0.25, 0.5],
+                [-2.12, y - 0.25, 0.5],
+                [-2.12, y - 0.25, 0.8],
+                [-2.12, y + 0.25, 0.8],
+            ],
+            TAILLIGHT,
             false,
             true,
             true,

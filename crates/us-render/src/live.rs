@@ -403,6 +403,22 @@ pub fn construction(obj: &Obj, progress: f32) -> Obj {
     o
 }
 
+/// A copy of the model scaled about its own origin: a young tree or a prop that is still
+/// growing in. `k` is 0 to 1.
+pub fn grown(obj: &Obj, k: f32) -> Obj {
+    let k = k.clamp(0.05, 1.0);
+    let mut o = obj.clone();
+    for p in &mut o.polys {
+        for v in &mut p.pts {
+            *v = [v[0] * k, v[1] * k, v[2] * k];
+        }
+    }
+    for s in &mut o.solids {
+        s.centre = [s.centre[0] * k, s.centre[1] * k, s.centre[2] * k];
+    }
+    o
+}
+
 /// A copy of the model gone grey: nobody lives or works here any more.
 pub fn abandoned(obj: &Obj) -> Obj {
     let mut o = obj.clone();
