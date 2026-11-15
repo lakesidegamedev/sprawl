@@ -12,6 +12,7 @@ mod calendar;
 mod camera;
 pub mod civic;
 mod detail;
+pub mod emergency;
 pub mod ground;
 pub mod instances;
 pub mod kit;

@@ -20,6 +20,7 @@ mod density;
 mod districts;
 mod dynamic;
 mod econ;
+mod fires;
 mod growth;
 mod ledger_view;
 mod limits;
@@ -41,7 +42,8 @@ pub use density::max_level_at;
 pub use districts::{
     DISTRICT_COLOURS, District, DistrictStats, MAX_DISTRICTS, OrdScope, Ordinance,
 };
-pub use dynamic::Rival;
+pub use dynamic::{FIRE_DAYS, Rival};
+pub use fires::{BlazeView, Vehicle, VehicleKind};
 pub use ledger_view::LedgerNow;
 pub use model::*;
 pub use pressure::*;
@@ -404,6 +406,8 @@ pub struct Sim {
     pub(crate) growth_spent: i64,
     /// Districts and ordinances (saved in the `DIST` section).
     pub(crate) dist: districts::DistrictState,
+    /// Fires in progress and emergency vehicles (saved in the `FIRE` section).
+    pub(crate) fx: fires::FireState,
 }
 
 impl Sim {
@@ -508,6 +512,7 @@ impl Sim {
             last_kind_street: -1000,
             growth_spent: 0,
             dist: Default::default(),
+            fx: Default::default(),
         };
         // reveal order: nearest to the hall first
         let mut ord: Vec<(i64, usize)> = (0..n_add)
@@ -753,6 +758,7 @@ impl Sim {
         self.rivals.fingerprint(&mut f);
         self.avenue_hash(&mut f);
         self.tram_hash(&mut f);
+        self.fire_hash(&mut f);
         f(self.runs.len() as u64);
         for r in &self.runs {
             f(r.class as u64);
@@ -1009,6 +1015,9 @@ impl Sim {
             && let Some(note) = self.tram_note(self.lots[lot].pos)
         {
             y.reason = format!("{} {note}", y.reason);
+        }
+        if let Some(line) = self.fire_why(lot) {
+            y.reason = format!("{} {line}", y.reason);
         }
         y.ordinances = self.ordinance_lines(lot);
         y
@@ -1358,3 +1367,6 @@ mod tests_rail;
 
 #[cfg(test)]
 mod tests_trams;
+
+#[cfg(test)]
+mod tests_fires;

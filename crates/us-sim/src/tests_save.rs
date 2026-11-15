@@ -188,6 +188,7 @@ fn format_4_saves_open_with_every_feature_at_its_defaults() {
     let mut l = Sim::load(&old).expect("a format 4 save opens");
     // the rival towns beyond the first start from the seed when there is no section
     s.rivals = crate::rivals::Rivals::new(s.seed);
+    s.fx = Default::default();
     assert_eq!(l.fingerprint(), s.fingerprint());
     for _ in 0..100 {
         s.step_day();
@@ -205,6 +206,7 @@ fn preview_7_saves_open_on_their_old_town() {
     }
     let old = s.save_old_format(3);
     s.rivals = crate::rivals::Rivals::new(s.seed);
+    s.fx = Default::default();
     assert_eq!(u16::from_le_bytes([old[4], old[5]]), 3);
     let mut loaded = Sim::load(&old).expect("a format 3 save opens");
     assert_eq!(loaded.town().gen_version, 1);

@@ -104,11 +104,12 @@ fn cell_of(x: f64, y: f64) -> Cell {
     )
 }
 
-fn look_of(l: &LotState, day: i32) -> Look {
+fn look_of(l: &LotState, day: i32, burning: bool) -> Look {
     let level = l.level.clamp(1, 5);
     match l.phase {
         Phase::Hidden | Phase::Vacant | Phase::Cleared { .. } => Look::default(),
-        _ if l.fire.is_some() => Look {
+        // a fire still burning shows the building standing, with flames and smoke over it
+        _ if l.fire.is_some() && !burning => Look {
             state: 3,
             level,
             step: 0,
@@ -714,6 +715,39 @@ impl LiveScene {
         }
     }
 
+    /// Fire engines, police cars, ambulances, flames and smoke at the visual hour of today.
+    pub fn set_emergency(&mut self, sim: &Sim, hour: f32) {
+        use us_render::emergency::{EmBlaze, EmVehicle, RigKind};
+        let now = sim.day as f64 * 86_400.0 + hour as f64 * 3600.0;
+        let vehicles = sim
+            .vehicles_at(now)
+            .into_iter()
+            .map(|v| EmVehicle {
+                kind: match v.kind {
+                    us_sim::VehicleKind::FireEngine => RigKind::FireEngine,
+                    us_sim::VehicleKind::PoliceCar => RigKind::PoliceCar,
+                    us_sim::VehicleKind::Ambulance => RigKind::Ambulance,
+                },
+                pos: [v.pos.x as f32, v.pos.y as f32],
+                heading: v.heading as f32,
+                moving: v.moving,
+            })
+            .collect();
+        let blazes = sim
+            .blazes_at(now)
+            .into_iter()
+            .map(|b| {
+                let l = &sim.lots()[b.lot];
+                EmBlaze {
+                    pos: [b.pos.x as f32, b.pos.y as f32],
+                    stage: b.stage,
+                    top: 4.0 + 3.0 * (l.level.clamp(1, 5) as f32),
+                }
+            })
+            .collect();
+        self.scene.set_emergency(vehicles, blazes);
+    }
+
     /// Follow road changes: new class or new streets show as roadworks that finish over time.
     fn sync_roads(&mut self, sim: &Sim) {
         let day = sim.day;
@@ -883,7 +917,7 @@ impl LiveScene {
         self.sync_roads(sim);
         let day = sim.day;
         for (i, l) in sim.lots().iter().enumerate() {
-            let k = look_of(l, day);
+            let k = look_of(l, day, l.fire.is_some() && sim.is_burning(i));
             if k != self.look[i] {
                 let was = self.look[i];
                 self.look[i] = k;

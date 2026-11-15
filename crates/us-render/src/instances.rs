@@ -44,7 +44,7 @@ pub fn tint(c: Rgb) -> u32 {
     0x0100_0000 | (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32
 }
 
-fn emit(o: &Obj) -> Mesh {
+pub(crate) fn emit(o: &Obj) -> Mesh {
     let mut m = Mesh::default();
     let mut id = 0u32;
     o.emit(&mut m, &mut id, 0.0, 0.0, 0.0, 1.0);

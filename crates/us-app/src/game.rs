@@ -1941,6 +1941,7 @@ impl Game {
         self.live
             .scene
             .set_calendar(Some(Calendar::from_date(d.month, d.day, hour)));
+        self.live.set_emergency(&self.sim, hour);
     }
 
     fn toast(&mut self, text: impl Into<String>, bad: bool) {
