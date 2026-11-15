@@ -50,6 +50,10 @@ impl Region {
             Preset::Sunbelt => Region::Sunbelt,
             Preset::Crossroads => Region::Crossroads,
             Preset::LakeTown => Region::Lake,
+            // newer styles borrow a look until they have their own
+            Preset::Gorge | Preset::Valley => Region::River,
+            Preset::Mesa => Region::Sunbelt,
+            Preset::Coast => Region::Lake,
         }
     }
 

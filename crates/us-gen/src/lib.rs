@@ -31,16 +31,39 @@ pub enum Preset {
     Crossroads,
     /// A shoreline that the streets and a lakeside drive follow.
     LakeTown,
+    /// A deep river gorge with steep walls: the town on the rims and terraces, bridges across.
+    Gorge,
+    /// Red rock desert: mesas, buttes and dry washes, the town on the flats between them.
+    Mesa,
+    /// A narrow mountain valley between high ridges, the town along the floor and side valleys.
+    Valley,
+    /// A high coast with cliffs and coves: the town on the headlands, a harbour in a cove.
+    Coast,
 }
 
 impl Preset {
-    pub const ALL: [Preset; 5] = [
+    /// Every town style. Saves store the place in this list: new styles go at the end.
+    pub const ALL: [Preset; 9] = [
         Preset::Grid,
         Preset::Winding,
         Preset::Sunbelt,
         Preset::Crossroads,
         Preset::LakeTown,
+        Preset::Gorge,
+        Preset::Mesa,
+        Preset::Valley,
+        Preset::Coast,
     ];
+
+    /// The 1.0 style whose road layout and building flavour a newer style starts from.
+    pub fn base(self) -> Preset {
+        match self {
+            Preset::Gorge | Preset::Valley => Preset::Winding,
+            Preset::Mesa => Preset::Sunbelt,
+            Preset::Coast => Preset::LakeTown,
+            p => p,
+        }
+    }
 
     /// Short lower-case name, as used on command lines.
     pub fn name(self) -> &'static str {
@@ -50,6 +73,10 @@ impl Preset {
             Preset::Sunbelt => "sunbelt",
             Preset::Crossroads => "crossroads",
             Preset::LakeTown => "lake",
+            Preset::Gorge => "gorge",
+            Preset::Mesa => "mesa",
+            Preset::Valley => "valley",
+            Preset::Coast => "coast",
         }
     }
 
@@ -61,6 +88,10 @@ impl Preset {
             Preset::Sunbelt => "Sunbelt",
             Preset::Crossroads => "Crossroads",
             Preset::LakeTown => "Lake town",
+            Preset::Gorge => "River gorge",
+            Preset::Mesa => "Red rock",
+            Preset::Valley => "Mountain valley",
+            Preset::Coast => "Coastal cliffs",
         }
     }
 
@@ -76,6 +107,16 @@ impl Preset {
                 "Crossroads town: two highways cross in a compact old grid with roads fanning out."
             }
             Preset::LakeTown => "Lake town: streets and a lakeside drive follow the shore.",
+            Preset::Gorge => {
+                "River gorge: a deep gorge with steep walls; the town on the rims, bridges across."
+            }
+            Preset::Mesa => {
+                "Red rock: mesas, buttes and dry washes, the town on the flats between."
+            }
+            Preset::Valley => {
+                "Mountain valley: a narrow valley between high ridges, the town along its floor."
+            }
+            Preset::Coast => "Coastal cliffs: a high coast with coves, the town on the headlands.",
         }
     }
 
@@ -150,8 +191,9 @@ impl Settings {
             reach: 1900.0,
             version: GEN_VERSION,
         };
-        // Tuned offline against road statistics of real towns (`us-metrics tune`).
-        match p {
+        // Tuned offline against road statistics of real towns (`us-metrics tune`). Newer styles
+        // start from their base style's numbers.
+        match p.base() {
             Preset::Grid => Settings {
                 arterial_spacing: 1400.0,
                 block_scale: 1.84,
@@ -216,6 +258,7 @@ impl Settings {
                 reach: 1800.0,
                 ..base
             },
+            Preset::Gorge | Preset::Mesa | Preset::Valley | Preset::Coast => base,
         }
     }
 }

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use us_gen::{Preset, Pt, Road, RoadClass, Town, Zone, generate};
 
 const SEEDS: [u64; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-const PRESETS: [Preset; 5] = Preset::ALL;
+const PRESETS: [Preset; 9] = Preset::ALL;
 
 fn towns() -> &'static [Town] {
     static TOWNS: std::sync::OnceLock<Vec<Town>> = std::sync::OnceLock::new();
@@ -358,7 +358,8 @@ fn pods_have_an_entrance_and_two_cul_de_sacs() {
                             .iter()
                             .filter(|r| {
                                 matches!(r.class, RoadClass::Highway | RoadClass::Arterial)
-                                    || (p == Preset::Sunbelt && r.class == RoadClass::Collector)
+                                    || (p.base() == Preset::Sunbelt
+                                        && r.class == RoadClass::Collector)
                             })
                             .any(|r| r
                                 .points

@@ -426,6 +426,9 @@ pub fn build(
                 rails.push(p);
             }
         }
+        Preset::Gorge | Preset::Mesa | Preset::Valley | Preset::Coast => {
+            unreachable!("newer styles are laid out from their base style (Preset::base)")
+        }
     }
     riverside_drives(&mut roads, river, preset == Preset::Winding);
     let _ = TAU;

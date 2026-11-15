@@ -167,6 +167,46 @@ fn style(p: Preset) -> Style {
             wind_dir: 4.2,
             flood: 0.6,
         },
+        // river gorge: humid, rainy, the river rises fast between steep walls
+        Preset::Gorge => Style {
+            mean: 11.5,
+            amp: 12.0,
+            wet: 1.35,
+            storm: 1.1,
+            wind: 0.8,
+            wind_dir: 1.2,
+            flood: 1.1,
+        },
+        // red rock desert: hot, very dry, windy, rare flash floods in the washes
+        Preset::Mesa => Style {
+            mean: 17.0,
+            amp: 13.0,
+            wet: 0.35,
+            storm: 0.9,
+            wind: 1.4,
+            wind_dir: 0.8,
+            flood: 0.35,
+        },
+        // mountain valley: cold winters, deep snow, wet summers
+        Preset::Valley => Style {
+            mean: 5.5,
+            amp: 14.0,
+            wet: 1.15,
+            storm: 0.9,
+            wind: 1.0,
+            wind_dir: 2.6,
+            flood: 0.7,
+        },
+        // high coast: mild, wet and windy off the sea
+        Preset::Coast => Style {
+            mean: 11.0,
+            amp: 8.5,
+            wet: 1.25,
+            storm: 1.15,
+            wind: 1.5,
+            wind_dir: 3.6,
+            flood: 0.4,
+        },
     }
 }
 

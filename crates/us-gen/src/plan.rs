@@ -270,6 +270,9 @@ struct Specials {
 }
 
 pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
+    // the road and lot layout follows the base style until a newer style has its own
+    let style = preset;
+    let preset = preset.base();
     let mut river_rng = Rng::new(seed, 0x71e7);
     let river = River::new(&mut river_rng);
     let lake = (preset == Preset::LakeTown).then(|| Lake::new(&mut Rng::new(seed, 0x1a4e)));
@@ -334,7 +337,7 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
         })
         .collect();
     Town {
-        preset,
+        preset: style,
         seed,
         size: S,
         highway_y: HWY_Y,
