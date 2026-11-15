@@ -271,11 +271,20 @@ fn smoke_comes_from_factories() {
         .iter()
         .position(|l| l.kind == us_gen::LotKind::Workshop);
     if let Some(w) = w {
+        // count the puffs over this workshop: the whole town may fill the puff budget
+        let c = t.lots[w].centre;
+        let over = |s: &Scene| {
+            s.instances()
+                .puffs
+                .iter()
+                .filter(|p| (p.pos[0] - c.x as f32).hypot(p.pos[1] - c.y as f32) < 45.0)
+                .count()
+        };
         s.set_lot(w, Some(4), LotState::Normal);
-        assert!(!s.instances().puffs.is_empty());
+        assert!(over(&s) > 0);
         s.set_lot(w, Some(4), LotState::Burned);
-        let before = s.instances().puffs.len();
+        let before = over(&s);
         s.set_lot(w, Some(4), LotState::Normal);
-        assert!(s.instances().puffs.len() > before);
+        assert!(over(&s) > before);
     }
 }
