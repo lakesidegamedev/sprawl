@@ -887,6 +887,43 @@ fn build_chunks(t: &Town, land: &Land) -> (TownData, Vec<Chunk>) {
         }
     }
 
+    // forest on mountainsides and along gorge rims
+    if let Some(rock) = land.rock() {
+        let mut rng = Rng::new(t.seed ^ 0x6f0e, 91);
+        let gorge = t.preset == us_gen::Preset::Gorge;
+        let step = if gorge { 15.0f32 } else { 19.0 };
+        let n = (land.size() / step) as i32;
+        for gx in 0..n {
+            for gy in 0..n {
+                let x = (gx as f32 + rng.range(0.1, 0.9)) * step;
+                let y = (gy as f32 + rng.range(0.1, 0.9)) * step;
+                let h = land.height(x, y);
+                let sl = land.slope(x, y);
+                let ok = if gorge {
+                    // the plateau within a short way of the edge
+                    h > 200.0
+                        && sl < 0.22
+                        && (0..8).any(|k| {
+                            let a = k as f32 * std::f32::consts::FRAC_PI_4;
+                            land.height(x + 70.0 * a.cos(), y + 70.0 * a.sin()) < h - 70.0
+                        })
+                } else {
+                    rock.forest_slope > 0.0
+                        && h > 62.0
+                        && h < rock.tree_line - 30.0
+                        && sl > 0.15
+                        && sl < rock.forest_slope - 0.1
+                };
+                if !ok || grid.clearance(pt(x as f64, y as f64)) < 8.0 {
+                    continue;
+                }
+                let (rad, ht) = (rng.range(2.6, 4.2), rng.range(9.0, 16.0));
+                let col = kit::tree_variant(rng.pick(&green), x, y);
+                raw.push((kit::tree(rad, ht, col), x, y, 0.0, h));
+            }
+        }
+    }
+
     // group into chunks, in chunk order
     let mut cells: BTreeMap<(i32, i32), Vec<usize>> = BTreeMap::new();
     for (pi, r) in raw.iter().enumerate() {

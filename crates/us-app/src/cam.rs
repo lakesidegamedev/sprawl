@@ -15,6 +15,9 @@ pub struct CamCtl {
     map: f32,
     /// Seconds left of a fly-to: the camera glides slowly instead of snapping to the goal.
     flying: f32,
+    /// Extra tilt that lifts the camera over a mountain in front of it (shown, goal).
+    lift: f32,
+    g_lift: f32,
 }
 
 const FOV: f32 = 24.0;
@@ -43,6 +46,8 @@ impl CamCtl {
             g_tilt: tilt,
             map,
             flying: 0.0,
+            lift: 0.0,
+            g_lift: 0.0,
         }
     }
 
@@ -140,6 +145,36 @@ impl CamCtl {
         self.dist += (self.g_dist - self.dist) * k;
         self.yaw += (self.g_yaw - self.yaw) * k;
         self.tilt += (self.g_tilt - self.tilt) * k;
+        self.lift += (self.g_lift - self.lift) * k;
+    }
+
+    /// On land with mountains: raise the viewing angle just enough that the line from the
+    /// target to the eye clears the ground, so the player sees the town and not a ridge in front
+    /// of the camera. Level land and gentle hills are left alone.
+    pub fn clear_of_terrain(&mut self, land: &us_render::Land) {
+        if land.rock().is_none() {
+            self.g_lift = 0.0;
+            return;
+        }
+        let yaw = self.g_yaw.to_radians();
+        let fwd = (yaw.sin(), yaw.cos());
+        let base = self.g_tilt;
+        let mut tilt = base;
+        while tilt < 84.0 {
+            let t = tilt.to_radians();
+            let (back, up) = (self.g_dist * t.cos(), self.g_dist * t.sin());
+            let clear = (1..=40).all(|k| {
+                let f = k as f32 / 40.0;
+                let x = self.g_target.x - fwd.0 * back * f;
+                let y = self.g_target.y - fwd.1 * back * f;
+                self.g_target.z + up * f > land.height(x, y) + 40.0
+            });
+            if clear {
+                break;
+            }
+            tilt += 2.0;
+        }
+        self.g_lift = (tilt - base).max(0.0);
     }
 
     pub fn camera(&self) -> Camera {
@@ -147,7 +182,7 @@ impl CamCtl {
             target: self.target,
             distance: self.dist,
             yaw_deg: self.yaw,
-            tilt_deg: self.tilt,
+            tilt_deg: (self.tilt + self.lift).min(88.0),
             fov_deg: FOV,
         }
     }

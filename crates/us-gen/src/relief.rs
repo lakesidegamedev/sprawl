@@ -114,10 +114,11 @@ fn gorge(seed: u64, river: &River, terrain: &Terrain, pad: &mut f64) -> Relief {
     // the south rim road swings round the head of the descent gully; the patches' edge only
     // makes room for the bench
     let south_cut = |x: f64| cut + bench_ext(gully, x) + 24.0;
-    let head_off =
-        (62.0 + gully.bench + gully.len * 0.985) * (1.0 + river.dy(gully.x0).powi(2)).sqrt() + 70.0;
+    let head_off = |x: f64| {
+        (62.0 + bench_ext(gully, x) + gully.len) * (1.0 + river.dy(x).powi(2)).sqrt() + 70.0
+    };
     let south_off = |x: f64| {
-        let around = head_off * smooth(0.0, 1.0, (700.0 - (x - gully.x0).abs()) / 340.0);
+        let around = head_off(x) * smooth(0.0, 1.0, (700.0 - (x - gully.x0).abs()) / 340.0);
         south_cut(x).max(around)
     };
     let north_off = |_x: f64| cut + 24.0;
@@ -153,12 +154,13 @@ fn gorge(seed: u64, river: &River, terrain: &Terrain, pad: &mut f64) -> Relief {
     roads.push((descent, RoadClass::Arterial));
     // the head joins the south rim road, which passes just beyond it
     roads.push((
-        vec![head, pt(gully.x0, river.y(gully.x0) - south_off(gully.x0))],
+        vec![head, pt(head.x, river.y(head.x) - south_off(head.x))],
         RoadClass::Arterial,
     ));
     let n = 24usize;
+    let reach = gully.fhw * 0.8 + 14.0;
     let xs: Vec<f64> = (0..=n)
-        .map(|i| gully.x0 + 190.0 * (2.0 * i as f64 / n as f64 - 1.0))
+        .map(|i| gully.x0 + reach * (2.0 * i as f64 / n as f64 - 1.0))
         .collect();
     let mut ring: Vec<Pt> = xs.iter().map(|&x| pt(x, river.y(x) - o_low(x))).collect();
     ring.extend(xs.iter().rev().map(|&x| pt(x, river.y(x) - o_up(x))));
@@ -174,7 +176,7 @@ fn gorge(seed: u64, river: &River, terrain: &Terrain, pad: &mut f64) -> Relief {
         .expect("a gorge has a tributary");
     let mut bans: Vec<Vec<Pt>> = Vec::new();
     for r in &g.ravines {
-        bans.push(ravine_ring(r, river, 36.0));
+        bans.push(ravine_ring(r, river, if r.linear { 90.0 } else { 36.0 }));
     }
     let rail_angle = (3.0 + Rng::new(seed, 0x7a11).uniform(-2.0, 2.0)).to_radians();
     let mut rails = Vec::new();
@@ -227,6 +229,40 @@ fn gorge(seed: u64, river: &River, terrain: &Terrain, pad: &mut f64) -> Relief {
 
 /// The ground a ravine takes, with a margin.
 fn ravine_ring(r: &Ravine, river: &River, margin: f64) -> Vec<Pt> {
+    if r.linear {
+        // the descent gully is measured from the river wherever it bends
+        let steps = 44usize;
+        let side_of = |sign: f64| -> Vec<Pt> {
+            (0..=steps)
+                .map(|i| {
+                    let t = -125.0 + (r.len + 215.0) * i as f64 / steps as f64;
+                    let s = (t / r.len).clamp(0.0, 1.0);
+                    let x = r.cx(t.max(0.0)) + sign * (r.hw * (1.0 - 0.45 * s) + margin);
+                    let m = river.dy(x);
+                    let k = (1.0 + m * m).sqrt();
+                    pt(x, river.y(x) + r.side * (62.0 + bench_ext(r, x) + t) * k)
+                })
+                .collect()
+        };
+        let at = |x: f64, t: f64| {
+            let m = river.dy(x);
+            let k = (1.0 + m * m).sqrt();
+            pt(x, river.y(x) + r.side * (62.0 + bench_ext(r, x) + t) * k)
+        };
+        // the head and the mouth follow the river too, not a straight chord
+        let across = |t: f64| -> Vec<Pt> {
+            let s = (t / r.len).clamp(0.0, 1.0);
+            let w = r.hw * (1.0 - 0.45 * s) + margin;
+            (1..12)
+                .map(|i| at(r.cx(t.max(0.0)) + w * (2.0 * i as f64 / 12.0 - 1.0), t))
+                .collect()
+        };
+        let mut ring = side_of(-1.0);
+        ring.extend(across(r.len + 90.0));
+        ring.extend(side_of(1.0).into_iter().rev());
+        ring.extend(across(-125.0).into_iter().rev());
+        return ring;
+    }
     let y_ref = river.y(r.x0);
     let foot = 62.0 + r.bench;
     let (y0, y1) = (

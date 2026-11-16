@@ -33,9 +33,9 @@ impl River {
     pub fn gorge(rng: &mut Rng) -> River {
         River {
             base: 2180.0 + rng.uniform(-80.0, 80.0),
-            a1: 200.0 * rng.uniform(0.85, 1.15),
+            a1: 290.0 * rng.uniform(0.85, 1.15),
             p1: rng.uniform(0.0, TAU),
-            a2: 46.0 * rng.uniform(0.8, 1.2),
+            a2: 72.0 * rng.uniform(0.8, 1.2),
             p2: rng.uniform(0.0, TAU),
         }
     }

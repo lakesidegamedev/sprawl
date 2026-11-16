@@ -1348,6 +1348,10 @@ fn join_stranded(
                         !point_in_ring(q, &wet)
                             && !relief.is_some_and(|r| r.forbids(q))
                             && all_idx.nearest(q, 3.0, None).is_none()
+                    }) && relief.is_none_or(|r| {
+                        // a long link must not cut across a ravine between its sample points
+                        let k = (h.dist / 15.0).ceil() as usize;
+                        (1..k).all(|i| !r.forbids(p.lerp(h.pt, i as f64 / k as f64)))
                     });
                     let ends_dry = !relief.is_some_and(|r| {
                         r.banned

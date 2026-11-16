@@ -37,6 +37,8 @@ struct Inner {
     max: f32,
     min: f32,
     rock: Option<crate::rock::RockLook>,
+    /// Roads cross deep gaps on a deck at rim height (the river gorge).
+    high_bridges: bool,
 }
 
 /// Height grid and water of one town. Cheap to clone.
@@ -74,6 +76,16 @@ impl Land {
         let data = t.terrain.heightfield(GRID);
         Land::from_grid(GRID, t.size as f32, data, t.water.clone())
             .with_rock(crate::rock::RockLook::of(t.preset))
+            .with_high_bridges(t.preset == us_gen::Preset::Gorge)
+    }
+
+    /// The same land where roads cross deep gaps on a high deck (or not).
+    pub fn with_high_bridges(&self, on: bool) -> Land {
+        let mut inner = (*self.inner).clone();
+        inner.high_bridges = on;
+        Land {
+            inner: Arc::new(inner),
+        }
     }
 
     /// The same land drawn with a rock look (or none).
@@ -107,6 +119,7 @@ impl Land {
             max,
             min,
             rock: None,
+            high_bridges: false,
         };
         let mut bodies = Vec::new();
         for ring in water {
@@ -329,6 +342,12 @@ impl Land {
         }
         let mut weight = vec![0.0f32; n];
         let mut deck = vec![0.0f32; n];
+        if self.inner.high_bridges {
+            let ground: Vec<f32> = pts.iter().map(|p| self.height_pt(*p)).collect();
+            let d = us_gen::bridges::high_decks(&ground, &cum);
+            weight = d.weight;
+            deck = d.z;
+        }
         if !self.inner.water.is_empty() && !self.is_flat() {
             // water crossings, with the level of the water they cross
             let wet: Vec<Option<f32>> = pts.iter().map(|p| self.water_at(*p)).collect();

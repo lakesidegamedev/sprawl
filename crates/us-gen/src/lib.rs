@@ -3,6 +3,7 @@
 //! `generate(preset, seed)` is deterministic on every platform: seeded SplitMix64 RNG, `libm`
 //! for transcendental functions, no hash-order dependence in any output.
 
+pub mod bridges;
 mod geom;
 mod index;
 mod junctions;

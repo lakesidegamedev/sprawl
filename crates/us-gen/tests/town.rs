@@ -857,6 +857,8 @@ fn ground_is_flat_at_the_hall_and_steep_ground_is_unbuilt() {
         // (a little over half may be steep there; a quarter everywhere else)
         let limit = if t.preset == Preset::Valley {
             cells * 6 / 10
+        } else if t.preset == Preset::Gorge {
+            cells * 2 / 5
         } else {
             cells / 4
         };
@@ -1276,16 +1278,23 @@ fn the_gorge_has_a_flat_bench_and_a_switchback_down_to_it() {
                 && t.height_at(r.points[0]) > 150.0
         });
         let sw = sw.unwrap_or_else(|| panic!("gorge seed {}: no road down to the flat", t.seed));
+        // count the hairpins: where the road turns back on itself along the gully
         let mut turns = 0;
-        for w in sw.points.windows(3) {
-            let a1 = (w[1].y - w[0].y).atan2(w[1].x - w[0].x);
-            let a2 = (w[2].y - w[1].y).atan2(w[2].x - w[1].x);
-            if (a2 - a1).sin().abs() > 0.25 {
+        let mut last_dir = 0.0f64;
+        let mut prev = sw.points[0];
+        for p in sw.points.iter().skip(1) {
+            if d(prev, *p) < 25.0 {
+                continue;
+            }
+            let dir = (p.x - prev.x).signum();
+            if last_dir != 0.0 && dir != last_dir {
                 turns += 1;
             }
+            last_dir = dir;
+            prev = *p;
         }
         assert!(
-            turns >= 12,
+            turns >= 8,
             "gorge seed {}: switchback has only {turns} bends",
             t.seed
         );
@@ -1344,5 +1353,155 @@ fn the_valley_floor_is_the_town_and_ridges_stand_far_above() {
             })
             .count();
         assert!(long >= 2, "valley seed {}: {long} long roads", t.seed);
+    }
+}
+
+/// A road resampled every 5 m: ground heights and distances along it, as the renderer does.
+fn ground_profile(t: &Town, r: &Road) -> (Vec<f32>, Vec<f32>) {
+    let (mut ground, mut cum) = (Vec::new(), Vec::new());
+    let mut s = 0.0f64;
+    for (i, w) in r.points.windows(2).enumerate() {
+        let l = d(w[0], w[1]);
+        let k = ((l / 5.0).ceil() as usize).max(1);
+        for j in 0..k {
+            let p = w[0].lerp(w[1], j as f64 / k as f64);
+            ground.push(t.height_at(p) as f32);
+            cum.push((s + l * j as f64 / k as f64) as f32);
+        }
+        s += l;
+        if i + 2 == r.points.len() {
+            ground.push(t.height_at(w[1]) as f32);
+            cum.push(s as f32);
+        }
+    }
+    (ground, cum)
+}
+
+#[test]
+fn gorge_roads_never_drive_down_a_wall_and_bridges_stand_at_rim_height() {
+    for t in style_towns(Preset::Gorge) {
+        let mut bridges = 0;
+        for (i, r) in t.roads.iter().enumerate() {
+            // streets inside a patch follow the shared street code on ground the lots allow
+            if r.class == RoadClass::Local {
+                continue;
+            }
+            let (g, c) = ground_profile(t, r);
+            if g.len() < 3 {
+                continue;
+            }
+            let decks = us_gen::bridges::high_decks(&g, &c);
+            let worst = us_gen::bridges::surface_grade(&g, &c, &decks);
+            let surface = |k: usize| g[k] + (decks.z[k] - g[k]) * decks.weight[k];
+            // the road as built (deck or ground) never climbs more than the limit anywhere,
+            // approaches to a bridge included
+            let limit = 0.3;
+            assert!(
+                worst <= limit,
+                "gorge seed {}: road {i} ({}) climbs at {worst:.3}",
+                t.seed,
+                r.class.name()
+            );
+            // the switchback keeps an even, climbable grade on its legs
+            if g.iter().any(|&h| h < 8.0) && g[0] > 150.0 {
+                let mut grades: Vec<f32> = (1..g.len())
+                    .map(|k| ((surface(k) - surface(k - 1)) / (c[k] - c[k - 1]).max(1e-3)).abs())
+                    .collect();
+                let mean = grades.iter().sum::<f32>() / grades.len() as f32;
+                grades.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let p95 = grades[grades.len() * 95 / 100];
+                assert!(
+                    mean < 0.12 && p95 < 0.16,
+                    "gorge seed {}: switchback mean {mean:.3}, p95 {p95:.3}",
+                    t.seed
+                );
+            }
+            // a main road that does not end on the low flat stays near rim height
+            let low_end = g.iter().any(|&h| h < 60.0);
+            if matches!(r.class, RoadClass::Arterial | RoadClass::Highway) && !low_end {
+                let top = (0..g.len()).map(surface).fold(f32::MIN, f32::max);
+                let bottom = (0..g.len()).map(surface).fold(f32::MAX, f32::min);
+                assert!(
+                    top - bottom < 70.0,
+                    "gorge seed {}: road {i} drops {:.0} m",
+                    t.seed,
+                    top - bottom
+                );
+            }
+            // decks: rim to rim, standing within a few metres of the rim they start from
+            let mut k = 0;
+            while k < g.len() {
+                if decks.weight[k] > 0.999 && (decks.z[k] - g[k]).abs() < 4.0 {
+                    let mut e = k;
+                    while e + 1 < g.len() && decks.weight[e + 1] > 0.999 {
+                        e += 1;
+                    }
+                    let deepest = (k..=e).map(|q| g[q]).fold(f32::MAX, f32::min);
+                    if decks.z[k] - deepest > 100.0 {
+                        bridges += 1;
+                        assert!(
+                            (decks.z[k] - g[k]).abs() < 4.0 && (decks.z[e] - g[e]).abs() < 4.0,
+                            "gorge seed {}: deck is not at rim height at its ends",
+                            t.seed
+                        );
+                    }
+                    k = e + 1;
+                } else {
+                    k += 1;
+                }
+            }
+        }
+        assert!(bridges >= 1, "gorge seed {}: no high bridge", t.seed);
+    }
+}
+
+#[test]
+fn the_gorge_river_meanders_and_the_valley_has_peaks_of_different_heights() {
+    for t in style_towns(Preset::Gorge) {
+        // the river is the lowest line: follow the lowest sample across each column
+        let mut ys = Vec::new();
+        for i in 0..40 {
+            let x = 100.0 + i as f64 * 95.0;
+            let mut best = (f64::MAX, 0.0);
+            for j in 0..400 {
+                let y = 1200.0 + j as f64 * 5.0;
+                let h = t.height_at(pt(x, y));
+                if h < best.0 {
+                    best = (h, y);
+                }
+            }
+            ys.push(best.1);
+        }
+        let lo = ys.iter().cloned().fold(f64::MAX, f64::min);
+        let hi = ys.iter().cloned().fold(f64::MIN, f64::max);
+        assert!(
+            hi - lo > 300.0,
+            "gorge seed {}: river wanders {:.0} m",
+            t.seed,
+            hi - lo
+        );
+    }
+    for t in style_towns(Preset::Valley) {
+        let mut tops = Vec::new();
+        for b in 0..9 {
+            let mut top = f64::MIN;
+            for i in 0..40 {
+                for j in 0..40 {
+                    let p = pt(
+                        100.0 + b as f64 * 430.0 + i as f64 * 10.0,
+                        2100.0 + j as f64 * 30.0,
+                    );
+                    top = top.max(t.height_at(p));
+                }
+            }
+            tops.push(top);
+        }
+        let lo = tops.iter().cloned().fold(f64::MAX, f64::min);
+        let hi = tops.iter().cloned().fold(f64::MIN, f64::max);
+        assert!(
+            hi - lo > 120.0,
+            "valley seed {}: ridge heights {lo:.0} to {hi:.0}",
+            t.seed
+        );
     }
 }

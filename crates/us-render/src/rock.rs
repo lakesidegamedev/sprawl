@@ -29,6 +29,11 @@ pub struct RockLook {
     pub winter_drop: f32,
     /// Height above which gentle slopes are bare rather than grass, metres.
     pub tree_line: f32,
+    /// Granite is drawn as irregular blocks and cracks rather than level strata.
+    pub fractured: bool,
+    /// Steepest slope (rise over run) that still carries forest below the tree line; 0 for no
+    /// forest.
+    pub forest_slope: f32,
 }
 
 const NONE: f32 = 1.0e6;
@@ -48,6 +53,8 @@ impl RockLook {
         snow_line: NONE,
         winter_drop: 0.0,
         tree_line: NONE,
+        fractured: false,
+        forest_slope: 0.0,
     };
 
     /// Cold grey granite with a snow line: the mountain valley.
@@ -64,6 +71,8 @@ impl RockLook {
         snow_line: 520.0,
         winter_drop: 220.0,
         tree_line: 400.0,
+        fractured: true,
+        forest_slope: 1.3,
     };
 
     /// The look of a town style, if it has one. Add a line here for a style with its own rock.
@@ -76,7 +85,7 @@ impl RockLook {
     }
 
     /// The eight rows the shader reads: four bands, talus, then (snow line, tree line, band
-    /// height, 1), then (snow rgb, winter drop). Row 7 is spare.
+    /// height, 1), then (snow rgb, winter drop). Row 7 is (fractured, forest slope, 0, 0).
     pub fn rows(&self) -> [[f32; 4]; 8] {
         let c = |c: Rgb| {
             [
@@ -99,7 +108,7 @@ impl RockLook {
                 self.snow[2] as f32 / 255.0,
                 self.winter_drop,
             ],
-            [0.0; 4],
+            [self.fractured as u8 as f32, self.forest_slope, 0.0, 0.0],
         ]
     }
 
@@ -117,6 +126,7 @@ pub enum Surface {
     Talus,
     Rock,
     Snow,
+    Forest,
 }
 
 /// Steepness (rise over run) from which ground is a rock face.
@@ -127,8 +137,14 @@ pub const TALUS_SLOPE: f32 = 0.45;
 impl RockLook {
     /// Classify ground at `height` metres with `slope` (rise over run) in summer.
     pub fn classify(&self, height: f32, slope: f32) -> Surface {
-        if height > self.snow_line && slope < ROCK_SLOPE + 0.35 {
+        if height > self.snow_line && slope < ROCK_SLOPE + 0.4 {
             Surface::Snow
+        } else if self.forest_slope > 0.0
+            && height < self.tree_line
+            && slope > 0.14
+            && slope < self.forest_slope
+        {
+            Surface::Forest
         } else if slope > ROCK_SLOPE {
             Surface::Rock
         } else if slope > TALUS_SLOPE {
@@ -150,7 +166,9 @@ mod tests {
         let v = RockLook::VALLEY;
         assert_eq!(v.classify(50.0, 0.05), Surface::Grass);
         assert_eq!(v.classify(50.0, 1.5), Surface::Rock);
-        assert_eq!(v.classify(50.0, 0.5), Surface::Talus);
+        assert_eq!(v.classify(50.0, 0.5), Surface::Forest);
+        assert_eq!(v.classify(450.0, 0.5), Surface::Talus);
+        assert_eq!(RockLook::GORGE.classify(50.0, 0.5), Surface::Talus);
         assert_eq!(v.classify(450.0, 0.1), Surface::Bare);
         assert_eq!(v.classify(700.0, 0.3), Surface::Snow);
         assert_eq!(v.classify(700.0, 2.0), Surface::Rock);

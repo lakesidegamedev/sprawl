@@ -608,12 +608,20 @@ impl Ground {
                 // the slab's underside seen from the banks
                 since_pier += l as f32;
                 let mid = a.lerp(b, 0.5);
-                if since_pier >= 26.0 && land.water_at(mid).is_some() {
+                let (mx, my) = (mid.x as f32, mid.y as f32);
+                let drop = bed.deck[i] - land.height(mx, my);
+                // tall piers where the deck stands high above the ground, further apart
+                let high = drop > 14.0;
+                let gap = if high { 48.0 } else { 26.0 };
+                if since_pier >= gap && (high || land.water_at(mid).is_some()) {
                     since_pier = 0.0;
                     let z = bed.deck[i] - 1.6;
-                    let (mx, my) = (mid.x as f32, mid.y as f32);
                     let g = land.height(mx, my) - 0.8;
-                    let (hl, hw) = (0.9f32, half * 0.8);
+                    let (hl, hw) = if high {
+                        (1.5f32, half * 0.8)
+                    } else {
+                        (0.9f32, half * 0.8)
+                    };
                     let (ux, uy) = (dx as f32, dy as f32);
                     let c = [
                         (mx - ux * hl - nx * hw, my - uy * hl - ny * hw),

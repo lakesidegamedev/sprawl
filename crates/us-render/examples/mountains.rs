@@ -74,6 +74,17 @@ fn main() {
                 break;
             }
         }
+        if preset == Preset::Gorge {
+            let sw = town.roads.iter().find(|r| {
+                town.height_at(*r.points.last().unwrap()) < 8.0
+                    && town.height_at(r.points[0]) > 150.0
+            });
+            if let Some(r) = sw {
+                let m = r.points[r.points.len() / 2];
+                views.push(("switch".into(), on(m.x, m.y), 700.0, 0.0, 40.0));
+                views.push(("switch-b".into(), on(m.x, m.y), 420.0, 170.0, 24.0));
+            }
+        }
         for (name, target, ext, yaw, pitch) in views {
             let cam = Camera::framing(target, ext, aspect, yaw, pitch);
             let style = Style {
