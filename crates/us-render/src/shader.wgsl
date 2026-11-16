@@ -479,6 +479,22 @@ fn terrain_look(world: vec3<f32>, n: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
         }
         return tc;
     }
+    if (forest_s <= 0.0 && s > 0.16) {
+        // a gorge slope too gentle to be rock: dry scrub with bare stone showing through, not a
+        // smooth green slide
+        let blotch = vnoise(world.xy / 8.0);
+        let grain = vnoise(world.xy / 2.6);
+        let bare = 0.42 + (s - 0.16) * 0.6;
+        if (blotch + (grain - 0.5) * 0.3 > 1.0 - bare) {
+            var tc = g.rock[4].rgb;
+            if (grain > 0.6) {
+                tc = tc * 0.88;
+            }
+            return tc;
+        }
+        let dry = vec3<f32>(112.0, 128.0, 70.0) / 255.0;
+        return mix(grass, dry, 0.72);
+    }
     if (z > tree_line) {
         // alpine meadow thinning to scree with height
         let up = clamp((z - tree_line) / 180.0, 0.0, 1.0);
