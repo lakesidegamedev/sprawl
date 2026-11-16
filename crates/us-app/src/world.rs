@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use us_gen::{LotKind, Preset, Pt, RoadClass, Town, Zone};
+use us_render::decor::{DRIVE_CLEAR, Streetscape, lot_pad};
 use us_render::levels::{building_site_for, burned};
 use us_render::live::{
     RoadDraw, abandoned, base_ground_far_on, base_ground_on, grown, roads_ground_state_ctx_on,
@@ -59,8 +60,69 @@ struct PrevRun {
     work: RunWork,
 }
 
+/// A street tree, planter or bench: placed once from the town, drawn while its street is open.
+struct Deco {
+    obj: Obj,
+    x: f32,
+    y: f32,
+    turn: f32,
+    floor: f32,
+    /// Planters and benches also need a finished building near.
+    plaza: bool,
+}
+
+/// Open road segments in a grid: "is a finished street within this far of a point".
+#[derive(Default)]
+struct OpenRoads {
+    cells: HashMap<(i32, i32), Vec<(Pt, Pt)>>,
+}
+
+impl OpenRoads {
+    fn new(sim: &Sim) -> OpenRoads {
+        let mut o = OpenRoads::default();
+        for (i, r) in sim.road_runs().iter().enumerate() {
+            if !sim.road_open(i) || matches!(r.class, RoadClass::Rail | RoadClass::Highway) {
+                continue;
+            }
+            for w in r.points.windows(2) {
+                let n = (w[0].dist(w[1]) / 16.0).ceil().max(1.0) as usize;
+                let mut last = None;
+                for k in 0..=n {
+                    let p = w[0].lerp(w[1], k as f64 / n as f64);
+                    let c = ((p.x / 32.0).floor() as i32, (p.y / 32.0).floor() as i32);
+                    if last != Some(c) {
+                        o.cells.entry(c).or_default().push((w[0], w[1]));
+                        last = Some(c);
+                    }
+                }
+            }
+        }
+        o
+    }
+
+    fn near(&self, x: f32, y: f32, r: f64) -> bool {
+        let p = us_gen::pt(x as f64, y as f64);
+        let (cx, cy) = ((p.x / 32.0).floor() as i32, (p.y / 32.0).floor() as i32);
+        (-1..=1).any(|dx| {
+            (-1..=1).any(|dy| {
+                self.cells
+                    .get(&(cx + dx, cy + dy))
+                    .is_some_and(|v| v.iter().any(|(a, b)| dist_seg(p, *a, *b) < r))
+            })
+        })
+    }
+}
+
 pub struct LiveScene {
     pub scene: Scene,
+    scape: Streetscape,
+    /// Street trees and downtown furniture by the cell they stand in.
+    decos: HashMap<Cell, Vec<Deco>>,
+    /// How many of a cell's decorations were drawn last time.
+    deco_drawn: HashMap<Cell, usize>,
+    open: OpenRoads,
+    /// Whether each road run was open when `open` was built.
+    open_flags: Vec<bool>,
     town: Arc<Town>,
     show_hall: bool,
     hall_theta: f32,
@@ -181,6 +243,12 @@ struct LotDraw {
     building: Obj,
     /// Tree models with their place in the lot (local, facing south).
     trees: Vec<(f32, f32, Obj)>,
+    /// Driveway, walk, lawn, shrubs or forecourt furniture, local to the lot.
+    yard: Option<Obj>,
+    /// Paving under the lot in downtown, industry and mall districts.
+    pad: Option<Obj>,
+    /// Where the driveway meets the street (world), which street trees keep clear of.
+    drive: Option<Pt>,
 }
 
 /// The model of one lot at a level, local to the lot, facing south.
@@ -217,7 +285,13 @@ fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8, density: f32) -
             }
         }
     }
-    LotDraw { building, trees }
+    LotDraw {
+        building,
+        trees,
+        yard: None,
+        pad: None,
+        drive: None,
+    }
 }
 
 /// The model to draw for a lot in its current look.
@@ -228,9 +302,21 @@ fn look_obj(
     l: &LotState,
     look: Look,
     density: f32,
+    ground: (&Streetscape, &Town),
 ) -> LotDraw {
     let level = if l.civic.is_some() { 1 } else { look.level };
     let mut d = lot_model(preset, seed, l, level, density);
+    // the grounds around a finished building, from the model as built
+    if l.civic.is_none() && matches!(look.state, 2 | 4) {
+        let (yard, drive) = ground.0.lot_yard(ground.1, l.src, &d.building);
+        d.yard = yard.map(|y| if look.state == 4 { faded(&y) } else { y });
+        d.drive = drive;
+    }
+    if matches!(look.state, 2..=4)
+        && let Some(a) = ground.1.additions.get(l.addition)
+    {
+        d.pad = lot_pad(a.zone, l.radius as f32);
+    }
     let mut rng = Rng::new(seed ^ 0xb0b0, i as u64);
     let mut dress = |o: &Obj| match look.state {
         1 => {
@@ -267,6 +353,17 @@ fn look_obj(
         }
     }
     d
+}
+
+/// A copy of a yard with its colours pulled toward grey: nobody tends it any more.
+fn faded(o: &Obj) -> Obj {
+    let mut o = o.clone();
+    for p in &mut o.polys {
+        let g = (p.color[0] as u32 + p.color[1] as u32 + p.color[2] as u32) / 3;
+        let m = |c: u8| ((c as u32 * 4 + g * 6) / 10) as u8;
+        p.color = [m(p.color[0]), m(p.color[1]), m(p.color[2])];
+    }
+    o
 }
 
 fn dist_seg(p: Pt, a: Pt, b: Pt) -> f64 {
@@ -426,8 +523,36 @@ impl LiveScene {
             &land,
             us_render::cover::Group::Base,
         ));
+        let scape = Streetscape::new(&town);
+        let mut decos: HashMap<Cell, Vec<Deco>> = HashMap::new();
+        for (plaza, list) in [
+            (false, scape.street_trees(&town, &land)),
+            (true, scape.plaza(&town, &land)),
+        ] {
+            for (obj, x, y, turn, floor) in list {
+                if land.wet_shelf(x, y) {
+                    continue;
+                }
+                decos
+                    .entry(cell_of(x as f64, y as f64))
+                    .or_default()
+                    .push(Deco {
+                        obj,
+                        x,
+                        y,
+                        turn,
+                        floor,
+                        plaza,
+                    });
+            }
+        }
         let mut ls = LiveScene {
             scene,
+            scape,
+            decos,
+            deco_drawn: HashMap::new(),
+            open: OpenRoads::default(),
+            open_flags: Vec::new(),
             town,
             show_hall,
             hall_theta,
@@ -474,8 +599,84 @@ impl LiveScene {
             ls.mark(c);
         }
         ls.rebuild_roads(sim, None);
+        ls.refresh_open(sim);
         ls.ensure_geometry(sim);
         ls
+    }
+
+    /// Follow which streets are open: street trees and downtown furniture appear along a street
+    /// when it opens, so the cells that hold them are redrawn.
+    fn refresh_open(&mut self, sim: &Sim) {
+        let flags: Vec<bool> = (0..sim.road_runs().len())
+            .map(|i| sim.road_open(i))
+            .collect();
+        if flags == self.open_flags {
+            return;
+        }
+        self.open_flags = flags;
+        self.open = OpenRoads::new(sim);
+        let cells: Vec<Cell> = self.decos.keys().copied().collect();
+        for c in cells {
+            let n = self.decos[&c]
+                .iter()
+                .filter(|d| self.deco_shown(sim, d))
+                .count();
+            if self.deco_drawn.get(&c).copied().unwrap_or(0) != n {
+                self.mark(c);
+            }
+        }
+    }
+
+    /// Whether a street tree or plaza piece is drawn now.
+    fn deco_shown(&self, sim: &Sim, d: &Deco) -> bool {
+        if !self.open.near(d.x, d.y, if d.plaza { 30.0 } else { 14.0 }) {
+            return false;
+        }
+        let here = cell_of(d.x as f64, d.y as f64);
+        if d.plaza {
+            // only beside a finished building
+            return self.nearby_lots(here).any(|i| {
+                self.look[i].state == 2 && sim.lots()[i].pos.dist(us_gen::pt(d.x as f64, d.y as f64)) < 35.0
+            });
+        }
+        // a driveway of a built lot keeps trees off it
+        let p = us_gen::pt(d.x as f64, d.y as f64);
+        !self.nearby_lots(here).any(|i| {
+            matches!(&self.objs[i], Some((_, _, lw)) if lw.drive.is_some_and(|m| m.dist(p) < DRIVE_CLEAR))
+        })
+    }
+
+    /// A lot near these cells was finished or lost: redraw the cells whose downtown furniture
+    /// shows or hides because of it.
+    fn refresh_plazas(&mut self, sim: &Sim, c: Cell) {
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                let cc = (c.0 + dx, c.1 + dy);
+                let Some(list) = self.decos.get(&cc) else {
+                    continue;
+                };
+                if !list.iter().any(|d| d.plaza) {
+                    continue;
+                }
+                let n = list.iter().filter(|d| self.deco_shown(sim, d)).count();
+                if self.deco_drawn.get(&cc).copied().unwrap_or(0) != n {
+                    self.mark(cc);
+                }
+            }
+        }
+    }
+
+    /// Lots in a cell and its eight neighbours.
+    fn nearby_lots(&self, c: Cell) -> impl Iterator<Item = usize> + '_ {
+        (-1..=1).flat_map(move |dx| {
+            (-1..=1).flat_map(move |dy| {
+                self.cell_lots
+                    .get(&(c.0 + dx, c.1 + dy))
+                    .into_iter()
+                    .flatten()
+                    .copied()
+            })
+        })
     }
 
     /// Tell the scene where lots and roads are, so map views, traffic and smoke work. Lots and
@@ -1007,6 +1208,7 @@ impl LiveScene {
             self.parked.push(true);
         }
         self.sync_roads(sim);
+        self.refresh_open(sim);
         let day = sim.day;
         for (i, l) in sim.lots().iter().enumerate() {
             let k = look_of(l, day, l.fire.is_some() && sim.is_burning(i));
@@ -1016,6 +1218,9 @@ impl LiveScene {
                 let c = cell_of(l.pos.x, l.pos.y);
                 if self.dirty.insert(c) {
                     self.queue.push_back(c);
+                }
+                if (was.state == 2) != (k.state == 2) {
+                    self.refresh_plazas(sim, c);
                 }
                 let gone = matches!(l.phase, Phase::Hidden | Phase::Cleared { .. });
                 if gone != self.parked[i] {
@@ -1078,7 +1283,19 @@ impl LiveScene {
                 let r = l.radius as u16;
                 if !matches!(&self.objs[i], Some((lk, lr, _)) if *lk == k && *lr == r) {
                     let density = sim.lot_density(i) as f32;
-                    self.objs[i] = Some((k, r, look_obj(self.town.preset, seed, i, l, k, density)));
+                    self.objs[i] = Some((
+                        k,
+                        r,
+                        look_obj(
+                            self.town.preset,
+                            seed,
+                            i,
+                            l,
+                            k,
+                            density,
+                            (&self.scape, &self.town),
+                        ),
+                    ));
                 }
                 let draw = &self.objs[i].as_ref().unwrap().2;
                 let (x, y, th) = (l.pos.x as f32, l.pos.y as f32, l.facing as f32);
@@ -1087,6 +1304,13 @@ impl LiveScene {
                     land: &self.land,
                     z: self.land.sit_height(x, y),
                 });
+                for ground in [&draw.pad, &draw.yard].into_iter().flatten() {
+                    let sit = hills.then(|| Sit {
+                        land: &self.land,
+                        z: self.land.sit_height(x, y),
+                    });
+                    ground.emit_on(&mut mesh, &mut next_id, x, y, th, 1.0, sit);
+                }
                 draw.building
                     .emit_on(&mut mesh, &mut next_id, x, y, th, 1.0, sit);
                 let (st, ct) = (th.sin(), th.cos());
@@ -1103,6 +1327,22 @@ impl LiveScene {
                 }
             }
         }
+        let mut shown = 0;
+        if let Some(list) = self.decos.get(&cell) {
+            for d in list.iter().filter(|d| self.deco_shown(sim, d)) {
+                let sit = (!self.land.is_flat()).then(|| Sit {
+                    land: &self.land,
+                    z: d.floor,
+                });
+                d.obj
+                    .emit_on(&mut mesh, &mut next_id, d.x, d.y, d.turn, 1.0, sit);
+                shown += 1;
+                if next_id > base + IDS_PER_CELL - 200 {
+                    next_id = base;
+                }
+            }
+        }
+        self.deco_drawn.insert(cell, shown);
         let lo = Vec3::new(
             cell.0 as f32 * CELL - 60.0,
             cell.1 as f32 * CELL - 60.0,

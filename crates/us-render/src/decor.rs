@@ -862,6 +862,99 @@ fn plaza(t: &Town, land: &Land, roads: &Roads, circles: &Circles, out: &mut Vec<
     }
 }
 
+/// The parts of the streetscape the running game places one lot or one street at a time, so a
+/// growing town gets its trees and yards as things open and get built. Placement is the same as
+/// `build`: the same seeds, the same rules.
+pub struct Streetscape {
+    roads: Roads,
+    core: Core,
+}
+
+impl Streetscape {
+    pub fn new(t: &Town) -> Streetscape {
+        Streetscape {
+            roads: Roads::new(t),
+            core: Core::new(t),
+        }
+    }
+
+    /// The grounds of lot `i` of the town around its model `obj` (driveway, walk, lawn bands,
+    /// shrubs for houses; paving, planters and furniture for shops, offices and depots). The
+    /// result is local to the lot (facing south, like the model). Also the point a driveway
+    /// meets the street, which street trees keep clear of.
+    pub fn lot_yard(&self, t: &Town, i: usize, obj: &Obj) -> (Option<Obj>, Option<Pt>) {
+        let Some(lot) = t.lots.get(i) else {
+            return (None, None);
+        };
+        let cx = Ctx {
+            roads: &self.roads,
+            core: &self.core,
+        };
+        let mut drives = Vec::new();
+        let yard = match lot.kind {
+            LotKind::House | LotKind::Row => house_yard(lot, i, obj, &cx, &mut drives),
+            LotKind::Shop
+            | LotKind::FastFood
+            | LotKind::Office
+            | LotKind::Apartments
+            | LotKind::Warehouse
+            | LotKind::Workshop
+            | LotKind::Gas => forecourt(lot, i, obj, &cx),
+            _ => None,
+        };
+        (yard, drives.first().copied())
+    }
+
+    /// Every street tree of the town, as `build` places them but without the driveway check
+    /// (the game drops a tree whose spot a built lot's driveway took).
+    pub fn street_trees(&self, t: &Town, land: &Land) -> Vec<Placed> {
+        let circles = Circles::new(t);
+        let mut out = Vec::new();
+        street_trees(t, land, &self.roads, &circles, &self.core, &[], &mut out);
+        out
+    }
+
+    /// Planters and benches in open downtown ground.
+    pub fn plaza(&self, t: &Town, land: &Land) -> Vec<Placed> {
+        let circles = Circles::new(t);
+        let mut out = Vec::new();
+        plaza(t, land, &self.roads, &circles, &mut out);
+        out
+    }
+}
+
+/// The paved ground under one built lot in a downtown, industrial or mall district: a pad the
+/// size of the lot, so land that is not built on stays natural. Local to the lot.
+pub fn lot_pad(zone: Zone, r: f32) -> Option<Obj> {
+    use crate::scene::{PAVING_CORE, PAVING_INDUSTRY, PAVING_MALL};
+    let base = match zone {
+        Zone::Core => PAVING_CORE,
+        Zone::Industry => PAVING_INDUSTRY,
+        Zone::Mall => PAVING_MALL,
+        _ => return None,
+    };
+    let h = r * 0.92;
+    let mut o = Obj::new();
+    quad(&mut o, -h, -h, h, h, 0.03, base);
+    if zone == Zone::Core {
+        // paving bands: darker squares in a checker
+        let dark = shade(base, 0.93);
+        let n = (2.0 * h / 3.5).ceil() as i32;
+        for ix in 0..n {
+            for iy in 0..n {
+                if (ix + iy) & 1 == 1 {
+                    let (x0, y0) = (-h + ix as f32 * 3.5, -h + iy as f32 * 3.5);
+                    quad(&mut o, x0, y0, (x0 + 3.5).min(h), (y0 + 3.5).min(h), 0.034, dark);
+                }
+            }
+        }
+    }
+    Some(o)
+}
+
+/// How close a driveway keeps street trees away, metres.
+pub const DRIVE_CLEAR: f64 = 3.4;
+
 /// Trees along the streets and the grounds of the lots. `lots` are the lot models as built.
 pub(crate) fn build(t: &Town, land: &Land, lots: &[&Obj]) -> Vec<Placed> {
     let roads = Roads::new(t);

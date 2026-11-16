@@ -12,7 +12,7 @@ mod calendar;
 mod camera;
 pub mod civic;
 pub mod cover;
-mod decor;
+pub mod decor;
 mod detail;
 pub mod emergency;
 mod facade;

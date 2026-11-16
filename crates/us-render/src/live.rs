@@ -201,7 +201,10 @@ pub fn zone_ground(t: &Town, index: usize) -> Mesh {
 pub fn zone_ground_on(land: &Land, t: &Town, index: usize) -> Mesh {
     let mut g = Ground::on(land);
     let a = &t.additions[index];
-    if let Some(c) = zone_colour_in(t.preset, a.zone, a.pattern, t.seed, index) {
+    // downtown, industry and malls are not paved over as a slab: the land stays natural and each
+    // building gets its own paving (`decor::lot_pad`) when it is built
+    let slab = !matches!(a.zone, Zone::Core | Zone::Industry | Zone::Mall);
+    if let Some(c) = zone_colour_in(t.preset, a.zone, a.pattern, t.seed, index).filter(|_| slab) {
         g.polygon(&a.polygon, layer::ZONE, c);
     }
     if a.zone == Zone::Park && a.pattern == Pattern::Park {
