@@ -468,7 +468,8 @@ impl Ground {
                 (Some(b), Some(land)) => {
                     let land = land.clone();
                     let top = b.z(&land, i, v[0], v[1]) + z;
-                    let up = b.weight[i] > 0.5;
+                    // roads on mountain land are cut level into the slope: lit as flat
+                    let up = b.weight[i] > 0.5 || land.rock().is_some();
                     let nrm = if up {
                         [0.0, 0.0, 1.0]
                     } else {

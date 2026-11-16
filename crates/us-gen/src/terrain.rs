@@ -131,7 +131,7 @@ fn fillet(a: (f64, f64), b: (f64, f64), c: (f64, f64), r: f64) -> Vec<(f64, f64)
     let (u2, l2) = unit(b, c);
     let cosw = (u1.0 * u2.0 + u1.1 * u2.1).clamp(-1.0, 1.0);
     let theta = libm::acos(cosw);
-    if theta < 0.05 || theta > 3.1 {
+    if !(0.05..=3.1).contains(&theta) {
         return vec![b];
     }
     let half = theta * 0.5;
