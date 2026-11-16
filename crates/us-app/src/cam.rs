@@ -59,6 +59,12 @@ impl CamCtl {
         self.flying = 1.2;
     }
 
+    /// Turn the camera goal to `yaw` degrees and tilt it to `tilt` (screenshots).
+    pub fn set_angle(&mut self, yaw: f32, tilt: f32) {
+        self.g_yaw = yaw;
+        self.g_tilt = tilt;
+    }
+
     /// Keep the camera's target on the ground under it: `z` is the ground height there.
     pub fn follow_ground(&mut self, z: f32) {
         self.g_target.z = z;

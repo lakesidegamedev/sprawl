@@ -727,6 +727,13 @@ impl Game {
             let (k, v) = tok.split_once(':').unwrap_or((tok, ""));
             let n = v.parse::<usize>().unwrap_or(0);
             match k {
+                "clean" => {
+                    // a clear picture: no panels and no goal card
+                    self.close_sheets();
+                    self.sim.dismiss_goals();
+                    self.ui.goals.open = false;
+                }
+                "low" => self.cam.set_angle(n as f32, 18.0),
                 "levers" => self.ui.levers_open = true,
                 "budget" => self.ui.budget_open = true,
                 "loans" => self.ui.loans_open = true,
