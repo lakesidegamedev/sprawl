@@ -29,7 +29,9 @@ fn smooth(a: f64, b: f64, x: f64) -> f64 {
 /// A ring from two curves over x: `lo(x)` below `hi(x)`.
 fn ring_between(lo: impl Fn(f64) -> f64, hi: impl Fn(f64) -> f64, x0: f64, x1: f64) -> Vec<Pt> {
     let n = (((x1 - x0) / 20.0).ceil() as usize).max(2);
-    let xs: Vec<f64> = (0..=n).map(|i| x0 + (x1 - x0) * i as f64 / n as f64).collect();
+    let xs: Vec<f64> = (0..=n)
+        .map(|i| x0 + (x1 - x0) * i as f64 / n as f64)
+        .collect();
     let mut ring: Vec<Pt> = xs.iter().map(|&x| pt(x, lo(x))).collect();
     ring.extend(xs.iter().rev().map(|&x| pt(x, hi(x))));
     ring
@@ -38,7 +40,9 @@ fn ring_between(lo: impl Fn(f64) -> f64, hi: impl Fn(f64) -> f64, x0: f64, x1: f
 /// A strip along a curve x = f(y) between y0 and y1, `half` metres each side.
 fn strip_along_y(f: impl Fn(f64) -> f64, y0: f64, y1: f64, half: impl Fn(f64) -> f64) -> Vec<Pt> {
     let n = (((y1 - y0).abs() / 20.0).ceil() as usize).max(2);
-    let ys: Vec<f64> = (0..=n).map(|i| y0 + (y1 - y0) * i as f64 / n as f64).collect();
+    let ys: Vec<f64> = (0..=n)
+        .map(|i| y0 + (y1 - y0) * i as f64 / n as f64)
+        .collect();
     let mut ring: Vec<Pt> = ys.iter().map(|&y| pt(f(y) - half(y), y)).collect();
     ring.extend(ys.iter().rev().map(|&y| pt(f(y) + half(y), y)));
     ring
@@ -110,7 +114,8 @@ fn gorge(seed: u64, river: &River, terrain: &Terrain, pad: &mut f64) -> Relief {
     // the south rim road swings round the head of the descent gully; the patches' edge only
     // makes room for the bench
     let south_cut = |x: f64| cut + bench_ext(gully, x) + 24.0;
-    let head_off = (62.0 + gully.bench + gully.len * 0.985) * (1.0 + river.dy(gully.x0).powi(2)).sqrt() + 70.0;
+    let head_off =
+        (62.0 + gully.bench + gully.len * 0.985) * (1.0 + river.dy(gully.x0).powi(2)).sqrt() + 70.0;
     let south_off = |x: f64| {
         let around = head_off * smooth(0.0, 1.0, (700.0 - (x - gully.x0).abs()) / 340.0);
         south_cut(x).max(around)
@@ -192,7 +197,12 @@ fn gorge(seed: u64, river: &River, terrain: &Terrain, pad: &mut f64) -> Relief {
 
     // land that may carry a town: the two rims, and the flat bench at the foot of the gully
     let lo_far = |x: f64| river.y(x) - 4200.0;
-    let south = ring_between(lo_far, |x| river.y(x) - south_cut(x) + 14.0, -10.0, S + 10.0);
+    let south = ring_between(
+        lo_far,
+        |x| river.y(x) - south_cut(x) + 14.0,
+        -10.0,
+        S + 10.0,
+    );
     let north = ring_between(
         |x| river.y(x) + north_off(x) - 14.0,
         |x| river.y(x) + 4200.0,

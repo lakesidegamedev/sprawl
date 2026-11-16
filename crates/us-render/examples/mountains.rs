@@ -41,9 +41,27 @@ fn main() {
         views.push(("whole-a".into(), mid, 4200.0, 20.0, 38.0));
         views.push(("whole-b".into(), mid, 4200.0, 200.0, 30.0));
         views.push(("whole-c".into(), mid, 4200.0, 110.0, 24.0));
-        views.push(("town".into(), on(town.hall.x, town.hall.y), 1900.0, 200.0, 36.0));
-        views.push(("town-b".into(), on(town.hall.x, town.hall.y), 1900.0, 20.0, 36.0));
-        views.push(("town-low".into(), on(town.hall.x, town.hall.y), 1500.0, 160.0, 14.0));
+        views.push((
+            "town".into(),
+            on(town.hall.x, town.hall.y),
+            1900.0,
+            200.0,
+            36.0,
+        ));
+        views.push((
+            "town-b".into(),
+            on(town.hall.x, town.hall.y),
+            1900.0,
+            20.0,
+            36.0,
+        ));
+        views.push((
+            "town-low".into(),
+            on(town.hall.x, town.hall.y),
+            1500.0,
+            160.0,
+            14.0,
+        ));
         for road in &town.roads {
             let bed = land.bed(&road.points);
             if let Some(&(a, b)) = bed.spans().first() {

@@ -1349,8 +1349,11 @@ fn join_stranded(
                             && !relief.is_some_and(|r| r.forbids(q))
                             && all_idx.nearest(q, 3.0, None).is_none()
                     });
-                    let ends_dry = !relief
-                        .is_some_and(|r| r.banned.iter().any(|z| point_in_ring(p, z) || point_in_ring(h.pt, z)));
+                    let ends_dry = !relief.is_some_and(|r| {
+                        r.banned
+                            .iter()
+                            .any(|z| point_in_ring(p, z) || point_in_ring(h.pt, z))
+                    });
                     if dry && ends_dry {
                         best = Some((h.dist, p, h.pt));
                     }

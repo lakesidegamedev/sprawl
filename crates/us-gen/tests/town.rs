@@ -1159,7 +1159,11 @@ fn climbs_on_the_ground(t: &Town, r: &Road) -> Vec<f64> {
         .collect();
     // the abutments at both ends of a span count as part of it
     let near_span: Vec<bool> = (0..n)
-        .map(|i| carried[i.saturating_sub(3)..(i + 4).min(n)].iter().any(|&c| c))
+        .map(|i| {
+            carried[i.saturating_sub(3)..(i + 4).min(n)]
+                .iter()
+                .any(|&c| c)
+        })
         .collect();
     let mut grades = Vec::new();
     // grade over 30 m: a hairpin may have a short steeper bend
@@ -1211,7 +1215,12 @@ fn the_gorge_is_deep_and_the_main_road_crosses_it_on_a_bridge() {
                 hi = hi.max(h);
             }
         }
-        assert!(hi - lo > 280.0, "gorge seed {}: only {:.0} m deep", t.seed, hi - lo);
+        assert!(
+            hi - lo > 280.0,
+            "gorge seed {}: only {:.0} m deep",
+            t.seed,
+            hi - lo
+        );
         // a road that goes down into the gorge and up again is carried over it
         let spans = t
             .roads
@@ -1237,7 +1246,11 @@ fn the_gorge_is_deep_and_the_main_road_crosses_it_on_a_bridge() {
                 })
             })
             .count();
-        assert!(spans >= 2, "gorge seed {}: {spans} roads span a gorge", t.seed);
+        assert!(
+            spans >= 2,
+            "gorge seed {}: {spans} roads span a gorge",
+            t.seed
+        );
     }
 }
 
@@ -1245,8 +1258,17 @@ fn the_gorge_is_deep_and_the_main_road_crosses_it_on_a_bridge() {
 fn the_gorge_has_a_flat_bench_and_a_switchback_down_to_it() {
     for t in style_towns(Preset::Gorge) {
         // lots on the bench: low ground, a few hundred metres above nothing
-        let low: Vec<&us_gen::Lot> = t.lots.iter().filter(|l| t.height_at(l.centre) < 8.0).collect();
-        assert!(low.len() >= 20, "gorge seed {}: {} lots on the riverside flat", t.seed, low.len());
+        let low: Vec<&us_gen::Lot> = t
+            .lots
+            .iter()
+            .filter(|l| t.height_at(l.centre) < 8.0)
+            .collect();
+        assert!(
+            low.len() >= 20,
+            "gorge seed {}: {} lots on the riverside flat",
+            t.seed,
+            low.len()
+        );
         // the switchback is a long road with many turns that ends on the flat
         let sw = t.roads.iter().find(|r| {
             r.class == RoadClass::Arterial
@@ -1262,16 +1284,28 @@ fn the_gorge_has_a_flat_bench_and_a_switchback_down_to_it() {
                 turns += 1;
             }
         }
-        assert!(turns >= 12, "gorge seed {}: switchback has only {turns} bends", t.seed);
+        assert!(
+            turns >= 12,
+            "gorge seed {}: switchback has only {turns} bends",
+            t.seed
+        );
     }
 }
 
 #[test]
 fn floods_reach_only_the_low_flat_of_a_gorge() {
     for t in style_towns(Preset::Gorge) {
-        let near_water: usize = t.lots.iter().filter(|l| t.height_at(l.centre) < 12.0).count();
+        let near_water: usize = t
+            .lots
+            .iter()
+            .filter(|l| t.height_at(l.centre) < 12.0)
+            .count();
         let all = t.lots.len();
-        assert!(near_water * 20 < all, "gorge seed {}: {near_water} of {all} lots on the floor", t.seed);
+        assert!(
+            near_water * 20 < all,
+            "gorge seed {}: {near_water} of {all} lots on the floor",
+            t.seed
+        );
     }
 }
 
@@ -1285,14 +1319,29 @@ fn the_valley_floor_is_the_town_and_ridges_stand_far_above() {
             }
         }
         assert!(hi > 600.0, "valley seed {}: peaks only {hi:.0} m", t.seed);
-        let low = t.lots.iter().filter(|l| t.height_at(l.centre) < 90.0).count();
-        assert!(low * 10 > t.lots.len() * 9, "valley seed {}: lots up the slopes", t.seed);
-        assert!(t.lots.len() > 3500, "valley seed {}: only {} lots", t.seed, t.lots.len());
+        let low = t
+            .lots
+            .iter()
+            .filter(|l| t.height_at(l.centre) < 90.0)
+            .count();
+        assert!(
+            low * 10 > t.lots.len() * 9,
+            "valley seed {}: lots up the slopes",
+            t.seed
+        );
+        assert!(
+            t.lots.len() > 3500,
+            "valley seed {}: only {} lots",
+            t.seed,
+            t.lots.len()
+        );
         // a road runs the length of the valley, and one goes up each side valley
         let long = t
             .roads
             .iter()
-            .filter(|r| r.class == RoadClass::Arterial && d(r.points[0], *r.points.last().unwrap()) > 3500.0)
+            .filter(|r| {
+                r.class == RoadClass::Arterial && d(r.points[0], *r.points.last().unwrap()) > 3500.0
+            })
             .count();
         assert!(long >= 2, "valley seed {}: {long} long roads", t.seed);
     }

@@ -78,7 +78,14 @@ impl RockLook {
     /// The eight rows the shader reads: four bands, talus, then (snow line, tree line, band
     /// height, 1), then (snow rgb, winter drop). Row 7 is spare.
     pub fn rows(&self) -> [[f32; 4]; 8] {
-        let c = |c: Rgb| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 0.0];
+        let c = |c: Rgb| {
+            [
+                c[0] as f32 / 255.0,
+                c[1] as f32 / 255.0,
+                c[2] as f32 / 255.0,
+                0.0,
+            ]
+        };
         [
             c(self.bands[0]),
             c(self.bands[1]),

@@ -1,10 +1,10 @@
 //! A deterministic heightfield: flat ground round the town hall and along the highway, a gentle
 //! valley with flat floor for the river, hills further out. Pure function of the seed.
 
+use crate::Preset;
 use crate::geom::{Pt, atan2, cos, pt, sin};
 use crate::rng::Rng;
 use crate::world::{HALL, HWY_Y, River, S};
-use crate::Preset;
 
 const WAVES: usize = 6;
 
@@ -164,7 +164,11 @@ impl Terrain {
                     len,
                     hw,
                     fhw: 22.0,
-                    wob: (rng.uniform(25.0, 70.0), rng.uniform(260.0, 420.0), rng.uniform(0.0, 6.3)),
+                    wob: (
+                        rng.uniform(25.0, 70.0),
+                        rng.uniform(260.0, 420.0),
+                        rng.uniform(0.0, 6.3),
+                    ),
                     linear: false,
                     reach: 1.0,
                     bench: 0.0,
@@ -193,7 +197,11 @@ impl Terrain {
                     len: 2700.0,
                     hw: 190.0,
                     fhw: 46.0,
-                    wob: (rng.uniform(60.0, 110.0), rng.uniform(520.0, 700.0), rng.uniform(0.0, 6.3)),
+                    wob: (
+                        rng.uniform(60.0, 110.0),
+                        rng.uniform(520.0, 700.0),
+                        rng.uniform(0.0, 6.3),
+                    ),
                     linear: false,
                     reach: 0.4,
                     bench: 0.0,
@@ -227,7 +235,10 @@ impl Terrain {
                         let n = (((w[1].0 - w[0].0).abs() / 22.0).ceil() as usize).max(2);
                         for j in 0..n {
                             let u = j as f64 / n as f64;
-                            pts.push(world(w[0].0 + (w[1].0 - w[0].0) * u, w[0].1 + (w[1].1 - w[0].1) * u));
+                            pts.push(world(
+                                w[0].0 + (w[1].0 - w[0].0) * u,
+                                w[0].1 + (w[1].1 - w[0].1) * u,
+                            ));
                         }
                         if i + 2 == cs.len() {
                             pts.push(world(w[1].0, w[1].1));
@@ -319,16 +330,16 @@ impl Terrain {
         let xc = x.clamp(0.0, S);
         let dy = y - self.river.y(xc);
         let m = self.river.dy(xc);
-        (dy.abs() / (1.0 + m * m).sqrt(), if dy < 0.0 { -1.0 } else { 1.0 })
+        (
+            dy.abs() / (1.0 + m * m).sqrt(),
+            if dy < 0.0 { -1.0 } else { 1.0 },
+        )
     }
 
     fn gorge_height(&self, g: &Gorge, x: f64, y: f64) -> f64 {
         let (d, side) = self.river_dist(x, y);
         let d_hall = ((x - HALL.x).powi(2) + (y - HALL.y).powi(2)).sqrt();
-        let rimw = g.rim
-            * (1.0
-                + 0.2 * sin(x / 430.0 + g.ph[0])
-                + 0.1 * sin(x / 190.0 + g.ph[1]));
+        let rimw = g.rim * (1.0 + 0.2 * sin(x / 430.0 + g.ph[0]) + 0.1 * sin(x / 190.0 + g.ph[1]));
         // the plateau: level near the lip, gentle hills further back
         let mask = smooth(300.0, 900.0, d_hall)
             * smooth(HWY_Y + 60.0, HWY_Y + 420.0, y)
@@ -421,9 +432,14 @@ impl Terrain {
         let mask_out = smooth(HWY_Y + 40.0, HWY_Y + 260.0, y) * smooth(fl + 600.0, fl + 1100.0, d);
         // the valley floor is level and gently rolling away from the river
         let mask_floor = 0.22 * smooth(110.0, 420.0, d) * smooth(300.0, 800.0, d_hall);
-        let mut ground = low + hills * (mask_out * 0.6 + mask_floor * (1.0 - smooth(fl, fl + 80.0, d)));
+        let mut ground =
+            low + hills * (mask_out * 0.6 + mask_floor * (1.0 - smooth(fl, fl + 80.0, d)));
         // the ridges: crest distance differs by side
-        let (crest, back) = if side < 0.0 { (500.0, 380.0) } else { (640.0, 560.0) };
+        let (crest, back) = if side < 0.0 {
+            (500.0, 380.0)
+        } else {
+            (640.0, 560.0)
+        };
         let crest = crest * (1.0 + 0.12 * sin(x / 700.0 + v.ph[2]));
         let along = 0.74 + 0.26 * sin(x / 410.0 + v.ph[3]) * sin(x / 1130.0 + v.ph[0]);
         let ridged = 1.0 - (sin(x / 150.0 + v.ph[1] + 0.5 * sin(y / 170.0))).abs();
