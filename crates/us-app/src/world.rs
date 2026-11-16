@@ -1783,6 +1783,30 @@ mod tests {
         }
     }
 
+    /// A finished downtown lot far from any open street gets a footpath, and lots lose it when
+    /// they stop standing; every piece is short enough to belong to one chunk.
+    #[test]
+    fn far_lots_get_footpaths() {
+        let town = Arc::new(generate(Preset::LakeTown, 3));
+        let hall = hall_sites(&town)[0];
+        let mut sim = Sim::new(&town, hall, 1);
+        let mut live = LiveScene::new(town, &sim, true);
+        for _ in 0..900 {
+            sim.step_day();
+            live.sync(&mut sim, 1.0e9);
+        }
+        assert!(!live.square_tiles.is_empty(), "the square has paving");
+        assert!(!live.paths.is_empty(), "some lot is far from a street");
+        for (i, pieces) in &live.paths {
+            assert_eq!(live.look[*i].state, 2, "only finished lots have a path");
+            for p in pieces {
+                assert_eq!(p.cell, cell_of(p.x as f64, p.y as f64));
+                let f = p.obj.footprint();
+                assert!(f[2] - f[0] < 60.0 && f[3] - f[1] < 60.0);
+            }
+        }
+    }
+
     /// A widened street shows as roadworks that finish; upgrades and fires change a lot's look.
     #[test]
     fn scene_follows_roads_and_lot_looks() {
