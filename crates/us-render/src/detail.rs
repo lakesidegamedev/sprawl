@@ -89,6 +89,7 @@ pub fn finish(o: &mut Obj) {
     for (pts, col, shadow) in add {
         o.poly(&pts, col, shadow, false, false);
     }
+    crate::facade::dress(o);
 }
 
 trait MaxLum {

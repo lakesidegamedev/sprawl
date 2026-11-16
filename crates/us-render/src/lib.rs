@@ -13,6 +13,7 @@ mod camera;
 pub mod civic;
 mod detail;
 pub mod emergency;
+mod facade;
 pub mod fleet;
 pub mod ground;
 pub mod instances;

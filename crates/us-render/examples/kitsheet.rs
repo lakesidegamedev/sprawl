@@ -54,7 +54,10 @@ fn main() {
             for i in 0..cols * rows {
                 let (cx, cy) = ((i % cols) as f32, (i / cols) as f32);
                 let mut rng = Rng::new(0x5ee7 + i as u64 * 17 + level as u64, kind as u64 + 3);
-                let o = build_lot_level_in(region, kind, level, &mut rng);
+                let o = us_render::kit::fit_to_lot(
+                    build_lot_level_in(region, kind, level, &mut rng),
+                    1000.0,
+                );
                 o.emit(
                     &mut mesh,
                     &mut id,

@@ -668,7 +668,7 @@ impl Obj {
     /// direction, counter-clockwise: `out` = (d.y, -d.x) for travel direction `d`). Windows get a
     /// frame, a sill and mullions when they are big; doors a frame and steps; signs stripes
     /// of lettering. All of it is flat colour or stepped tone, no gradients.
-    fn wall_rect(
+    pub(crate) fn wall_rect(
         &mut self,
         a: [f32; 2],
         b: [f32; 2],
