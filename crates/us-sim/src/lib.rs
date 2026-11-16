@@ -862,7 +862,7 @@ impl Sim {
         true
     }
 
-    fn start_one(&mut self) -> bool {
+    fn start_one(&mut self, room: &mut [i64; 4]) -> bool {
         if self.vacant.is_empty() {
             return false;
         }
@@ -870,7 +870,7 @@ impl Sim {
         let mut best: Option<(f64, usize)> = None;
         for (vi, &li) in self.vacant.iter().enumerate() {
             let l = &self.lots[li];
-            if !self.can_start(l.kind) {
+            if !self.can_start(l.kind, room) {
                 continue;
             }
             let noise = roll(self.seed, li as u64, 77) * 140.0;
@@ -894,6 +894,7 @@ impl Sim {
         let kind = self.lots[li].kind;
         let level = self.start_level(li);
         self.take_units(kind, Sim::units_at(kind, level));
+        Sim::use_room(room, kind, level);
         if level > 1 {
             self.lots[li].level = 1;
             self.lots[li].next_level = level;
@@ -1015,9 +1016,12 @@ impl Sim {
             self.acc += rate;
         }
         self.step_streets();
+        // a full capacity stops starts the same day, counting what is already under way
+        self.refresh_stalls();
+        let mut room = self.start_room();
         while self.acc >= 1.0 {
             self.acc -= 1.0;
-            if !self.start_one() {
+            if !self.start_one(&mut room) {
                 self.acc = self.acc.min(2.0);
                 break;
             }

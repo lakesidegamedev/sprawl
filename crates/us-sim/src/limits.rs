@@ -184,14 +184,67 @@ impl Sim {
         (growth_mult(self.tax.get(c) as f64 / 10.0) / growth_mult(7.0)).clamp(0.05, 1.6)
     }
 
-    /// Monthly: who arrives, who leaves, and which capacities are full.
-    pub(crate) fn step_limits(&mut self) {
-        // capacities first, so a full one blocks this month's arrivals
+    /// What one lot of this kind and level asks of a capacity once it stands.
+    pub(crate) fn lot_demand(kind: LotKind, level: u8, c: Capacity) -> i64 {
+        let u = Sim::units_at(kind, level);
+        match (class_of(kind), c) {
+            (Some(Class::Homes), Capacity::Water | Capacity::Power | Capacity::Health) => u,
+            (Some(Class::Homes), Capacity::Schools) => u * PUPIL_SHARE_PCT / 100,
+            (Some(_), Capacity::Water) => u / 2,
+            (Some(Class::Shops), Capacity::Power) => u,
+            (Some(Class::Industry), Capacity::Power) => 3 * u,
+            _ => 0,
+        }
+    }
+
+    /// Demand of a capacity counting the buildings under construction, which will ask for it
+    /// the day they open. This is what starts are checked against.
+    pub(crate) fn committed_status(&self, c: Capacity) -> CapacityStatus {
+        let mut st = self.capacity_with(c, false);
+        for l in &self.lots {
+            if matches!(l.phase, Phase::Building { .. })
+                && !l.exempt
+                && l.civic.is_none()
+                && class_of(l.kind).is_some()
+            {
+                // an upgrade stops counting as built while it is under way, so count the
+                // target level for both
+                st.demand += Sim::lot_demand(l.kind, l.level.max(l.next_level), c);
+            }
+        }
+        st
+    }
+
+    /// Room left in each capacity for new starts, counting what is under construction.
+    pub(crate) fn start_room(&self) -> [i64; 4] {
+        Capacity::ALL.map(|c| {
+            let st = self.committed_status(c);
+            st.supply - st.demand
+        })
+    }
+
+    /// Whether the room covers one more lot of this kind at this level.
+    pub(crate) fn fits_room(room: &[i64; 4], kind: LotKind, level: u8) -> bool {
+        Capacity::ALL
+            .into_iter()
+            .all(|c| Sim::lot_demand(kind, level, c) <= room[c.index()].max(0))
+    }
+
+    pub(crate) fn use_room(room: &mut [i64; 4], kind: LotKind, level: u8) {
+        for c in Capacity::ALL {
+            room[c.index()] -= Sim::lot_demand(kind, level, c);
+        }
+    }
+
+    /// Daily: which capacities are full (counting buildings under construction), with news when
+    /// that changes. A full capacity stops new starts the same day.
+    pub(crate) fn refresh_stalls(&mut self) {
         let was = self.stalled;
         let was_warn = self.warned;
         let mut news: Vec<(String, Option<Pt>)> = Vec::new();
-        for st in Capacity::ALL.map(|c| self.capacity_with(c, false)) {
-            let i = st.capacity.index();
+        for c in Capacity::ALL {
+            let st = self.committed_status(c);
+            let i = c.index();
             // pause growth when full; resume with some room so it does not flicker
             self.stalled[i] = if was[i] {
                 st.ratio() >= 0.97
@@ -200,27 +253,20 @@ impl Sim {
             };
             self.warned[i] = st.ratio() >= WARN_AT;
             if self.stalled[i] && !was[i] {
-                news.push((
-                    format!(
-                        "{}{}",
-                        st.capacity.stall_text(),
-                        self.bigger_hint(st.capacity)
-                    ),
-                    None,
-                ));
+                news.push((format!("{}{}", c.stall_text(), self.bigger_hint(c)), None));
             } else if !self.stalled[i] && was[i] {
                 news.push((
-                    format!("{} has room again: growth can resume.", st.capacity.label()),
+                    format!("{} has room again: growth can resume.", c.label()),
                     None,
                 ));
             } else if self.warned[i] && !was_warn[i] && !self.stalled[i] {
                 news.push((
                     format!(
                         "{} is {}% used. {}{}",
-                        st.capacity.label(),
+                        c.label(),
                         (st.ratio() * 100.0) as i64,
-                        st.capacity.build_hint(),
-                        self.bigger_hint(st.capacity)
+                        c.build_hint(),
+                        self.bigger_hint(c)
                     ),
                     None,
                 ));
@@ -229,6 +275,12 @@ impl Sim {
         for (text, at) in news {
             self.log(EventKind::Limit, text, at);
         }
+    }
+
+    /// Monthly: who arrives, who leaves, and which capacities are full.
+    pub(crate) fn step_limits(&mut self) {
+        // capacities are kept current every day; make sure they are right before arrivals
+        self.refresh_stalls();
 
         // arrivals
         let pop = self.population() as f64;
@@ -324,11 +376,13 @@ impl Sim {
     /// Whether a lot of this kind can be started now, and if so what it takes out of the queue
     /// of arrivals. Lots that are not homes, shops or industry (schools, parks and so on) are
     /// the town's own and always can.
-    pub(crate) fn can_start(&self, kind: LotKind) -> bool {
+    pub(crate) fn can_start(&self, kind: LotKind, room: &[i64; 4]) -> bool {
         let Some(c) = class_of(kind) else {
             return true;
         };
-        !self.class_blocked(c) && self.queue.get(c) >= 0.5 * Sim::units_at(kind, 1) as f64
+        !self.class_blocked(c)
+            && self.queue.get(c) >= 0.5 * Sim::units_at(kind, 1) as f64
+            && Sim::fits_room(room, kind, 1)
     }
 
     pub(crate) fn take_units(&mut self, kind: LotKind, units: i64) {
@@ -339,11 +393,16 @@ impl Sim {
     }
 
     /// Whether an upgrade to the next level is covered by arrivals.
-    pub(crate) fn can_upgrade(&self, kind: LotKind, level: u8) -> bool {
+    pub(crate) fn can_upgrade(&self, kind: LotKind, level: u8, room: &[i64; 4]) -> bool {
         let Some(c) = class_of(kind) else {
             return false;
         };
         let delta = Sim::units_at(kind, level + 1) - Sim::units_at(kind, level);
-        !self.class_blocked(c) && self.queue.get(c) >= delta as f64
+        !self.class_blocked(c)
+            && self.queue.get(c) >= delta as f64
+            && Capacity::ALL.into_iter().all(|k| {
+                Sim::lot_demand(kind, level + 1, k) - Sim::lot_demand(kind, level, k)
+                    <= room[k.index()].max(0)
+            })
     }
 }

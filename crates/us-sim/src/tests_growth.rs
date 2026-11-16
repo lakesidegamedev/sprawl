@@ -312,3 +312,132 @@ fn difficulty_still_scales_the_opening() {
     eprintln!("easy {e} normal {n} hard {h}");
     assert!(e >= n && n >= h, "{e} {n} {h}");
 }
+
+/// Fires in a day, and the biggest share of the town burned in one month, over `years`.
+fn fire_probe(p: Preset, ts: u64, years: i32) -> (u32, u32, f64) {
+    let mut s = untended(p, ts);
+    let (mut worst_day, mut strikes_days) = (0u32, 0u32);
+    let mut worst_month = 0.0f64;
+    let mut month_start = (0u32, 1usize);
+    let mut prev = 0u32;
+    for d in 1..=365 * years {
+        s.step_day();
+        let today = s.fires_total - prev;
+        prev = s.fires_total;
+        worst_day = worst_day.max(today);
+        if !s.lightning_strikes().is_empty() {
+            strikes_days += 1;
+        }
+        if d % 30 == 0 {
+            let lost = s.fires_total - month_start.0;
+            let share = lost as f64 / month_start.1.max(1) as f64;
+            if month_start.1 > 40 {
+                worst_month = worst_month.max(share);
+            }
+            month_start = (s.fires_total, buildings(&s));
+        }
+    }
+    let bolts = s
+        .take_events()
+        .iter()
+        .filter(|e| e.text.starts_with("Lightning hit"))
+        .count();
+    eprintln!("  lightning fires {bolts}");
+    eprintln!(
+        "{p:?} {ts}: fires total {}, worst day {worst_day}, storm days with a strike {strikes_days}, worst month share of buildings on fire {:.3}",
+        s.fires_total, worst_month
+    );
+    (s.fires_total, worst_day, worst_month)
+}
+
+#[test]
+#[ignore]
+fn probe_fires() {
+    for (p, t) in TOWNS {
+        fire_probe(p, t, 4);
+    }
+}
+
+#[test]
+fn a_storm_starts_only_a_few_fires() {
+    for (p, t) in TOWNS {
+        let mut s = untended(p, t);
+        let (mut worst, mut total, mut storm_days) = (0usize, 0usize, 0usize);
+        for _ in 0..365 * 4 {
+            s.step_day();
+            let bolts = s
+                .take_events()
+                .iter()
+                .filter(|e| e.text.starts_with("Lightning hit"))
+                .count();
+            worst = worst.max(bolts);
+            total += bolts;
+            if !s.lightning_strikes().is_empty() {
+                storm_days += 1;
+            }
+        }
+        assert!(worst <= 3, "{p:?}: {worst} lightning fires in one day");
+        assert!(
+            total <= storm_days / 3 + 1,
+            "{p:?}: {total} lightning fires over {storm_days} storm days"
+        );
+    }
+}
+
+#[test]
+fn an_untended_town_never_loses_much_of_itself_to_fire_in_a_month() {
+    for (p, t) in TOWNS {
+        let (_, worst_day, worst_month) = fire_probe(p, t, 4);
+        assert!(worst_day <= 3, "{p:?}: {worst_day} fires on one day");
+        assert!(
+            worst_month <= 0.12,
+            "{p:?}: {:.0}% of the buildings burned in one month",
+            worst_month * 100.0
+        );
+    }
+}
+
+#[test]
+fn the_first_fire_in_a_town_without_a_station_says_so() {
+    let mut s = untended(Preset::Grid, 3);
+    let built = |s: &Sim| {
+        (0..s.lots.len()).find(|&i| {
+            matches!(s.lots[i].phase, Phase::Built { .. }) && class_of(s.lots[i].kind).is_some()
+        })
+    };
+    while built(&s).is_none() {
+        s.step_day();
+    }
+    assert_eq!(s.fires_total, 0);
+    let i = built(&s).unwrap();
+    s.take_events();
+    s.ignite(i, 0.0);
+    assert!(
+        s.take_events()
+            .iter()
+            .any(|e| e.text.contains("No fire station: fires will spread")),
+        "no warning"
+    );
+}
+
+#[test]
+fn growth_stops_when_demand_reaches_supply_not_a_month_later() {
+    for (p, t) in TOWNS {
+        let mut s = untended(p, t);
+        let mut worst = 0.0f64;
+        for _ in 0..365 * 3 {
+            s.step_day();
+            for c in Capacity::ALL {
+                let st = s.capacity_with(c, false);
+                if st.supply > 0 {
+                    worst = worst.max(st.ratio());
+                }
+            }
+        }
+        assert!(
+            worst <= 1.10,
+            "{p:?}: a capacity reached {:.0}% of its supply",
+            worst * 100.0
+        );
+    }
+}
