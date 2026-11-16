@@ -4,6 +4,7 @@
 use crate::Preset;
 use crate::geom::{Pt, atan2, cos, pt, sin};
 use crate::rng::Rng;
+use crate::rockcoast::RockCoast;
 use crate::world::{HALL, HWY_Y, River, S};
 
 const WAVES: usize = 6;
@@ -19,6 +20,8 @@ pub struct Terrain {
     waves: [(f64, f64, f64, f64); WAVES],
     /// The per-style shaping of the newer towns; `Plain` for the five 1.0 styles.
     shape: Shape,
+    /// Extra relief of the red rock and coast styles.
+    rock: RockCoast,
 }
 
 #[derive(Clone, Debug)]
@@ -197,7 +200,13 @@ impl Terrain {
             basin,
             waves,
             shape: Shape::Plain,
+            rock: RockCoast::None,
         }
+    }
+
+    pub(crate) fn with_rock(mut self, rock: RockCoast) -> Terrain {
+        self.rock = rock;
+        self
     }
 
     /// The ground of a town style. The five 1.0 styles are `new`; the newer styles add a
@@ -621,6 +630,15 @@ impl Terrain {
             Shape::Gorge(g) => return self.gorge_height(g, x, y),
             Shape::Valley(v) => return self.valley_height(v, x, y),
         }
+        let plain = self.plain_height(x, y);
+        match &self.rock {
+            RockCoast::None => plain,
+            RockCoast::Mesa(m) => m.height(plain, x, y, &|px, py| self.plain_height(px, py)),
+            RockCoast::Coast(c) => c.height(plain, x, y),
+        }
+    }
+
+    fn plain_height(&self, x: f64, y: f64) -> f64 {
         let mut hills = 0.0;
         for (kx, ky, ph, a) in &self.waves {
             hills += a * sin(kx * x + ky * y + ph);
@@ -639,6 +657,11 @@ impl Terrain {
             base -= 14.0 * exp_neg((d / (r * 2.2)).powi(2));
         }
         base + hills * mask
+    }
+
+    /// The extra relief of a newer style, if any.
+    pub fn rock_coast(&self) -> &RockCoast {
+        &self.rock
     }
 
     /// Height at a point.

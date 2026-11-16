@@ -727,6 +727,13 @@ impl Game {
             let (k, v) = tok.split_once(':').unwrap_or((tok, ""));
             let n = v.parse::<usize>().unwrap_or(0);
             match k {
+                "clean" => {
+                    // a clear picture: no panels and no goal card
+                    self.close_sheets();
+                    self.sim.dismiss_goals();
+                    self.ui.goals.open = false;
+                }
+                "low" => self.cam.set_angle(n as f32, 18.0),
                 "levers" => self.ui.levers_open = true,
                 "budget" => self.ui.budget_open = true,
                 "loans" => self.ui.loans_open = true,
@@ -745,6 +752,25 @@ impl Game {
                     let c = self.town.size as f32 * 0.5;
                     self.cam
                         .look_at(Vec3::new(c, c, 0.0), self.town.size as f32 * 1.5);
+                }
+                "rock" | "harbour" => {
+                    // the tallest rock of a red rock town, or the harbour cove of a coastal one
+                    let at = match self.town.terrain.rock_coast() {
+                        us_gen::RockCoast::Mesa(m) => m
+                            .formations
+                            .iter()
+                            .max_by(|a, b| a.top.total_cmp(&b.top))
+                            .map(|f| f.c),
+                        us_gen::RockCoast::Coast(c) => {
+                            let v = c.coves[0];
+                            Some(us_gen::pt(v.c.x - 0.75 * v.rho, v.c.y))
+                        }
+                        _ => None,
+                    };
+                    if let Some(p) = at {
+                        let d = if k == "rock" { 1100.0 } else { 1200.0 };
+                        self.cam.look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), d);
+                    }
                 }
                 "bridge" => {
                     // a road point over water, for a screenshot

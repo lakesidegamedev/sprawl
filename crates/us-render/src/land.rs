@@ -73,8 +73,14 @@ impl Land {
 
     /// Heights from the town's terrain, with its water bodies.
     pub fn from_town(t: &Town) -> Land {
-        let data = t.terrain.heightfield(GRID);
-        Land::from_grid(GRID, t.size as f32, data, t.water.clone())
+        // the coast has sheer cliffs: a grid twice as fine keeps their faces clean
+        let n = if t.preset == us_gen::Preset::Coast {
+            2 * (GRID - 1) + 1
+        } else {
+            GRID
+        };
+        let data = t.terrain.heightfield(n);
+        Land::from_grid(n, t.size as f32, data, t.water.clone())
             .with_rock(crate::rock::RockLook::of(t.preset))
             .with_high_bridges(t.preset == us_gen::Preset::Gorge)
     }
@@ -144,11 +150,16 @@ impl Land {
         // the surface stands just above the highest ground inside the polygon
         for b in &mut bodies {
             let mut top = f32::MIN;
-            let s = (inner.step * 0.5) as f64;
-            let mut y = b.lo.y;
-            while y <= b.hi.y {
-                let mut x = b.lo.x;
-                while x <= b.hi.x {
+            let s = if b.ring.len() > 400 {
+                inner.step
+            } else {
+                inner.step * 0.5
+            } as f64;
+            let lim = inner.size as f64;
+            let mut y = b.lo.y.max(0.0);
+            while y <= b.hi.y.min(lim) {
+                let mut x = b.lo.x.max(0.0);
+                while x <= b.hi.x.min(lim) {
                     if in_ring(pt(x, y), &b.ring) {
                         top = top.max(probe.height(x as f32, y as f32));
                     }
@@ -157,7 +168,11 @@ impl Land {
                 y += s;
             }
             for p in &b.ring {
-                top = top.max(probe.height(p.x as f32, p.y as f32));
+                // vertices off the map would read the held edge of the land
+                if p.x >= 0.0 && p.y >= 0.0 && p.x <= inner.size as f64 && p.y <= inner.size as f64
+                {
+                    top = top.max(probe.height(p.x as f32, p.y as f32));
+                }
             }
             b.level = top + 0.12;
         }

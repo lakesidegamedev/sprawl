@@ -1,9 +1,10 @@
 //! Stage one: the roads and rails that exist before the town does.
 
 use crate::geom::{
-    Pt, clip_line, dedup, dist_pt_line, dist_ring_line, interpolate, length, project, pt,
+    Pt, clip_line, cos, dedup, dist_pt_line, dist_ring_line, interpolate, length, project, pt, sin,
     split_line_at,
 };
+use crate::plan::Extra;
 use crate::rng::Rng;
 use crate::terrain::Terrain;
 use crate::world::{HALL, HWY_Y, Lake, River, S, TAU, ln_angle, map_ring, ring_road, wander_line};
@@ -41,7 +42,11 @@ pub fn build(
     st: &Settings,
     terrain: &Terrain,
     lake: Option<&Lake>,
+    extra: &Extra,
 ) -> Skeleton {
+    if extra.style == Some(Preset::Coast) {
+        return coast(seed, river, terrain, extra);
+    }
     let tr = Some(terrain);
     let drive_zone = river.band(-116.0, 116.0);
     let mut roads: Vec<(Vec<Pt>, RoadClass)> = vec![(highway(), RoadClass::Highway)];
@@ -431,6 +436,11 @@ pub fn build(
         }
     }
     riverside_drives(&mut roads, river, preset == Preset::Winding);
+    if extra.style == Some(Preset::Mesa) {
+        for z in &extra.rings {
+            rock_ends(z, &mut roads, &mut rails);
+        }
+    }
     let _ = TAU;
     Skeleton {
         roads,
@@ -504,5 +514,213 @@ fn riverside_drives(roads: &mut Vec<(Vec<Pt>, RoadClass)>, river: &River, always
         for p in pieces {
             roads.push((p, RoadClass::Arterial));
         }
+    }
+}
+
+/// The road skeleton of a coastal town: the highway along the south, a coast road along the cliff
+/// tops, a main road north from the hall, and roads running out to the sea.
+fn coast(seed: u64, river: &River, terrain: &Terrain, extra: &Extra) -> Skeleton {
+    let field = extra.sea.as_ref().expect("a coast town has a sea");
+    let zone = &extra.zones[0];
+    let tr = Some(terrain);
+    let mut rng = Rng::new(seed, 0x5ce2);
+    let mut roads: Vec<(Vec<Pt>, RoadClass)> = vec![(highway(), RoadClass::Highway)];
+    let _ = river;
+    // the coast road: on the cliff top, from the highway to the north edge
+    let (line, _) = field.coast_line(72.0);
+    roads.push((line, RoadClass::Arterial));
+    let keep = |lines: Vec<Vec<Pt>>| -> Vec<Vec<Pt>> {
+        lines
+            .into_iter()
+            .flat_map(|l| clip_line(&l, zone, false))
+            .filter(|p| length(p) > 100.0)
+            .collect()
+    };
+    // a main road north from the hall
+    let two_way = |heading: f64, anchor: Pt, salt: u64, amp: f64| -> Vec<Pt> {
+        let a = wander_line(
+            anchor,
+            heading + std::f64::consts::PI,
+            &mut Rng::new(seed, salt),
+            amp,
+            tr,
+        );
+        let b = wander_line(anchor, heading, &mut Rng::new(seed, salt + 1), amp, tr);
+        let mut l: Vec<Pt> = a.iter().rev().copied().collect();
+        l.extend(b.iter().skip(1).copied());
+        l
+    };
+    let main = two_way(
+        std::f64::consts::FRAC_PI_2 + rng.uniform(-4.0, 4.0).to_radians(),
+        HALL,
+        60,
+        0.12,
+    );
+    for p in keep(within_map(&main)) {
+        if dist_pt_line(HALL, &p) < 8.0 {
+            roads.push((p, RoadClass::Arterial));
+        }
+    }
+    // roads out to the sea: one to the harbour, one each side of it
+    let yh = field.coves[0].c.y;
+    let mut ys = vec![yh, HALL.y - 780.0 + rng.uniform(-60.0, 60.0)];
+    let north = HALL.y + 820.0 + rng.uniform(-60.0, 60.0);
+    if (north - yh).abs() > 500.0 {
+        ys.push(north);
+    }
+    ys.push(2900.0 + rng.uniform(-150.0, 150.0));
+    for (i, y0) in ys.into_iter().enumerate() {
+        if (y0 - yh).abs() < 450.0 && i > 0 {
+            continue;
+        }
+        let ln = wander_line(
+            pt(0.0, y0),
+            rng.uniform(-3.0, 3.0).to_radians(),
+            &mut Rng::new(seed, 70 + i as u64),
+            0.12,
+            tr,
+        );
+        if let Some(p) = keep(within_map(&ln)).into_iter().find(|p| p[0].x < 1.0) {
+            roads.push((p, RoadClass::Arterial));
+        }
+    }
+    // an inland road and a headland road, both north from the highway
+    for (i, x0) in [900.0, 2750.0].into_iter().enumerate() {
+        let ln = wander_line(
+            pt(x0 + rng.uniform(-80.0, 80.0), HWY_Y),
+            std::f64::consts::FRAC_PI_2,
+            &mut Rng::new(seed, 80 + i as u64),
+            0.1,
+            tr,
+        );
+        if let Some(p) = keep(within_map(&ln))
+            .into_iter()
+            .find(|p| p[0].y <= HWY_Y + 1.0)
+        {
+            roads.push((p, RoadClass::Arterial));
+        }
+    }
+    let rail_angle = (7.0 + rng.uniform(-3.0, 3.0)).to_radians();
+    let mut rails = Vec::new();
+    let start = pt(0.0, 380.0 + rng.uniform(-40.0, 80.0));
+    for p in keep(within_map(&wander_line(
+        start,
+        rail_angle,
+        &mut Rng::new(seed, 2),
+        0.05,
+        tr,
+    ))) {
+        rails.push(p);
+    }
+    Skeleton {
+        roads,
+        rails,
+        rail_angle,
+    }
+}
+
+/// Roads that meet the foot of a rock stop there. Two ends close together are joined by a short
+/// stretch of road along the foot; every other end gets a small turning circle, so no road is left
+/// hanging and no rock sits in a closed loop of road.
+fn rock_ends(z: &[Pt], roads: &mut Vec<(Vec<Pt>, RoadClass)>, rails: &mut Vec<Vec<Pt>>) {
+    let total = length(z);
+    let mut next: Vec<(Vec<Pt>, RoadClass)> = Vec::new();
+    // (distance along the ring, road index in `next`, at the end of the road?)
+    let mut meets: Vec<(f64, usize, bool, usize)> = Vec::new();
+    for (orig, (l, c)) in roads.drain(..).enumerate() {
+        if c == RoadClass::Highway {
+            next.push((l, c));
+            continue;
+        }
+        for p in clip_line(&l, z, false) {
+            if length(&p) <= 60.0 {
+                continue;
+            }
+            for (e, at_end) in [(p[0], false), (*p.last().unwrap(), true)] {
+                let (s, d, _) = project(z, e);
+                if d < 12.0 {
+                    meets.push((s, next.len(), at_end, orig));
+                }
+            }
+            next.push((p, c));
+        }
+    }
+    *roads = next;
+    *rails = rails
+        .iter()
+        .flat_map(|l| clip_line(l, z, false))
+        .filter(|p| length(p) > 100.0)
+        .collect();
+    meets.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let n = meets.len();
+    if n == 0 {
+        return;
+    }
+    let gap = |i: usize| -> f64 {
+        let (a, b) = (meets[i].0, meets[(i + 1) % n].0);
+        if n == 1 {
+            total
+        } else if b >= a {
+            b - a
+        } else {
+            b - a + total
+        }
+    };
+    let widest = (0..n).max_by(|&a, &b| gap(a).total_cmp(&gap(b))).unwrap();
+    let mut linked = vec![false; n];
+    for i in 0..n {
+        let g = gap(i);
+        if n < 2
+            || i == widest
+            || !(30.0..=260.0).contains(&g)
+            || meets[i].3 == meets[(i + 1) % n].3
+        {
+            continue;
+        }
+        let (s0, j) = (meets[i].0, (i + 1) % n);
+        // the ring's own vertices between the two ends, so a sharp notch is not skipped
+        let mut cum = 0.0;
+        let mut at: Vec<(f64, Pt)> = Vec::new();
+        for k in 0..z.len() {
+            if k > 0 {
+                cum += z[k - 1].dist(z[k]);
+            }
+            for lap in [-1.0, 0.0, 1.0] {
+                let u = cum - s0 + lap * total;
+                if u > 1.0 && u < g - 1.0 {
+                    at.push((u, z[k]));
+                }
+            }
+        }
+        at.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut arc: Vec<Pt> = vec![interpolate(z, s0).0];
+        arc.extend(at.into_iter().map(|(_, p)| p));
+        arc.push(interpolate(z, (s0 + g).rem_euclid(total)).0);
+        roads.push((dedup(&arc), RoadClass::Collector));
+        linked[i] = true;
+        linked[j] = true;
+    }
+    // a turning circle where a road ends alone at the foot
+    for (k, &(_, ri, at_end, _)) in meets.iter().enumerate() {
+        if linked[k] {
+            continue;
+        }
+        let line = &roads[ri].0;
+        let (e, prev) = if at_end {
+            (line[line.len() - 1], line[line.len() - 2])
+        } else {
+            (line[0], line[1])
+        };
+        let dir = (e - prev).unit();
+        let r = 10.0;
+        // the circle lies beyond the road's end, which touches it
+        let centre = pt(e.x + dir.x * r, e.y + dir.y * r);
+        let circle: Vec<Pt> = (0..=28)
+            .map(|i| {
+                let a = TAU * i as f64 / 28.0;
+                pt(centre.x + r * cos(a), centre.y + r * sin(a))
+            })
+            .collect();
+        roads.push((circle, RoadClass::Collector));
     }
 }

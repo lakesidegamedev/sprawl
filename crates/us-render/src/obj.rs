@@ -48,6 +48,9 @@ pub struct Poly {
 #[derive(Clone, Debug)]
 pub struct Solid {
     pub centre: V3,
+    /// All faces of the solid share one outline id, so no ink runs along the edges between them
+    /// (a round column drawn as many flat faces).
+    pub merged: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -101,7 +104,10 @@ impl Obj {
     }
 
     pub(crate) fn new_solid(&mut self, centre: V3) -> u32 {
-        self.solids.push(Solid { centre });
+        self.solids.push(Solid {
+            centre,
+            merged: false,
+        });
         (self.solids.len() - 1) as u32
     }
 
@@ -555,6 +561,44 @@ impl Obj {
         self
     }
 
+    /// The side of a solid that runs from the outline `lo` at height `z0` to the outline `hi`
+    /// at height `z1` (same number of points, counter-clockwise): a frustum, a leaning column, a
+    /// waist. `top` closes it with a flat face when given.
+    pub fn loft(
+        &mut self,
+        lo: &[[f32; 2]],
+        z0: f32,
+        hi: &[[f32; 2]],
+        z1: f32,
+        color: Rgb,
+        top: Option<Rgb>,
+    ) -> &mut Self {
+        let k = lo.len() as f32;
+        let cx = lo.iter().map(|p| p[0]).sum::<f32>() / k;
+        let cy = lo.iter().map(|p| p[1]).sum::<f32>() / k;
+        let s = self.new_solid([cx, cy, (z0 + z1) / 2.0]);
+        self.solids[s as usize].merged = true;
+        for i in 0..lo.len() {
+            let j = (i + 1) % lo.len();
+            self.face(
+                s,
+                &[
+                    [lo[i][0], lo[i][1], z0],
+                    [lo[j][0], lo[j][1], z0],
+                    [hi[j][0], hi[j][1], z1],
+                    [hi[i][0], hi[i][1], z1],
+                ],
+                color,
+                false,
+            );
+        }
+        if let Some(t) = top {
+            let ring: Vec<V3> = hi.iter().map(|p| [p[0], p[1], z1]).collect();
+            self.face(s, &ring, t, false);
+        }
+        self
+    }
+
     /// A flat coloured panel on a wall running from `a` to `b` (the building outline is
     /// counter-clockwise, so the outside is on the right), just clear of the wall.
     pub fn wall_quad(
@@ -908,6 +952,7 @@ impl Obj {
             let [px, py, pz] = sol.centre;
             self.solids.push(Solid {
                 centre: [x + c * px - s * py, y + s * px + c * py, pz],
+                merged: sol.merged,
             });
         }
         for p in &other.polys {
@@ -990,6 +1035,7 @@ impl Obj {
     ) {
         let (s, c) = (libm::sinf(theta), libm::cosf(theta));
         let mut pts: Vec<V3> = Vec::with_capacity(8);
+        let mut solid_ids: Vec<Option<u32>> = vec![None; self.solids.len()];
         for p in &self.polys {
             pts.clear();
             pts.extend(p.pts.iter().map(|v| {
@@ -998,7 +1044,16 @@ impl Obj {
                 let lz = scale * v[2];
                 [wx, wy, sit.map_or(lz, |st| st.place(wx, wy, lz, v[2]))]
             }));
-            let id = if p.outline {
+            let merged = p
+                .solid
+                .filter(|&i| self.solids[i as usize].merged && p.outline);
+            let id = if let Some(i) = merged {
+                *solid_ids[i as usize].get_or_insert_with(|| {
+                    let id = *next_id;
+                    *next_id += 1;
+                    id
+                })
+            } else if p.outline {
                 let id = *next_id;
                 *next_id += 1;
                 id

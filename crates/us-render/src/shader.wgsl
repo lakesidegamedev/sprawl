@@ -412,8 +412,10 @@ fn season_leaf(step: i32, dark: bool, season: i32) -> vec3<f32> {
 // Natural ground of a land with a rock look: grass on gentle slopes, forest on the lower
 // mountainsides, stone below faces, rock on steep slopes (stepped strata, or fractured granite),
 // bare ground above the tree line and a clean snow cap above the snow line.
-fn terrain_look(world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
-    let grass = vec3<f32>(116.0, 172.0, 92.0) / 255.0;
+fn terrain_look(world: vec3<f32>, n: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
+    // `base` is the gentle ground: grass for the mountain looks, the vertex colour for looks whose
+    // flats, washes and beaches are coloured on the CPU
+    let grass = base;
     if (g.rock[5].w < 0.5 || g.look.z > 0.5) {
         return grass;
     }
@@ -455,9 +457,20 @@ fn terrain_look(world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
             }
             return g.rock[pick].rgb;
         }
-        let band = floor((z + (fine - 0.5) * 1.6) / g.rock[5].z);
-        let pick = hash_u(u32(i32(band) + 65536)) % 4u;
-        return g.rock[pick].rgb;
+        let bz = (z + (fine - 0.5) * 1.6) / g.rock[5].z;
+        let pick = hash_u(u32(i32(floor(bz)) + 65536)) % 4u;
+        var rc = g.rock[pick].rgb;
+        // a thin dark ledge at the top of each stratum, and a fainter line inside it
+        let lg = g.rock[7].w;
+        if (lg > 0.0) {
+            let fb = fract(bz);
+            if (fb > 0.95) {
+                rc = rc * (1.0 - lg);
+            } else if (fract(bz * 4.0) < 0.1) {
+                rc = rc * (1.0 - lg * 0.24);
+            }
+        }
+        return rc;
     }
     if (s > talus_s) {
         var tc = g.rock[4].rgb;
@@ -511,8 +524,14 @@ fn fs_main(v: VOut) -> FOut {
         }
     }
     if (ground && abs(col.r * 255.0 - 116.0) < 0.6 && abs(col.g * 255.0 - 172.0) < 0.6 && abs(col.b * 255.0 - 95.0) < 0.6) {
-        col = terrain_look(v.world, n);
+        col = terrain_look(v.world, n, vec3<f32>(116.0, 172.0, 92.0) / 255.0);
         if (g.rock[5].w > 0.5 && g.look.z < 0.5 && n.z < 0.9) {
+            l = dot(facet, g.sun.xyz);
+        }
+    } else if (ground && g.rock[7].z > 0.5 && g.look.z < 0.5 && n.z < 0.92) {
+        // looks with CPU ground colours: only steep ground is repainted here
+        col = terrain_look(v.world, n, col);
+        if (n.z < 0.9) {
             l = dot(facet, g.sun.xyz);
         }
     }

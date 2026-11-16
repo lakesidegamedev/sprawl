@@ -356,6 +356,9 @@ impl LiveScene {
             ),
         );
         scene.set_land(land.clone());
+        scene.base = us_render::RockLook::of(town.preset)
+            .and_then(|l| l.ground)
+            .map_or(us_render::GRASS, |g| g.flat);
         // road ground per group; the skeleton and connectors are chunk 0
         scene.chunks.push(Chunk {
             rev: 1,

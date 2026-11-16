@@ -365,7 +365,10 @@ fn pods_have_an_entrance_and_two_cul_de_sacs() {
                                 .points
                                 .windows(2)
                                 .any(|w| seg_closest(*e, w[0], w[1]) < 1.5)),
-                        "entrance not on a big road"
+                        "{} seed {s}: entrance ({:.0}, {:.0}) not on a big road",
+                        p.name(),
+                        e.x,
+                        e.y
                     );
                 }
                 let culs = t.cul_de_sacs.iter().filter(|c| c.addition == ai).count();
@@ -1456,6 +1459,102 @@ fn gorge_roads_never_drive_down_a_wall_and_bridges_stand_at_rim_height() {
 }
 
 #[test]
+fn version_three_towns_of_the_five_old_styles_are_unchanged() {
+    // the newer styles must never reach the code paths of these five
+    let known: [(Preset, u64, u64); 20] = [
+        (Preset::Grid, 1, 0x3226bdf61bd78561),
+        (Preset::Grid, 2, 0x5687d114417a755a),
+        (Preset::Grid, 3, 0x1c0f6c1241e0d3d2),
+        (Preset::Grid, 4, 0xfc08ddb47d499082),
+        (Preset::Winding, 1, 0xd3a6774c9a5a64c2),
+        (Preset::Winding, 2, 0x14c09d253cedf9a4),
+        (Preset::Winding, 3, 0x9b920a40c5ac6f41),
+        (Preset::Winding, 4, 0x925ed1e3181ff426),
+        (Preset::Sunbelt, 1, 0x792475721d1cc46b),
+        (Preset::Sunbelt, 2, 0x1d8d5cb00965d273),
+        (Preset::Sunbelt, 3, 0x1b621a2dc6a1c1a6),
+        (Preset::Sunbelt, 4, 0x84880390cd6d7458),
+        (Preset::Crossroads, 1, 0x7c3b9f12b203fda1),
+        (Preset::Crossroads, 2, 0x150fbd219114c683),
+        (Preset::Crossroads, 3, 0x17beddd8bfc3a0e5),
+        (Preset::Crossroads, 4, 0xcb1231c13de7de5a),
+        (Preset::LakeTown, 1, 0x2fe90211b2a662d9),
+        (Preset::LakeTown, 2, 0xa77fd1b4ddc02de0),
+        (Preset::LakeTown, 3, 0x812d79865c3a7add),
+        (Preset::LakeTown, 4, 0x5b9ae8b9ca1e764d),
+    ];
+    for (p, s, fp) in known {
+        assert_eq!(generate(p, s).fingerprint(), fp, "{} seed {s}", p.name());
+    }
+}
+
+fn arterial_grade(t: &Town) -> f64 {
+    let mut worst: f64 = 0.0;
+    for r in t.roads.iter().filter(|r| r.class == RoadClass::Arterial) {
+        let (mut sum, mut n) = (0.0, 0.0);
+        for w in r.points.windows(2) {
+            let len = d(w[0], w[1]);
+            if len > 1.0 {
+                sum += ((t.height_at(w[1]) - t.height_at(w[0])) / len).abs();
+                n += 1.0;
+            }
+        }
+        if n > 20.0 {
+            worst = worst.max(sum / n);
+        }
+    }
+    worst
+}
+
+#[test]
+fn red_rock_towns_have_mesas_buttes_and_spires_standing_well_above_the_flats() {
+    use us_gen::{Rock, RockCoast};
+    for t in towns().iter().filter(|t| t.preset == Preset::Mesa) {
+        let RockCoast::Mesa(m) = t.terrain.rock_coast() else {
+            panic!("a red rock town has mesa relief");
+        };
+        let count = |k: Rock| m.formations.iter().filter(|f| f.kind == k).count();
+        assert_eq!(count(Rock::Mesa), 3, "seed {}", t.seed);
+        assert!(
+            count(Rock::Butte) + count(Rock::Spire) >= 3,
+            "seed {}",
+            t.seed
+        );
+        for f in &m.formations {
+            // the top is 100 to 300 m above the ground at its foot, and flat
+            let foot = t.height_at(us_gen::pt(f.c.x + f.r * 1.5 + f.wall + f.skirt, f.c.y));
+            let top = t.height_at(f.c);
+            assert!(
+                top - foot > 85.0 && top - foot < 350.0,
+                "seed {}: {:.0} m",
+                t.seed,
+                top - foot
+            );
+            // walls are sheer
+            let mut wall: f64 = 0.0;
+            for k in 0..8 {
+                let a = k as f64 * std::f64::consts::FRAC_PI_4;
+                let mut r = f.r * 0.7;
+                while r < f.r * 1.4 + f.wall {
+                    wall =
+                        wall.max(t.slope_at(us_gen::pt(f.c.x + r * a.cos(), f.c.y + r * a.sin())));
+                    r += 3.0;
+                }
+            }
+            assert!(wall > 1.0, "seed {}: wall slope {wall:.2}", t.seed);
+            // nothing is built on or round the rock
+            for l in &t.lots {
+                assert!(
+                    f.edge_dist(l.centre.x, l.centre.y) > f.wall + f.skirt * 0.7,
+                    "seed {}: a lot on the rock",
+                    t.seed
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn the_gorge_river_meanders_and_the_valley_has_peaks_of_different_heights() {
     for t in style_towns(Preset::Gorge) {
         // the river is the lowest line: follow the lowest sample across each column
@@ -1503,5 +1602,176 @@ fn the_gorge_river_meanders_and_the_valley_has_peaks_of_different_heights() {
             "valley seed {}: ridge heights {lo:.0} to {hi:.0}",
             t.seed
         );
+    }
+}
+
+#[test]
+fn red_rock_roads_and_the_town_fill_the_flats_between_the_rock() {
+    for t in towns().iter().filter(|t| t.preset == Preset::Mesa) {
+        assert!(arterial_grade(t) < 0.07, "seed {}: roads climb", t.seed);
+        assert!(
+            t.lots.len() > 6000,
+            "seed {}: {} lots",
+            t.seed,
+            t.lots.len()
+        );
+    }
+}
+
+#[test]
+fn coastal_towns_have_a_sea_with_cliffs_a_harbour_and_a_coast_road() {
+    use us_gen::RockCoast;
+    for t in towns().iter().filter(|t| t.preset == Preset::Coast) {
+        assert_eq!(t.water.len(), 1, "the sea is the only water");
+        let sea = &t.water[0];
+        assert!(sea.iter().any(|p| p.x > t.size), "the sea runs off the map");
+        let RockCoast::Coast(c) = t.terrain.rock_coast() else {
+            panic!("a coast town has coast relief");
+        };
+        // the sea is flat at sea level; the cliff tops stand 60 to 190 m above it
+        assert_eq!(t.height_at(us_gen::pt(t.size - 60.0, 3000.0)), 0.0);
+        let mut tallest: f64 = 0.0;
+        let mut y = 1500.0;
+        while y < 3900.0 {
+            let x = c.edge_x(y, 120.0);
+            tallest = tallest.max(t.height_at(us_gen::pt(x, y)));
+            y += 40.0;
+        }
+        assert!(
+            tallest > 60.0 && tallest < 200.0,
+            "seed {}: cliffs {tallest:.0} m",
+            t.seed
+        );
+        // the harbour: a cove with a gentle shore and lots on its low ground
+        let h = c.coves[0];
+        let shore = us_gen::pt(c.edge_x(h.c.y, 80.0), h.c.y);
+        assert!(
+            t.height_at(shore) < 12.0,
+            "seed {}: harbour shore {:.0} m",
+            t.seed,
+            t.height_at(shore)
+        );
+        assert!(
+            t.slope_at(shore) < 0.12,
+            "seed {}: harbour shore too steep",
+            t.seed
+        );
+        assert!(
+            t.lots
+                .iter()
+                .any(|l| l.centre.dist(h.c) < h.rho + 900.0 && t.height_at(l.centre) < 12.0),
+            "seed {}: no harbour district",
+            t.seed
+        );
+        // a coast road runs the length of the cliff top, clear of the water
+        let coast_road = t.roads.iter().find(|r| {
+            r.class == RoadClass::Arterial
+                && r.points.len() > 200
+                && r.points
+                    .iter()
+                    .all(|p| ring_dist(*p, sea) > 20.0 || point_in(*p, sea))
+                && r.points.last().unwrap().y > 3900.0
+                && r.points[0].y < 100.0
+        });
+        assert!(coast_road.is_some(), "seed {}: no coast road", t.seed);
+        assert!(
+            arterial_grade(t) < 0.12,
+            "seed {}: roads climb {:.3}",
+            t.seed,
+            arterial_grade(t)
+        );
+    }
+}
+
+#[test]
+fn the_sea_holds_only_water_and_the_harbour_has_its_works() {
+    use us_gen::RockCoast;
+    for seed in 1..=4u64 {
+        let t = generate(Preset::Coast, seed);
+        let RockCoast::Coast(c) = t.terrain.rock_coast() else {
+            panic!("coast relief");
+        };
+        let sea = &t.water[0];
+        // no ground stands in the sea: no wedge of sand or rock is left inside the polygon
+        let mut y = 0.0;
+        while y <= 4096.0 {
+            let mut x = 2000.0;
+            while x <= 4096.0 {
+                let p = us_gen::pt(x, y);
+                if point_in(p, sea) {
+                    assert!(
+                        t.height_at(p) < 0.5,
+                        "seed {seed}: ground {:.1} m in the sea at ({x}, {y})",
+                        t.height_at(p)
+                    );
+                }
+                x += 40.0;
+            }
+            y += 40.0;
+        }
+        let h = c.harbour();
+        assert_eq!(h.breakwaters.len(), 2, "seed {seed}");
+        assert_eq!(h.piers.len(), 3, "seed {seed}");
+        assert!(h.boats.len() >= 12, "seed {seed}: {} boats", h.boats.len());
+        // the lighthouse stands on a headland, well above the sea
+        assert!(
+            t.height_at(h.lighthouse) > 40.0,
+            "seed {seed}: lighthouse {:.0} m",
+            t.height_at(h.lighthouse)
+        );
+        // every boat floats and every pier tip is in the water
+        for b in &h.boats {
+            assert!(point_in(b.at, sea), "seed {seed}: a boat on land");
+        }
+        for (_, tip) in &h.piers {
+            assert!(point_in(*tip, sea), "seed {seed}: a pier ends on land");
+        }
+        // sea stacks stand off the cliffs
+        assert!(
+            c.stacks.len() >= 3,
+            "seed {seed}: {} stacks",
+            c.stacks.len()
+        );
+        for s in &c.stacks {
+            assert!(point_in(s.c, sea), "seed {seed}: a stack on land");
+        }
+        // the beach is on the inner shore of the harbour only
+        let hv = c.coves[0];
+        assert!(c.beach_weight(hv.c.x - hv.rho - 20.0, hv.c.y) > 0.9);
+        assert!(c.beach_weight(c.edge_x(hv.c.y + 1600.0, 20.0), hv.c.y + 1600.0) < 0.05);
+    }
+}
+
+#[test]
+fn red_rock_roads_end_at_the_rock_on_a_circle_or_a_short_link_not_a_ring() {
+    use us_gen::RockCoast;
+    for seed in 1..=6u64 {
+        let t = generate(Preset::Mesa, seed);
+        let RockCoast::Mesa(m) = t.terrain.rock_coast() else {
+            panic!("mesa relief");
+        };
+        for f in m
+            .formations
+            .iter()
+            .filter(|f| f.kind != us_gen::Rock::Spire)
+        {
+            // no closed loop of road runs round the foot of a rock: roads touch the ring along
+            // less than most of it
+            let ring = f.footprint(16.0);
+            let covered = ring
+                .iter()
+                .filter(|v| {
+                    t.roads
+                        .iter()
+                        .filter(|r| r.class == RoadClass::Collector)
+                        .any(|r| r.points.iter().any(|p| p.dist(**v) < 8.0))
+                })
+                .count();
+            assert!(
+                (covered as f64) < 0.85 * ring.len() as f64,
+                "seed {seed}: a ring road round a {:?}",
+                f.kind
+            );
+        }
     }
 }

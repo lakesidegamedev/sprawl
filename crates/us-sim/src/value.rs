@@ -262,6 +262,7 @@ impl Sim {
                 - 0.06 * (1.0 - road_f)
                 - burden
                 - self.flood_value_penalty(i)
+                + self.scenery_bonus(i)
                 + near.value;
             out[i] = v.clamp(0.0, 1.0) as f32;
         }
