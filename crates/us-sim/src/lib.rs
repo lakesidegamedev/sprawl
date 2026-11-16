@@ -21,6 +21,7 @@ mod districts;
 mod dynamic;
 mod econ;
 mod fires;
+mod goals;
 mod growth;
 mod ledger_view;
 mod limits;
@@ -46,6 +47,7 @@ pub use districts::{
 };
 pub use dynamic::{FIRE_DAYS, Rival};
 pub use fires::{BlazeView, Vehicle, VehicleKind};
+pub use goals::{Goal, GoalView, GrowthAlert};
 pub use ledger_view::LedgerNow;
 pub use model::*;
 pub use pressure::*;
@@ -412,6 +414,16 @@ pub struct Sim {
     pub(crate) fx: fires::FireState,
     /// What the weather has done (saved in the `WTHR` section).
     pub(crate) wx: climate::Climate,
+    /// Goals and the count of blocked months (saved in the `GOAL` section).
+    pub(crate) goal: goals::GoalState,
+}
+
+fn opening_queue() -> ByClass<f64> {
+    let mut q = ByClass::all(0.0);
+    for (c, v) in Class::ALL.into_iter().zip(limits::OPENING_QUEUE) {
+        q.set(c, v);
+    }
+    q
 }
 
 impl Sim {
@@ -456,7 +468,7 @@ impl Sim {
             order_pos: vec![usize::MAX; n_add],
             road_cost_per_month: vec![0; n_add + 1],
             vacant: Vec::new(),
-            acc: 0.0,
+            acc: 4.0,
             treasury: START_TREASURY,
             last_income: 0,
             last_expense: 0,
@@ -507,7 +519,7 @@ impl Sim {
             },
             peak_population: 0,
             fire_days: Vec::new(),
-            queue: ByClass::all(0.0),
+            queue: opening_queue(),
             stalled: [false; 4],
             unlocked: 0,
             fx_sites: Vec::new(),
@@ -518,6 +530,7 @@ impl Sim {
             dist: Default::default(),
             fx: Default::default(),
             wx: Default::default(),
+            goal: Default::default(),
         };
         // reveal order: nearest to the hall first
         let mut ord: Vec<(i64, usize)> = (0..n_add)
@@ -764,6 +777,7 @@ impl Sim {
         self.avenue_hash(&mut f);
         self.tram_hash(&mut f);
         self.fire_hash(&mut f);
+        self.goal_hash(&mut f);
         f(self.runs.len() as u64);
         for r in &self.runs {
             f(r.class as u64);
@@ -995,7 +1009,7 @@ impl Sim {
         let built = self.built_count() as f64;
         let rate = 0.8 * PACE * growth_mult(tax) * (1.0 + (built / (700.0 * PACE)).min(1.5));
         // the mood of the market: all three classes together
-        let rate = rate * (0.6 + 0.8 * self.mean_demand());
+        let rate = rate * (0.6 + 0.8 * self.mean_demand()) * (1.0 + 0.6 * self.settlers());
         // a power cut or a dry water supply stops the builders for the day
         if !self.shortage_today() {
             self.acc += rate;
@@ -1390,3 +1404,6 @@ mod tests_fires;
 
 #[cfg(test)]
 mod tests_weather;
+
+#[cfg(test)]
+mod tests_growth;

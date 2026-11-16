@@ -28,8 +28,13 @@ fn buildings_grow_through_a_construction_phase_and_pay_more() {
     let t = town();
     let mut s = Sim::new(&t, hall_sites(&t)[0], 7);
     let mut saw_site = false;
-    for _ in 0..1200 {
+    let mut round = 0;
+    for d in 0..1200 {
         s.step_day();
+        // the mayor builds the water, power and schools the settlers need
+        if d % 30 == 5 {
+            crate::tests_balance::build_ahead(&mut s, &mut round);
+        }
         saw_site |= s
             .lots()
             .iter()

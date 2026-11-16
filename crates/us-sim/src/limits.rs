@@ -11,12 +11,23 @@ use crate::*;
 const BASE_PEOPLE_PER_MONTH: f64 = 46.0;
 /// How fast the region's pool of movers grows each year.
 const POOL_GROWTH_PER_YEAR: f64 = 0.06;
+/// Settlers: in the first year more people arrive, fading out over twelve months, so an
+/// untended town visibly fills in.
+const SETTLERS_DAYS: f64 = 365.0;
+const SETTLERS_ARRIVALS: f64 = 3.2;
+/// Extra people the town wants while the settlers wave lasts.
+const SETTLERS_WANT: f64 = 1200.0;
+const SETTLERS_SHOPS: f64 = 140.0;
+const SETTLERS_INDUSTRY: f64 = 110.0;
+/// What waits at the gate on day one: people, shop jobs and industry jobs.
+pub(crate) const OPENING_QUEUE: [f64; 3] = [60.0, 14.0, 8.0];
+
 /// Share of the people of a town who work.
 const WORKER_SHARE: f64 = 0.45;
 /// Households that cannot find work start leaving below this jobs to workers ratio.
 const LEAVE_BELOW_RATIO: f64 = 0.6;
 /// Warn when a capacity passes this share of its supply.
-const WARN_AT: f64 = 0.88;
+pub(crate) const WARN_AT: f64 = 0.88;
 
 /// Water a tower carries, in people served (a worker's workplace counts half).
 const WATER_PER_TOWER: i64 = 2000;
@@ -142,6 +153,11 @@ impl Sim {
         (400 + kind_value(kind) / 60) * self.rules.difficulty.cost_pct() / 100
     }
 
+    /// How strong the settlers wave still is, 1 on day one down to 0 after a year.
+    pub(crate) fn settlers(&self) -> f64 {
+        (1.0 - self.day as f64 / SETTLERS_DAYS).clamp(0.0, 1.0)
+    }
+
     /// Arrivals per month at the pace of this point in game time and the chosen difficulty.
     fn arrival_cap(&self) -> f64 {
         let years = self.month_index as f64 / 12.0;
@@ -150,6 +166,7 @@ impl Sim {
             * self.rules.difficulty.arrival_pct() as f64
             / 100.0
             * self.arrival_bonus()
+            * (1.0 + SETTLERS_ARRIVALS * self.settlers())
     }
 
     /// Dollars paid so far for new streets and utility connections, before the taxes they bring.
@@ -230,9 +247,9 @@ impl Sim {
         let ind_attr = self.tax_factor(Class::Industry) * rival(self, Class::Industry);
         // the town wants people for the jobs it has, customers for its shops, workers for its
         // firms
-        let want_pop = 150.0 + 1.25 * jobs / WORKER_SHARE;
-        let want_shop = 0.30 * pop + 10.0;
-        let want_ind = 0.17 * pop + 6.0;
+        let want_pop = 150.0 + SETTLERS_WANT * self.settlers() + 1.25 * jobs / WORKER_SHARE;
+        let want_shop = 0.30 * pop + 10.0 + SETTLERS_SHOPS * self.settlers();
+        let want_ind = 0.17 * pop + 6.0 + SETTLERS_INDUSTRY * self.settlers();
         let now = |c: Class| self.jobs_of(c) as f64;
         let inflow = [
             ((want_pop - pop - self.queue.homes).max(0.0) * 0.3).min(cap * homes_attr),

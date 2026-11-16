@@ -5,9 +5,15 @@ use crate::milestones::Near;
 use us_gen::{Preset, generate};
 
 fn new_sim() -> Sim {
+    new_sim_days(200)
+}
+
+/// A younger town has more empty ground left for big buildings: the settlers fill the lots
+/// near the hall within a few months.
+fn new_sim_days(days: i32) -> Sim {
     let t = generate(Preset::Grid, 3);
     let mut s = Sim::new_with_rules(&t, hall_sites(&t)[0], 7, 2, Rules::sandbox_unlimited());
-    for _ in 0..200 {
+    for _ in 0..days {
         s.step_day();
     }
     s
@@ -20,7 +26,12 @@ fn spot(s: &Sim, k: CivicKind, skip: usize) -> Pt {
         .map(|l| l.pos)
         .filter(|&p| s.check_civic(k, p).is_ok())
         .nth(skip)
-        .expect("a spot")
+        .unwrap_or_else(|| {
+            panic!(
+                "a spot for {k:?} skip {skip}; vacant {}",
+                s.lots().iter().filter(|l| l.phase == Phase::Vacant).count()
+            )
+        })
 }
 
 fn nearest_hall_spot(s: &Sim, k: CivicKind) -> Pt {
@@ -127,19 +138,27 @@ fn hospital_reaches_further_than_a_clinic() {
 
 #[test]
 fn library_transit_stadium_and_university_change_their_surroundings() {
-    let mut s = new_sim();
+    let mut s = new_sim_days(20);
     unlock_all(&mut s);
     let probe = s.hall;
     let before = s.civic_near(probe, true);
     assert_eq!(before, Near::default());
+    // an uncovered far corner feels nothing
+    let far = pt(s.town().size - 30.0, s.town().size - 30.0);
+    assert!(s.civic_near(far, false).value < 0.01);
+    // all four are placed together: the settlers fill the open ground quickly, so the big sites
+    // have to be taken while it is there
+    let stadium_at = spot(&s, CivicKind::Stadium, 0);
+    s.place_civic(CivicKind::Stadium, stadium_at).unwrap();
+    let uni_at = spot(&s, CivicKind::University, 0);
+    s.place_civic(CivicKind::University, uni_at).unwrap();
     // a library and a transit stop close to the hall
-    let near_hall = nearest_hall_spot;
     for k in [CivicKind::Library, CivicKind::Transit] {
-        let p = near_hall(&s, k);
+        let p = nearest_hall_spot(&s, k);
         s.place_civic(k, p).unwrap();
-        for _ in 0..80 {
-            s.step_day();
-        }
+    }
+    for _ in 0..100 {
+        s.step_day();
     }
     s.recompute_values();
     let lib = s
@@ -152,17 +171,12 @@ fn library_transit_stadium_and_university_change_their_surroundings() {
     assert!(near.value > 0.05, "{near:?}");
     assert!(near.traffic_relief >= 0.0);
     assert!(near.notes.iter().any(|n| n.contains("library")));
-    // an uncovered far corner feels nothing
-    let far = pt(s.town().size - 30.0, s.town().size - 30.0);
-    assert!(s.civic_near(far, false).value < 0.01);
 
     // a stadium crowds the streets and helps shops around it
-    let (_, sp) = build(&mut s, CivicKind::Stadium, 1);
-    let near = s.civic_near(sp, true);
+    let near = s.civic_near(stadium_at, true);
     assert!(near.traffic_add > 0.0 && near.value > 0.0, "{near:?}");
     assert!(near.notes.iter().any(|n| n.contains("stadium")));
     // a university lifts every lot a little
-    build(&mut s, CivicKind::University, 2);
     assert!(s.civic_near(far, false).value >= 0.04);
     assert!(s.arrival_bonus() > 1.05);
     assert!(s.shop_demand_bonus() > 0.05);
