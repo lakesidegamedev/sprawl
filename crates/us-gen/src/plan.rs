@@ -328,8 +328,8 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
         }
         Preset::Coast => {
             let field = CoastField::new(seed);
-            extra.zones = vec![field.road_zone(46.0)];
-            extra.wet = vec![field.road_zone(120.0)];
+            extra.zones = vec![field.road_zone(72.0)];
+            extra.wet = vec![field.road_zone(150.0)];
             extra.sea = Some(field.clone());
             terrain = terrain.with_relief(Relief::Coast(field));
         }
@@ -373,13 +373,18 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
     if let Some(c) = &extra.sea {
         water.push(c.sea_ring());
     }
+    // no lot (not even a farm) stands on rock or its talus
+    let mut lot_keepout = water.clone();
+    if style == Preset::Mesa {
+        lot_keepout.extend(extra.zones.iter().cloned());
+    }
     let (lots, stations, centres) = lots::make_lots(
         &drafts,
         &culs,
         &additions,
         hall,
         hall_radius,
-        &water,
+        &lot_keepout,
         &terrain,
         &mut lot_rng,
         preset,

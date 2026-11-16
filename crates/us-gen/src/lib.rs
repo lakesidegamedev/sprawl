@@ -17,7 +17,7 @@ mod terrain;
 mod world;
 
 pub use geom::{Pt, pt};
-pub use relief::{CoastField, Cove, Formation, MesaField, Relief, Rock};
+pub use relief::{CoastField, Cove, Formation, Harbour, MesaField, Mooring, Relief, Rock, Stack};
 pub use terrain::Terrain;
 pub use world::{HALL, HWY_Y, S as MAP_SIZE};
 

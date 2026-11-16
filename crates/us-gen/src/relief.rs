@@ -96,10 +96,20 @@ impl Formation {
     /// Ring round the foot, `extra` metres out from where the talus is walkable.
     pub fn footprint(&self, extra: f64) -> Vec<Pt> {
         let n = 96;
+        let mut rad: Vec<f64> = (0..n)
+            .map(|i| self.radius(TAU * i as f64 / n as f64) + self.wall + 0.72 * self.skirt)
+            .collect();
+        // rounded: a road that follows the foot cannot turn on a point
+        for _ in 0..9 {
+            let src = rad.clone();
+            for i in 0..n {
+                rad[i] = 0.25 * src[(i + n - 1) % n] + 0.5 * src[i] + 0.25 * src[(i + 1) % n];
+            }
+        }
         (0..=n)
             .map(|i| {
                 let a = TAU * (i % n) as f64 / n as f64;
-                let r = self.radius(a) + self.wall + 0.72 * self.skirt + extra;
+                let r = rad[i % n] + extra;
                 pt(self.c.x + r * cos(a), self.c.y + r * sin(a))
             })
             .collect()
@@ -285,8 +295,38 @@ impl MesaField {
 pub struct Cove {
     pub c: Pt,
     pub rho: f64,
-    /// The sheltered harbour: its shore is a gentle beach rather than a cliff.
+    /// The sheltered harbour: a beach on its inner shore, cliffs and headlands round its mouth.
     pub harbour: bool,
+}
+
+/// A stack of rock standing in the sea off the cliffs.
+#[derive(Clone, Copy, Debug)]
+pub struct Stack {
+    pub c: Pt,
+    pub r: f64,
+    pub h: f64,
+    /// A stack with an arch through its foot.
+    pub arch: bool,
+}
+
+/// A boat at its mooring: place, heading in radians, and size (0 small, 1 medium, 2 large).
+#[derive(Clone, Copy, Debug)]
+pub struct Mooring {
+    pub at: Pt,
+    pub heading: f64,
+    pub size: u8,
+}
+
+/// What stands in and round the harbour cove: breakwaters, piers, boats and the lighthouse.
+#[derive(Clone, Debug, Default)]
+pub struct Harbour {
+    /// Stone breakwaters: the line of each, from the shore out to sea.
+    pub breakwaters: Vec<Vec<Pt>>,
+    /// Piers: root on the shore and tip in the water.
+    pub piers: Vec<(Pt, Pt)>,
+    /// Foot of the lighthouse, on the high ground of a headland.
+    pub lighthouse: Pt,
+    pub boats: Vec<Mooring>,
 }
 
 /// The sea along the east edge: cliffs, coves and a harbour.
@@ -299,16 +339,20 @@ pub struct CoastField {
     p2: f64,
     cliff_a: f64,
     cliff_b: f64,
+    face: f64,
     pub coves: Vec<Cove>,
+    pub stacks: Vec<Stack>,
+    seed: u64,
 }
 
 impl CoastField {
     pub fn new(seed: u64) -> CoastField {
         let mut rng = Rng::new(seed, 0xc0a5);
         let yh = HALL.y + rng.uniform(-300.0, 450.0);
+        let rho_h = rng.uniform(380.0, 450.0);
         let mut coves = vec![Cove {
             c: pt(0.0, yh),
-            rho: rng.uniform(380.0, 450.0),
+            rho: rho_h,
             harbour: true,
         }];
         let mut y = if rng.chance(0.5) {
@@ -327,19 +371,47 @@ impl CoastField {
         }
         let mut f = CoastField {
             base: 3040.0 + rng.uniform(-60.0, 80.0),
-            a1: rng.uniform(90.0, 140.0),
+            a1: rng.uniform(70.0, 110.0),
             p1: rng.uniform(0.0, TAU),
-            a2: rng.uniform(35.0, 60.0),
+            a2: rng.uniform(18.0, 34.0),
             p2: rng.uniform(0.0, TAU),
             cliff_a: rng.uniform(0.0, TAU),
             cliff_b: rng.uniform(0.0, TAU),
+            face: rng.uniform(0.0, TAU),
             coves: Vec::new(),
+            stacks: Vec::new(),
+            seed,
         };
-        // coves sit on the coast line
+        // coves sit on the coast line; the harbour is a keyhole with a narrower mouth, the
+        // others are round bites out of the cliffs
         for c in &mut coves {
-            c.c.x = f.line_x(c.c.y);
+            let off = if c.harbour { 0.6 * c.rho } else { 0.0 };
+            c.c.x = f.line_x(c.c.y) - off;
         }
         f.coves = coves;
+        // sea stacks off the cliffs, clear of the harbour
+        let mut srng = Rng::new(seed, 0xc0a6);
+        let mut tries = 0;
+        let mut y = 1300.0 + srng.uniform(0.0, 300.0);
+        while f.stacks.len() < 7 && tries < 60 && y < S - 200.0 {
+            tries += 1;
+            let r = srng.uniform(14.0, 30.0);
+            let out = srng.uniform(70.0, 190.0);
+            let c = pt(f.edge_x(y, -32.0) + out, y);
+            let ok = f.inland(c.x, c.y) < -(60.0 + r)
+                && (c.y - yh).abs() > rho_h + 260.0
+                && f.stacks.iter().all(|o| o.c.dist(c) > 140.0);
+            if ok {
+                let arch = f.stacks.len() % 3 == 1;
+                f.stacks.push(Stack {
+                    c,
+                    r: if arch { r + 12.0 } else { r },
+                    h: srng.uniform(28.0, 75.0),
+                    arch,
+                });
+            }
+            y += srng.uniform(150.0, 420.0);
+        }
         f
     }
 
@@ -377,11 +449,31 @@ impl CoastField {
         x
     }
 
-    /// Weight of the harbour at a point, 1 in the middle, 0 a kilometre away.
+    /// Weight of the harbour at a point, 1 in the cove, 0 some way off.
     pub fn harbour_weight(&self, x: f64, y: f64) -> f64 {
         let h = self.coves[0];
         let d = ((x - h.c.x).powi(2) + (y - h.c.y).powi(2)).sqrt();
-        libm::exp(-(d / (h.rho + 520.0)).powi(4))
+        let near = 1.0 - smooth(0.85 * h.rho, h.rho + 700.0, d);
+        // the downtown keeps its own level ground
+        let keep = smooth(
+            120.0,
+            320.0,
+            ((x - HALL.x).powi(2) + (y - HALL.y).powi(2)).sqrt(),
+        );
+        // only the inner (inland) side of the cove is low: its mouth stays cliff
+        near * keep * smooth(-0.05, 0.45, (h.c.x - x) / h.rho)
+    }
+
+    /// How much of a point is beach: the inner shore of the harbour cove only.
+    pub fn beach_weight(&self, x: f64, y: f64) -> f64 {
+        let h = self.coves[0];
+        let d = self.inland(x, y);
+        if d <= 0.0 {
+            return 1.0;
+        }
+        let u = (h.c.x - x) / h.rho;
+        let along = 1.0 - smooth(0.75, 1.05, ((y - h.c.y) / h.rho).abs());
+        smooth(0.3, 0.7, u) * along * (1.0 - smooth(55.0, 100.0, d))
     }
 
     /// Height of a point on the coast given the plain ground there.
@@ -390,44 +482,50 @@ impl CoastField {
         if d <= 0.0 {
             return 0.0;
         }
+        let hv = self.coves[0];
         let hw = self.harbour_weight(x, y);
-        // how high the headlands stand: 60 to 150 m, falling away inland
+        // how high the headlands stand: 60 to 150 m, higher still at the horns of the harbour
         let swing = 0.5 + 0.5 * sin(y / 1500.0 + self.cliff_a) * cos(y / 760.0 + self.cliff_b);
-        let head = 85.0 + 80.0 * swing;
-        let top = plain + head * libm::exp(-d / 420.0);
-        // round the harbour the land is low
-        let top = top * (1.0 - hw) + (9.0 + 0.12 * top) * hw;
-        // a sheer face rounded at the top edge, or a long beach in the harbour
-        let w = 46.0 + 540.0 * hw;
+        let mut head = 75.0 + 62.0 * swing;
+        for k in [-1.0, 1.0] {
+            let dy = y - (hv.c.y + k * 0.8 * hv.rho);
+            head += 12.0 * libm::exp(-(dy / 260.0).powi(2));
+        }
+        // the cliff top is a plateau at the lip, falling away inland
+        // the downtown keeps its level ground
+        let keep = smooth(
+            500.0,
+            1200.0,
+            ((x - HALL.x).powi(2) + (y - HALL.y).powi(2)).sqrt(),
+        );
+        let top = plain.max(0.0) + keep * head * libm::exp(-(d - 150.0).max(0.0) / 380.0);
+        // round the inner harbour the land is low
+        let top = top * (1.0 - hw) + (5.0 + 0.03 * plain.max(0.0)) * hw;
+        // a sheer face, its width varying so the wall has buttresses and gullies; or a beach
+        let wc = 24.0 + 10.0 * sin(y / 31.0 + self.face) + 6.0 * sin(y / 11.0 + 2.0 * self.face);
+        let mix = smooth(0.04, 0.5, hw);
+        let w = wc * (1.0 - mix) + 280.0 * mix;
         let t = (d / w).clamp(0.0, 1.0);
-        let sheer = 1.0 - (1.0 - t) * (1.0 - t);
-        let mix = smooth(0.02, 0.2, hw);
+        let sheer = 1.0 - (1.0 - t).powi(3);
         let s = sheer * (1.0 - mix) + smooth(0.0, 1.0, t) * mix;
         top * s
     }
 
     /// Water polygon: everything east of the sea edge, with a flat shelf of ground between it
-    /// and the foot of the cliffs. It runs on past the map edge so the sea reaches the horizon.
+    /// and the foot of the cliffs. It follows the coast on past the map edge and runs out to a
+    /// far shore so the sea reaches the horizon.
     pub fn sea_ring(&self) -> Vec<Pt> {
-        let shelf = -32.0;
+        let shelf = -30.0;
         let far = S + 1600.0;
         let mut ring = Vec::new();
-        let mut y = 560.0;
-        let mut started = false;
-        while y <= S {
-            let x = self.edge_x(y, shelf);
-            if x < S + 40.0 {
-                if !started {
-                    ring.push(pt(far, y));
-                    started = true;
-                }
-                ring.push(pt(x, y));
-            }
+        let (y0, y1) = (-500.0, S + 500.0);
+        ring.push(pt(far, y0));
+        let mut y = y0;
+        while y <= y1 {
+            ring.push(pt(self.edge_x(y, shelf).min(far), y));
             y += 12.0;
         }
-        ring.push(pt(self.edge_x(S, shelf), S));
-        ring.push(pt(self.edge_x(S, shelf), far));
-        ring.push(pt(far, far));
+        ring.push(pt(far, y1));
         ring.dedup_by(|a, b| a.dist(*b) < 1e-6);
         ring
     }
@@ -465,6 +563,92 @@ impl CoastField {
         }
         let line: Vec<Pt> = xs.into_iter().map(|(x, y)| pt(x, y)).collect();
         (line.clone(), line)
+    }
+
+    /// Breakwaters, piers, boats and the lighthouse of the harbour.
+    pub fn harbour(&self) -> Harbour {
+        let hv = self.coves[0];
+        let mut rng = Rng::new(self.seed, 0xc0a7);
+        let half = (hv.rho * hv.rho - (0.6 * hv.rho).powi(2)).sqrt();
+        // the horns: where the cove meets the open coast
+        let horn = |k: f64| -> Pt {
+            let y = hv.c.y + k * half;
+            pt(self.edge_x(y, -30.0), y)
+        };
+        let (hs, hn) = (horn(-1.0), horn(1.0));
+        // two arms of stone leave the horns and leave a gap between them for boats
+        let arm = |from: Pt, toward: f64, reach: f64, bend: f64| -> Vec<Pt> {
+            let mid = pt(from.x + 0.45 * reach, from.y + toward * 0.3 * reach);
+            let tip = pt(
+                from.x + 0.75 * reach,
+                from.y + toward * (0.62 * reach + bend),
+            );
+            vec![
+                pt(from.x - 10.0, from.y),
+                from,
+                pt(from.x + 25.0, from.y + toward * 12.0),
+                mid,
+                tip,
+            ]
+        };
+        let south = arm(hs, 1.0, rng.uniform(230.0, 270.0), 0.0);
+        let north = arm(hn, -1.0, rng.uniform(150.0, 190.0), 0.0);
+        let breakwaters = vec![south, north];
+        // piers run out from the beach on the inner shore
+        let mut piers = Vec::new();
+        let mut boats = Vec::new();
+        for (i, deg) in [-34.0f64, 4.0, 38.0].into_iter().enumerate() {
+            let a = (deg + rng.uniform(-5.0, 5.0)).to_radians();
+            let root = pt(
+                hv.c.x - (hv.rho + 14.0) * cos(a),
+                hv.c.y + (hv.rho + 14.0) * sin(a),
+            );
+            let len = rng.uniform(70.0, 120.0) - 10.0 * i as f64;
+            let tip = pt(root.x + len * cos(a), root.y - len * sin(a));
+            piers.push((root, tip));
+            // small boats tied up along both sides
+            let (dx, dy) = ((tip.x - root.x) / len, (tip.y - root.y) / len);
+            let n = 2 + (i % 2);
+            for k in 0..n {
+                let t = 0.4 + 0.5 * k as f64 / n as f64;
+                for side in [-1.0, 1.0] {
+                    if rng.chance(0.7) {
+                        boats.push(Mooring {
+                            at: pt(
+                                root.x + dx * len * t - dy * 5.5 * side,
+                                root.y + dy * len * t + dx * 5.5 * side,
+                            ),
+                            heading: atan2(dy, dx),
+                            size: (rng.below(2)) as u8,
+                        });
+                    }
+                }
+            }
+        }
+        // boats at anchor in the bay and a few larger ones in the lee of the south arm
+        let mut tries = 0;
+        while boats.len() < 22 && tries < 200 {
+            tries += 1;
+            let a = rng.uniform(0.0, TAU);
+            let r = rng.uniform(0.15, 0.7) * hv.rho;
+            let at = pt(hv.c.x + r * cos(a), hv.c.y + r * sin(a));
+            if self.inland(at.x, at.y) > -45.0 || boats.iter().any(|b| b.at.dist(at) < 22.0) {
+                continue;
+            }
+            boats.push(Mooring {
+                at,
+                heading: rng.uniform(0.0, TAU),
+                size: rng.below(3) as u8,
+            });
+        }
+        // the lighthouse stands on the north headland, a little inland of the cliff edge
+        let lighthouse = pt(self.edge_x(hn.y + 90.0, 55.0), hn.y + 90.0);
+        Harbour {
+            breakwaters,
+            piers,
+            lighthouse,
+            boats,
+        }
     }
 }
 

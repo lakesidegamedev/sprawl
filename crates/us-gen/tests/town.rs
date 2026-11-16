@@ -1223,7 +1223,7 @@ fn coastal_towns_have_a_sea_with_cliffs_a_harbour_and_a_coast_road() {
         );
         // the harbour: a cove with a gentle shore and lots on its low ground
         let h = c.coves[0];
-        let shore = us_gen::pt(c.edge_x(h.c.y, 130.0), h.c.y);
+        let shore = us_gen::pt(c.edge_x(h.c.y, 80.0), h.c.y);
         assert!(
             t.height_at(shore) < 12.0,
             "seed {}: harbour shore {:.0} m",
