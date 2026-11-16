@@ -6,7 +6,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use us_gen::{LotKind, Preset, Pt, RoadClass, Town, Zone};
-use us_render::decor::{DRIVE_CLEAR, Streetscape, lot_pad};
+use us_render::decor::{
+    DRIVE_CLEAR, Streetscape, footpath_pieces, lot_pad, plan_footpath, town_square,
+};
 use us_render::levels::{building_site_for, burned};
 use us_render::live::{
     RoadDraw, abandoned, base_ground_far_on, base_ground_on, grown, roads_ground_state_ctx_on,
@@ -69,12 +71,26 @@ struct Deco {
     floor: f32,
     /// Planters and benches also need a finished building near.
     plaza: bool,
+    /// The town square around the hall: always there.
+    always: bool,
 }
+
+/// One piece of a footpath from a finished lot to the street or the square.
+struct PathPiece {
+    obj: Obj,
+    x: f32,
+    y: f32,
+    floor: f32,
+    cell: Cell,
+}
+
+/// A road segment with its half width.
+type RoadSeg = (Pt, Pt, f64);
 
 /// Open road segments in a grid: "is a finished street within this far of a point".
 #[derive(Default)]
 struct OpenRoads {
-    cells: HashMap<(i32, i32), Vec<(Pt, Pt)>>,
+    cells: HashMap<(i32, i32), Vec<RoadSeg>>,
 }
 
 impl OpenRoads {
@@ -91,13 +107,63 @@ impl OpenRoads {
                     let p = w[0].lerp(w[1], k as f64 / n as f64);
                     let c = ((p.x / 32.0).floor() as i32, (p.y / 32.0).floor() as i32);
                     if last != Some(c) {
-                        o.cells.entry(c).or_default().push((w[0], w[1]));
+                        o.cells
+                            .entry(c)
+                            .or_default()
+                            .push((w[0], w[1], r.class.half_width()));
                         last = Some(c);
                     }
                 }
             }
         }
         o
+    }
+
+    /// The nearest open street edge to `p` within `reach` metres: the point on the street's
+    /// side, the gap to it and the street's half width.
+    fn nearest(&self, p: Pt, reach: f64) -> Option<(Pt, f64)> {
+        let (cx, cy) = ((p.x / 32.0).floor() as i32, (p.y / 32.0).floor() as i32);
+        let rings = (reach / 32.0).ceil() as i32 + 1;
+        let mut best: Option<(f64, Pt, f64)> = None;
+        for ring in 0..=rings {
+            if let Some((d, _, _)) = best
+                && d < (ring - 1).max(0) as f64 * 32.0
+            {
+                break;
+            }
+            for dx in -ring..=ring {
+                for dy in -ring..=ring {
+                    if dx.abs().max(dy.abs()) != ring {
+                        continue;
+                    }
+                    for (a, b, hw) in self.cells.get(&(cx + dx, cy + dy)).into_iter().flatten() {
+                        let (abx, aby) = (b.x - a.x, b.y - a.y);
+                        let l2 = abx * abx + aby * aby;
+                        let t = if l2 < 1e-9 {
+                            0.0
+                        } else {
+                            (((p.x - a.x) * abx + (p.y - a.y) * aby) / l2).clamp(0.0, 1.0)
+                        };
+                        let q = us_gen::pt(a.x + abx * t, a.y + aby * t);
+                        let d = p.dist(q) - hw;
+                        if d < best.map_or(f64::MAX, |b| b.0) {
+                            best = Some((d, q, *hw));
+                        }
+                    }
+                }
+            }
+        }
+        let (d, q, hw) = best?;
+        if d > reach {
+            return None;
+        }
+        // the sidewalk: a metre off the kerb, toward the lot
+        let l = q.dist(p).max(1e-9);
+        let side = us_gen::pt(
+            q.x + (p.x - q.x) / l * (hw + 1.0),
+            q.y + (p.y - q.y) / l * (hw + 1.0),
+        );
+        Some((side, d))
     }
 
     fn near(&self, x: f32, y: f32, r: f64) -> bool {
@@ -107,7 +173,7 @@ impl OpenRoads {
             (-1..=1).any(|dy| {
                 self.cells
                     .get(&(cx + dx, cy + dy))
-                    .is_some_and(|v| v.iter().any(|(a, b)| dist_seg(p, *a, *b) < r))
+                    .is_some_and(|v| v.iter().any(|(a, b, _)| dist_seg(p, *a, *b) < r))
             })
         })
     }
@@ -123,6 +189,12 @@ pub struct LiveScene {
     open: OpenRoads,
     /// Whether each road run was open when `open` was built.
     open_flags: Vec<bool>,
+    /// Footpaths of finished lots that stand away from a street, by lot.
+    paths: HashMap<usize, Vec<PathPiece>>,
+    /// Centres of the town square's paving: where a footpath can end.
+    square_tiles: Vec<Pt>,
+    /// Lots with path pieces, by the cell the pieces are in.
+    path_cells: HashMap<Cell, Vec<usize>>,
     town: Arc<Town>,
     show_hall: bool,
     hall_theta: f32,
@@ -543,7 +615,27 @@ impl LiveScene {
                         turn,
                         floor,
                         plaza,
+                        always: false,
                     });
+            }
+        }
+        let mut square_cells: Vec<Cell> = Vec::new();
+        let mut square_tiles: Vec<Pt> = Vec::new();
+        if show_hall {
+            let sq = town_square(&town, &land, hall, hall_theta);
+            square_tiles = sq.tiles;
+            for (obj, x, y, turn, floor) in sq.pieces {
+                let c = cell_of(x as f64, y as f64);
+                square_cells.push(c);
+                decos.entry(c).or_default().push(Deco {
+                    obj,
+                    x,
+                    y,
+                    turn,
+                    floor,
+                    plaza: false,
+                    always: true,
+                });
             }
         }
         let mut ls = LiveScene {
@@ -553,6 +645,9 @@ impl LiveScene {
             deco_drawn: HashMap::new(),
             open: OpenRoads::default(),
             open_flags: Vec::new(),
+            paths: HashMap::new(),
+            square_tiles,
+            path_cells: HashMap::new(),
             town,
             show_hall,
             hall_theta,
@@ -594,6 +689,9 @@ impl LiveScene {
         if show_hall {
             ls.mark(hall_cell);
         }
+        for c in square_cells {
+            ls.mark(c);
+        }
         let station_cells: Vec<Cell> = ls.stations.iter().map(|s| s.4).collect();
         for c in station_cells {
             ls.mark(c);
@@ -615,6 +713,13 @@ impl LiveScene {
         }
         self.open_flags = flags;
         self.open = OpenRoads::new(sim);
+        // a street opened or closed: footpaths may have a nearer street to go to
+        let standing: Vec<usize> = (0..self.look.len())
+            .filter(|&i| self.look[i].state == 2)
+            .collect();
+        for i in standing {
+            self.refresh_path(sim, i);
+        }
         let cells: Vec<Cell> = self.decos.keys().copied().collect();
         for c in cells {
             let n = self.decos[&c]
@@ -627,8 +732,118 @@ impl LiveScene {
         }
     }
 
+    /// Whether a lot gets a footpath: a downtown, shop, office or apartment lot.
+    fn wants_path(&self, sim: &Sim, i: usize) -> bool {
+        let l = &sim.lots()[i];
+        if l.civic.is_some() || l.exempt {
+            return false;
+        }
+        let core = self
+            .town
+            .additions
+            .get(l.addition)
+            .is_some_and(|a| a.zone == Zone::Core);
+        core && !matches!(l.kind, LotKind::Warehouse | LotKind::Workshop)
+            || matches!(
+                l.kind,
+                LotKind::Shop | LotKind::FastFood | LotKind::Office | LotKind::Apartments
+            )
+    }
+
+    /// The footpath of lot `i`: made when the building stands more than 12 m from an open
+    /// street, dropped when it stops standing. Redraws the chunks it touches.
+    fn refresh_path(&mut self, sim: &Sim, i: usize) {
+        let mut pieces: Vec<PathPiece> = Vec::new();
+        if self.look[i].state == 2 && self.wants_path(sim, i) {
+            pieces = self.path_pieces(sim, i);
+        }
+        let mut touched: Vec<Cell> = Vec::new();
+        if let Some(old) = self.paths.remove(&i) {
+            for p in &old {
+                touched.push(p.cell);
+            }
+            for c in old.iter().map(|p| p.cell) {
+                if let Some(v) = self.path_cells.get_mut(&c) {
+                    v.retain(|&k| k != i);
+                }
+            }
+        }
+        for p in &pieces {
+            touched.push(p.cell);
+            let v = self.path_cells.entry(p.cell).or_default();
+            if !v.contains(&i) {
+                v.push(i);
+            }
+        }
+        if !pieces.is_empty() {
+            self.paths.insert(i, pieces);
+        }
+        touched.sort_unstable();
+        touched.dedup();
+        for c in touched {
+            self.mark(c);
+        }
+    }
+
+    fn path_pieces(&self, sim: &Sim, i: usize) -> Vec<PathPiece> {
+        let l = &sim.lots()[i];
+        let c = l.pos;
+        let pad_r = l.radius * 0.7;
+        // where to go: the nearest open street, or the edge of the town square
+        let mut goal: Option<(f64, Pt)> =
+            self.open.nearest(c, 400.0).map(|(side, gap)| (gap, side));
+        for t in &self.square_tiles {
+            let gap = c.dist(*t);
+            if goal.is_none_or(|g| gap < g.0) {
+                goal = Some((gap, *t));
+            }
+        }
+        let Some((gap, end)) = goal else {
+            return Vec::new();
+        };
+        if gap - pad_r <= 12.0 {
+            return Vec::new();
+        }
+        let dir = us_gen::pt((end.x - c.x) / c.dist(end), (end.y - c.y) / c.dist(end));
+        let start = us_gen::pt(c.x + dir.x * pad_r, c.y + dir.y * pad_r);
+        // go round the other lots near the line
+        let (lo, hi) = (
+            us_gen::pt(start.x.min(end.x) - 60.0, start.y.min(end.y) - 60.0),
+            us_gen::pt(start.x.max(end.x) + 60.0, start.y.max(end.y) + 60.0),
+        );
+        let blocks: Vec<(Pt, f64)> = sim
+            .lots()
+            .iter()
+            .enumerate()
+            .filter(|(k, o)| {
+                *k != i
+                    && o.pos.x > lo.x
+                    && o.pos.x < hi.x
+                    && o.pos.y > lo.y
+                    && o.pos.y < hi.y
+                    && o.pos.dist(start) > 3.0
+                    && o.pos.dist(end) > 3.0
+            })
+            .map(|(_, o)| (o.pos, o.radius * 0.5 + 1.0))
+            .collect();
+        let line = plan_footpath(start, end, &blocks);
+        footpath_pieces(&line, 40.0)
+            .into_iter()
+            .map(|(obj, mid)| PathPiece {
+                obj,
+                x: mid.x as f32,
+                y: mid.y as f32,
+                floor: self.land.height(mid.x as f32, mid.y as f32),
+                cell: cell_of(mid.x, mid.y),
+            })
+            .collect()
+    }
+
     /// Whether a street tree or plaza piece is drawn now.
     fn deco_shown(&self, sim: &Sim, d: &Deco) -> bool {
+        if d.always {
+            return true;
+        }
         if !self.open.near(d.x, d.y, if d.plaza { 30.0 } else { 14.0 }) {
             return false;
         }
@@ -1222,6 +1437,7 @@ impl LiveScene {
                 }
                 if (was.state == 2) != (k.state == 2) {
                     self.refresh_plazas(sim, c);
+                    self.refresh_path(sim, i);
                 }
                 let gone = matches!(l.phase, Phase::Hidden | Phase::Cleared { .. });
                 if gone != self.parked[i] {
@@ -1323,6 +1539,25 @@ impl LiveScene {
                     });
                     tree.emit_on(&mut mesh, &mut next_id, tx, ty, 0.0, 1.0, sit);
                 }
+                if next_id > base + IDS_PER_CELL - 200 {
+                    next_id = base;
+                }
+            }
+        }
+        for &i in self.path_cells.get(&cell).into_iter().flatten() {
+            for p in self
+                .paths
+                .get(&i)
+                .into_iter()
+                .flatten()
+                .filter(|p| p.cell == cell)
+            {
+                let sit = (!self.land.is_flat()).then_some(Sit {
+                    land: &self.land,
+                    z: p.floor,
+                });
+                p.obj
+                    .emit_on(&mut mesh, &mut next_id, p.x, p.y, 0.0, 1.0, sit);
                 if next_id > base + IDS_PER_CELL - 200 {
                     next_id = base;
                 }

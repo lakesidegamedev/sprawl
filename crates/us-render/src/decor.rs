@@ -976,6 +976,387 @@ pub fn lot_pad(zone: Zone, r: f32, footprint: [f32; 4]) -> Option<Obj> {
     Some(o)
 }
 
+// ---- the town square and footpaths ----
+
+/// The square lies around the hall, in the hall's own frame (front toward -y).
+const SQUARE_X: f32 = 39.0;
+const SQUARE_Y0: f32 = -39.0;
+const SQUARE_Y1: f32 = 36.0;
+const SQUARE_TILE: f32 = 3.0;
+
+/// Hall frame to world.
+fn hall_world(h: Pt, th: f32, lx: f32, ly: f32) -> (f32, f32) {
+    let (s, c) = (libm::sinf(th), libm::cosf(th));
+    (h.x as f32 + c * lx - s * ly, h.y as f32 + s * lx + c * ly)
+}
+
+fn bench_obj(along_x: bool) -> Obj {
+    let mut o = Obj::new();
+    let wood = [150, 104, 70];
+    let iron = [60, 62, 70];
+    if along_x {
+        o.bx(-0.9, -0.25, 0.4, 0.9, 0.25, 0.55, wood);
+        o.bx(-0.8, -0.2, 0.0, -0.65, 0.2, 0.4, iron);
+        o.bx(0.65, -0.2, 0.0, 0.8, 0.2, 0.4, iron);
+        o.bx(-0.9, 0.2, 0.55, 0.9, 0.3, 1.0, wood);
+    } else {
+        o.bx(-0.25, -0.9, 0.4, 0.25, 0.9, 0.55, wood);
+        o.bx(-0.2, -0.8, 0.0, 0.2, -0.65, 0.4, iron);
+        o.bx(-0.2, 0.65, 0.0, 0.2, 0.8, 0.4, iron);
+        o.bx(0.2, -0.9, 0.55, 0.3, 0.9, 1.0, wood);
+    }
+    o
+}
+
+fn lamp_obj() -> Obj {
+    let mut o = Obj::new();
+    o.bx(-0.3, -0.3, 0.0, 0.3, 0.3, 0.35, [96, 98, 104]);
+    o.bx(-0.1, -0.1, 0.35, 0.1, 0.1, 4.2, [52, 56, 66]);
+    o.bx(-0.3, -0.3, 4.2, 0.3, 0.3, 4.7, [255, 232, 160]);
+    o.bx(-0.4, -0.4, 4.7, 0.4, 0.4, 4.85, [52, 56, 66]);
+    o
+}
+
+fn fountain_obj() -> Obj {
+    let mut o = Obj::new();
+    let stone = [176, 174, 170];
+    o.prism(0.0, 0.0, 0.0, 0.7, 4.8, stone, 14, Some([150, 148, 146]));
+    o.prism(
+        0.0,
+        0.0,
+        0.5,
+        0.62,
+        4.1,
+        [92, 164, 214],
+        14,
+        Some([112, 182, 226]),
+    );
+    o.prism(0.0, 0.0, 0.0, 2.6, 0.9, stone, 8, None);
+    o.prism(0.0, 0.0, 2.2, 2.5, 2.0, stone, 12, Some([92, 164, 214]));
+    o.prism(
+        0.0,
+        0.0,
+        2.5,
+        3.7,
+        0.22,
+        [200, 232, 250],
+        6,
+        Some([230, 246, 255]),
+    );
+    o
+}
+
+/// The town square: what to draw and where its paving is.
+pub struct Square {
+    pub pieces: Vec<Placed>,
+    /// Centres of the paved tiles, world coordinates: the places a footpath can end.
+    pub tiles: Vec<Pt>,
+}
+
+/// The paved town square around the hall: paving bands, a ring path and a straight path from the
+/// hall, a fountain, benches, trees in pits and lamp posts. Paving is left out where a street,
+/// a lot or water is, and the fountain goes on whichever side of the hall has the most room.
+/// Pieces are placed one per patch so the game can draw each in the chunk it stands in.
+/// `theta` is the hall's turn.
+pub fn town_square(t: &Town, land: &Land, hall: Pt, theta: f32) -> Square {
+    let roads = Roads::new(t);
+    let near_lots: Vec<(Pt, f64)> = t
+        .lots
+        .iter()
+        .filter(|l| l.centre.dist(hall) < 110.0)
+        .map(|l| (l.centre, l.radius))
+        .collect();
+    let free = |lx: f32, ly: f32, m: f64| -> bool {
+        let (x, y) = hall_world(hall, theta, lx, ly);
+        let p = pt(x as f64, y as f64);
+        roads.edge_dist(p, None).0 > m
+            && !near_lots.iter().any(|(c, r)| c.dist(p) < r - 1.0 + m)
+            && land.water_at(p).is_none()
+    };
+    let under_hall = |mx: f32, my: f32| mx.abs() < 16.5 && my > -12.8 && my < 9.5;
+    // the fountain stands on the side of the hall with the most paving room
+    let sides: [((f32, f32), (f32, f32)); 4] = [
+        ((0.0, -30.0), (0.0, -12.8)),
+        ((0.0, 25.0), (0.0, 9.5)),
+        ((-30.0, -2.0), (-16.5, -2.0)),
+        ((30.0, -2.0), (16.5, -2.0)),
+    ];
+    let room = |f: (f32, f32)| -> usize {
+        let mut n = 0;
+        let mut y = f.1 - 12.0;
+        while y <= f.1 + 12.0 {
+            let mut x = f.0 - 12.0;
+            while x <= f.0 + 12.0 {
+                if (x - f.0).hypot(y - f.1) <= 12.0 && !under_hall(x, y) && free(x, y, 0.5) {
+                    n += 1;
+                }
+                x += SQUARE_TILE;
+            }
+            y += SQUARE_TILE;
+        }
+        n
+    };
+    let mut best = (0usize, 0usize);
+    for (k, (f, _)) in sides.iter().enumerate() {
+        let n = room(*f);
+        if n > best.0 {
+            best = (n, k);
+        }
+    }
+    let (fountain, door) = sides[best.1];
+    let sand: Rgb = [216, 198, 162];
+    let light: Rgb = [204, 200, 192];
+    let dark: Rgb = [188, 184, 178];
+    let edge: Rgb = [226, 222, 214];
+    let on_axis = |mx: f32, my: f32| -> bool {
+        let (ax, ay) = (door.0, door.1);
+        let (bx, by) = fountain;
+        let (dx, dy) = (bx - ax, by - ay);
+        let l2 = dx * dx + dy * dy;
+        let u = (((mx - ax) * dx + (my - ay) * dy) / l2).clamp(0.0, 1.0);
+        (mx - ax - dx * u).hypot(my - ay - dy * u) < 2.0
+    };
+    let mut out: Vec<Placed> = Vec::new();
+    let mut tiles: Vec<Pt> = Vec::new();
+    // paving, one patch of 6 x 6 tiles at a time
+    let t_sz = SQUARE_TILE;
+    let nx = (2.0 * SQUARE_X / t_sz).round() as i32;
+    let ny = ((SQUARE_Y1 - SQUARE_Y0) / t_sz).round() as i32;
+    let patch = 6;
+    for bx in 0..(nx + patch - 1) / patch {
+        for by in 0..(ny + patch - 1) / patch {
+            let (ox, oy) = (
+                -SQUARE_X + (bx * patch) as f32 * t_sz,
+                SQUARE_Y0 + (by * patch) as f32 * t_sz,
+            );
+            let (cx, cy) = (
+                ox + patch as f32 * t_sz / 2.0,
+                oy + patch as f32 * t_sz / 2.0,
+            );
+            let mut o = Obj::new();
+            let mut any = false;
+            for ix in bx * patch..((bx + 1) * patch).min(nx) {
+                for iy in by * patch..((by + 1) * patch).min(ny) {
+                    let x0 = -SQUARE_X + ix as f32 * t_sz;
+                    let y0 = SQUARE_Y0 + iy as f32 * t_sz;
+                    let (mx, my) = (x0 + t_sz / 2.0, y0 + t_sz / 2.0);
+                    if under_hall(mx, my) || !free(mx, my, 0.5) {
+                        continue;
+                    }
+                    let df = (mx - fountain.0).hypot(my - fountain.1);
+                    // the paving thins out toward the corners
+                    if df > 30.0 && (mx.abs() > 30.0 || !(-30.0..=26.0).contains(&my)) {
+                        continue;
+                    }
+                    let rim = mx.abs() > SQUARE_X - t_sz || my < SQUARE_Y0 + t_sz;
+                    let col = if (8.2..10.8).contains(&df) || on_axis(mx, my) {
+                        sand
+                    } else if rim {
+                        edge
+                    } else if (ix + iy) & 1 == 0 {
+                        light
+                    } else {
+                        dark
+                    };
+                    quad(
+                        &mut o,
+                        x0 - cx,
+                        y0 - cy,
+                        x0 + t_sz - cx,
+                        y0 + t_sz - cy,
+                        0.03,
+                        col,
+                    );
+                    let (wx, wy) = hall_world(hall, theta, mx, my);
+                    tiles.push(pt(wx as f64, wy as f64));
+                    any = true;
+                }
+            }
+            if any {
+                let (wx, wy) = hall_world(hall, theta, cx, cy);
+                out.push((o, wx, wy, theta, land.height(wx, wy)));
+            }
+        }
+    }
+    let mut put = |o: Obj, lx: f32, ly: f32, extra: f32, m: f64| {
+        if free(lx, ly, m) && !under_hall(lx, ly) {
+            let (wx, wy) = hall_world(hall, theta, lx, ly);
+            out.push((o, wx, wy, theta + extra, land.height(wx, wy)));
+        }
+    };
+    let (fx, fy) = fountain;
+    put(fountain_obj(), fx, fy, 0.0, 2.0);
+    // benches around the ring, facing the fountain
+    for (dx, dy, along_x) in [
+        (0.0, 11.6, true),
+        (0.0, -11.6, true),
+        (-11.6, 0.0, false),
+        (11.6, 0.0, false),
+    ] {
+        put(bench_obj(along_x), fx + dx, fy + dy, 0.0, 0.5);
+    }
+    // trees in pits and lamp posts on the ring's outside, and by the path
+    let mut rng = Rng::new(t.seed ^ 0x7077_a000, 5);
+    for (dx, dy) in [
+        (-8.0f32, -8.0f32),
+        (8.0, -8.0),
+        (-8.0, 8.0),
+        (8.0, 8.0),
+        (-16.0, 0.0),
+        (16.0, 0.0),
+        (0.0, -16.0),
+        (0.0, 16.0),
+    ] {
+        let mut o = Obj::new();
+        let tr = street_tree(true, &mut rng, 0.0, 0.0);
+        o.add_placed(&tr, 0.0, 0.0, 0.0);
+        o.bx_top(-1.2, -1.2, 0.0, 1.2, 1.2, 0.4, [150, 130, 108], SOIL);
+        // trees stand upright whatever the hall's turn
+        put(o, fx + dx, fy + dy, -theta, 1.5);
+    }
+    for (dx, dy) in [
+        (-5.5f32, -5.5f32),
+        (5.5, -5.5),
+        (-5.5, 5.5),
+        (5.5, 5.5),
+        (-12.0, -12.0),
+        (12.0, -12.0),
+        (-12.0, 12.0),
+        (12.0, 12.0),
+        (-20.0, 0.0),
+        (20.0, 0.0),
+    ] {
+        put(lamp_obj(), fx + dx, fy + dy, 0.0, 0.8);
+    }
+    // the rest of the paving: trees in pits, benches and lamps on a loose 12 m lattice
+    for i in -4i32..=4 {
+        for j in -4i32..=4 {
+            let (lx, ly) = (i as f32 * 12.0, -1.5 + j as f32 * 12.0);
+            let off_ring = (lx - fx).hypot(ly - fy) > 14.0;
+            let by_hall = lx.abs() < 20.0 && ly > -17.0 && ly < 13.0;
+            if !off_ring || by_hall {
+                continue;
+            }
+            match (i + j).rem_euclid(4) {
+                0 | 2 => {
+                    let mut o = Obj::new();
+                    let tr = street_tree(true, &mut rng, 0.0, 0.0);
+                    o.add_placed(&tr, 0.0, 0.0, 0.0);
+                    o.bx_top(-1.2, -1.2, 0.0, 1.2, 1.2, 0.4, [150, 130, 108], SOIL);
+                    put(o, lx, ly, -theta, 1.5);
+                }
+                1 => put(bench_obj(i % 2 == 0), lx, ly, 0.0, 1.0),
+                _ => put(lamp_obj(), lx, ly, 0.0, 0.8),
+            }
+        }
+    }
+    // lamps along the hall's own front
+    for lx in [-12.0f32, 12.0] {
+        let ly = if door.1 < -1.0 { -15.5 } else { 12.5 };
+        if door.0 == 0.0 {
+            put(lamp_obj(), lx, ly, 0.0, 0.8);
+        }
+    }
+    Square { pieces: out, tiles }
+}
+
+/// A paved footpath from `from` to `to`: straight, or with one bend if a lot stands in the way
+/// of the straight line. `blocks` are circles to go round. The result lists the corner points.
+pub fn plan_footpath(from: Pt, to: Pt, blocks: &[(Pt, f64)]) -> Vec<Pt> {
+    let clear = |a: Pt, b: Pt| blocks.iter().all(|(c, r)| seg_dist(*c, a, b) > *r);
+    if clear(from, to) {
+        return vec![from, to];
+    }
+    let mut best: Option<(f64, Vec<Pt>)> = None;
+    let d = to - from;
+    let n = pt(-d.y, d.x);
+    let nl = (n.x * n.x + n.y * n.y).sqrt().max(1e-9);
+    let mut cands = vec![pt(from.x, to.y), pt(to.x, from.y)];
+    for k in [-1.0f64, 1.0] {
+        for f in [0.3f64, 0.5, 0.7] {
+            let m = from.lerp(to, f);
+            for off in [10.0f64, 18.0, 30.0] {
+                cands.push(pt(m.x + n.x / nl * off * k, m.y + n.y / nl * off * k));
+            }
+        }
+    }
+    for c in cands {
+        if clear(from, c) && clear(c, to) {
+            let len = from.dist(c) + c.dist(to);
+            if best.as_ref().is_none_or(|(l, _)| len < *l) {
+                best = Some((len, vec![from, c, to]));
+            }
+        }
+    }
+    best.map_or_else(|| vec![from, to], |(_, v)| v)
+}
+
+fn seg_dist(p: Pt, a: Pt, b: Pt) -> f64 {
+    let (abx, aby) = (b.x - a.x, b.y - a.y);
+    let l2 = abx * abx + aby * aby;
+    let t = if l2 < 1e-12 {
+        0.0
+    } else {
+        (((p.x - a.x) * abx + (p.y - a.y) * aby) / l2).clamp(0.0, 1.0)
+    };
+    p.dist(pt(a.x + abx * t, a.y + aby * t))
+}
+
+/// The paved ribbon of a footpath, cut into pieces of at most `reach` metres: each piece is
+/// local to the point returned with it (its middle), so the game can draw it in its own chunk.
+/// Short quads follow the ground over hills.
+pub fn footpath_pieces(line: &[Pt], reach: f64) -> Vec<(Obj, Pt)> {
+    const W: f32 = 1.1;
+    let mut out = Vec::new();
+    // walk the line in steps of about 4 m, grouping steps into pieces
+    let mut steps: Vec<(Pt, Pt)> = Vec::new();
+    for w in line.windows(2) {
+        let n = ((w[0].dist(w[1]) / 4.0).ceil() as usize).max(1);
+        for k in 0..n {
+            steps.push((
+                w[0].lerp(w[1], k as f64 / n as f64),
+                w[0].lerp(w[1], (k + 1) as f64 / n as f64),
+            ));
+        }
+    }
+    let mut i = 0;
+    while i < steps.len() {
+        let mut j = i;
+        let mut len = 0.0;
+        while j < steps.len() && len < reach {
+            len += steps[j].0.dist(steps[j].1);
+            j += 1;
+        }
+        let mid = steps[i].0.lerp(steps[j - 1].1, 0.5);
+        let mut o = Obj::new();
+        for (k, (a, b)) in steps[i..j].iter().enumerate() {
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            let l = (dx * dx + dy * dy).sqrt().max(1e-9);
+            let (nx, ny) = ((-dy / l) as f32 * W, (dx / l) as f32 * W);
+            let (ax, ay) = ((a.x - mid.x) as f32, (a.y - mid.y) as f32);
+            let (bx, by) = ((b.x - mid.x) as f32, (b.y - mid.y) as f32);
+            // a little overlap at each end keeps bends closed
+            let (ex, ey) = ((dx / l) as f32 * 0.5, (dy / l) as f32 * 0.5);
+            let (ax, ay, bx, by) = (ax - ex, ay - ey, bx + ex, by + ey);
+            let col = if k % 2 == 0 {
+                CONC_L
+            } else {
+                shade(CONC_L, 0.96)
+            };
+            let pts: [V3; 4] = [
+                [ax - nx, ay - ny, 0.04],
+                [bx - nx, by - ny, 0.04],
+                [bx + nx, by + ny, 0.04],
+                [ax + nx, ay + ny, 0.04],
+            ];
+            o.poly(&pts, col, false, false, true);
+        }
+        out.push((o, mid));
+        i = j;
+    }
+    out
+}
+
 /// How close a driveway keeps street trees away, metres.
 pub const DRIVE_CLEAR: f64 = 3.4;
 
@@ -1089,6 +1470,41 @@ mod tests {
             }
         }
         assert!(lot_pad(Zone::Inner, 20.0, [-5.0, -5.0, 5.0, 5.0]).is_none());
+    }
+
+    #[test]
+    fn town_square_is_the_same_every_time_and_keeps_off_roads() {
+        let t = generate(Preset::LakeTown, 3);
+        let land = Land::from_town(&t);
+        let a = town_square(&t, &land, t.hall, 0.4);
+        let b = town_square(&t, &land, t.hall, 0.4);
+        assert_eq!(a.tiles.len(), b.tiles.len());
+        assert!(a.tiles.len() > 40, "a square has paving: {}", a.tiles.len());
+        assert!(a.pieces.len() > 4);
+        let roads = Roads::new(&t);
+        for p in &a.tiles {
+            assert!(
+                roads.edge_dist(*p, None).0 > 0.0,
+                "paving on a road at {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn footpath_bends_round_a_lot_and_pieces_are_short() {
+        let (a, b) = (pt(0.0, 0.0), pt(100.0, 0.0));
+        assert_eq!(plan_footpath(a, b, &[]).len(), 2);
+        let line = plan_footpath(a, b, &[(pt(50.0, 0.0), 8.0)]);
+        assert_eq!(line.len(), 3, "one bend");
+        for w in line.windows(2) {
+            assert!(seg_dist(pt(50.0, 0.0), w[0], w[1]) > 8.0);
+        }
+        let pieces = footpath_pieces(&line, 40.0);
+        assert!(pieces.len() >= 3);
+        for (o, _) in &pieces {
+            let f = o.footprint();
+            assert!(f[2] - f[0] < 60.0 && f[3] - f[1] < 60.0);
+        }
     }
 
     #[test]
