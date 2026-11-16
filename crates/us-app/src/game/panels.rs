@@ -746,6 +746,25 @@ impl Game {
                     self.cam
                         .look_at(Vec3::new(c, c, 0.0), self.town.size as f32 * 1.5);
                 }
+                "rock" | "harbour" => {
+                    // the tallest rock of a red rock town, or the harbour cove of a coastal one
+                    let at = match self.town.terrain.rock_coast() {
+                        us_gen::RockCoast::Mesa(m) => m
+                            .formations
+                            .iter()
+                            .max_by(|a, b| a.top.total_cmp(&b.top))
+                            .map(|f| f.c),
+                        us_gen::RockCoast::Coast(c) => {
+                            let v = c.coves[0];
+                            Some(us_gen::pt(v.c.x - 0.75 * v.rho, v.c.y))
+                        }
+                        _ => None,
+                    };
+                    if let Some(p) = at {
+                        let d = if k == "rock" { 1100.0 } else { 1200.0 };
+                        self.cam.look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), d);
+                    }
+                }
                 "bridge" => {
                     // a road point over water, for a screenshot
                     let land = self.live.land();

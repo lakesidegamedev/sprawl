@@ -19,6 +19,17 @@ pub struct River {
 }
 
 impl River {
+    /// A river far off the map, for towns that have none.
+    pub fn none() -> River {
+        River {
+            base: -20000.0,
+            a1: 0.0,
+            p1: 0.0,
+            a2: 0.0,
+            p2: 0.0,
+        }
+    }
+
     pub fn new(rng: &mut Rng) -> River {
         River {
             base: 2950.0 + rng.uniform(-120.0, 160.0),

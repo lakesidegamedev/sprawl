@@ -34,6 +34,7 @@ mod rivals;
 mod roadnet;
 mod save;
 mod save_ext;
+mod scenery;
 mod streets;
 mod traffic;
 mod trams;
@@ -1051,6 +1052,9 @@ impl Sim {
         if let Some(line) = self.fire_why(lot) {
             y.reason = format!("{} {line}", y.reason);
         }
+        if let Some(line) = self.scenery_line(lot) {
+            y.reason = format!("{} {line}", y.reason);
+        }
         y.ordinances = self.ordinance_lines(lot);
         y.ordinances.extend(self.weather_lines(lot));
         y
@@ -1411,3 +1415,6 @@ mod tests_weather;
 
 #[cfg(test)]
 mod tests_growth;
+
+#[cfg(test)]
+mod tests_styles;
