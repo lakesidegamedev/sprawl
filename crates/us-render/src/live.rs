@@ -11,10 +11,6 @@ use crate::scene::{
 };
 use us_gen::{Pattern, Pt, RoadClass, Town, Zone};
 
-fn hash2(a: u64, b: u64) -> u64 {
-    crate::rng::Rng::new(a, b).next_u64()
-}
-
 /// Ground colour of an addition's land, if it has one (houses sit on plain grass).
 pub fn zone_colour(zone: Zone, pattern: Pattern, seed: u64, index: usize) -> Option<Rgb> {
     match zone {
@@ -27,7 +23,7 @@ pub fn zone_colour(zone: Zone, pattern: Pattern, seed: u64, index: usize) -> Opt
         } else {
             PARK_GREEN
         }),
-        Zone::Farm => Some(FIELDS[(hash2(seed, index as u64) % FIELDS.len() as u64) as usize]),
+        Zone::Farm => Some(FIELDS[crate::cover::field_index(seed, index)]),
         Zone::Inner | Zone::Outer => None,
     }
 }
@@ -57,6 +53,9 @@ pub fn base_ground_on(land: &Land, t: &Town, farm_additions: &[usize]) -> Mesh {
         let a = &t.additions[ai];
         if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, ai) {
             g.polygon(&a.polygon, layer::ZONE, c);
+            if a.zone == Zone::Farm {
+                crate::cover::field_margin(&mut g, &a.polygon);
+            }
         }
     }
     add_water(&mut g, land, t);

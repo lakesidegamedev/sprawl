@@ -39,7 +39,8 @@ fn sway(p: vec3<f32>, c: vec3<f32>) -> vec3<f32> {
     if (abs(w.x) + abs(w.y) < 0.5) {
         return p;
     }
-    if (leaf_step(c, 88.0, 150.0, 76.0) < 0 && leaf_step(c, 70.0, 128.0, 66.0) < 0) {
+    if (leaf_step(c, 88.0, 150.0, 76.0) < 0 && leaf_step(c, 70.0, 128.0, 66.0) < 0
+        && leaf_step(c, 100.0, 168.0, 58.0) < 0) {
         return p;
     }
     let k = 0.045 * (1.0 + 0.5 * sin(g.screen.w * 2.3 + p.x * 0.21 + p.y * 0.17));
@@ -189,7 +190,7 @@ fn natural(c: vec3<f32>) -> bool {
 fn ground_kind(c: vec3<f32>) -> i32 {
     if (near(c, 96.0, 176.0, 84.0)) { return 4; }
     if (near(c, 176.0, 198.0, 106.0) || near(c, 198.0, 186.0, 124.0) || near(c, 140.0, 172.0, 96.0)
-        || near(c, 168.0, 190.0, 110.0) || near(c, 206.0, 194.0, 140.0) || near(c, 128.0, 164.0, 88.0)) {
+        || near(c, 168.0, 190.0, 110.0) || near(c, 206.0, 194.0, 140.0) || near(c, 128.0, 164.0, 88.0) || near(c, 222.0, 194.0, 100.0) || near(c, 170.0, 134.0, 94.0)) {
         return 2;
     }
     if (near(c, 214.0, 200.0, 150.0) || near(c, 226.0, 208.0, 150.0) || near(c, 206.0, 196.0, 150.0)) { return 3; }
@@ -263,6 +264,13 @@ fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist:
         if (mid_d && vnoise(w / 1.9 + vec2<f32>(31.0, 4.0)) > 0.74) {
             k = k * 0.95;
         }
+        // broad patches of yellower and deeper green, big enough to read from the far view
+        let broad = vnoise(w / 150.0 + vec2<f32>(13.0, 2.0)) * 0.7 + vnoise(w / 55.0) * 0.3;
+        if (broad > 0.6) {
+            c = c * vec3<f32>(1.07, 1.03, 0.88);
+        } else if (broad < 0.4) {
+            c = c * vec3<f32>(0.9, 0.97, 1.0);
+        }
         c = c * k;
         if (near_d) {
             let tf = tuft(w, 1.5, 1);
@@ -273,21 +281,6 @@ fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist:
             if (tl > 0.5) {
                 c = c * 1.1;
             }
-            // wildflowers in spring and summer
-            if ((season == 2 || season == 3) && kind == 1) {
-                let fc = vec2<i32>(floor(w / 0.55));
-                let fh = hash2(fc + vec2<i32>(11, 17));
-                if (fh > 0.995) {
-                    let sel = hash2(fc + vec2<i32>(3, 5));
-                    if (sel < 0.4) {
-                        c = vec3<f32>(0.97, 0.96, 0.9);
-                    } else if (sel < 0.75) {
-                        c = vec3<f32>(0.98, 0.84, 0.3);
-                    } else {
-                        c = vec3<f32>(0.92, 0.52, 0.66);
-                    }
-                }
-            }
         }
         return c;
     }
@@ -297,10 +290,9 @@ fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist:
         let u = select(w.x, w.y, alongx);
         let row = fract(u / 1.6);
         if (dist < 260.0) {
+            // close up the rows are real ridges (cover.rs); only a faint tone remains here
             if (row < 0.4) {
-                k = k * 0.9;
-            } else if (row > 0.85) {
-                k = k * 1.07;
+                k = k * 0.97;
             }
         } else {
             // far: wider bands, still readable
@@ -361,7 +353,11 @@ fn water_colour(kind: i32, w: vec2<f32>, dist: f32, t: f32) -> vec3<f32> {
     let ph = (w.x * 0.8 + w.y * 0.45) * scale + vnoise(w * scale / 3.5 + vec2<f32>(t * 0.05, 0.0)) * 2.2 - t * 1.2;
     let r = sin(ph);
     let r2 = sin(ph * 0.5 + 2.0 + vnoise(w * 0.12) * 4.0 + t * 0.4);
-    if (r > 0.93) {
+    // crests are short segments of different lengths, staggered from one crest to the next
+    let ci = floor((ph + 1.5708) / 6.2832);
+    let along = w.x * -0.45 + w.y * 0.8;
+    let seg = vnoise(vec2<f32>(along * (0.12 + 0.1 * fract(ci * 0.37)) + ci * 5.7, ci * 1.9 + 3.0));
+    if (r > 0.93 && seg > 0.52) {
         c = mix(c, vec3<f32>(0.86, 0.95, 1.0), 0.6);
     } else if (r > 0.75 && r2 > 0.3) {
         c = c * 1.1 + vec3<f32>(0.02, 0.04, 0.05);
@@ -444,6 +440,43 @@ fn fs_main(v: VOut) -> FOut {
             discard;
         }
     }
+    var is_cover = false;
+    if (cel && !ground) {
+        let gs = leaf_step(col, 100.0, 168.0, 58.0);
+        let fs = leaf_step(col, 246.0, 206.0, 30.0);
+        let ws = leaf_step(col, 212.0, 176.0, 60.0);
+        let bs = leaf_step(col, 232.0, 188.0, 70.0);
+        if (gs >= 0) {
+            is_cover = true;
+            var cs = array<vec3<f32>, 4>(vec3<f32>(92.0, 158.0, 62.0), vec3<f32>(106.0, 172.0, 72.0), vec3<f32>(80.0, 146.0, 58.0), vec3<f32>(120.0, 176.0, 76.0));
+            if (season == 2) { cs = array<vec3<f32>, 4>(vec3<f32>(118.0, 184.0, 84.0), vec3<f32>(132.0, 194.0, 96.0), vec3<f32>(104.0, 176.0, 76.0), vec3<f32>(146.0, 196.0, 100.0)); }
+            if (season == 1) { cs = array<vec3<f32>, 4>(vec3<f32>(200.0, 172.0, 92.0), vec3<f32>(182.0, 146.0, 78.0), vec3<f32>(212.0, 188.0, 112.0), vec3<f32>(166.0, 140.0, 76.0)); }
+            if (season == 0) { cs = array<vec3<f32>, 4>(vec3<f32>(160.0, 146.0, 106.0), vec3<f32>(148.0, 134.0, 98.0), vec3<f32>(172.0, 158.0, 118.0), vec3<f32>(138.0, 128.0, 96.0)); }
+            col = cs[gs & 3] / 255.0;
+        }
+        if (ws >= 0) {
+            is_cover = true;
+            var wc = vec3<f32>(214.0, 178.0, 66.0);
+            if (ws == 1) { wc = vec3<f32>(202.0, 164.0, 54.0); }
+            if (season == 2) { wc = vec3<f32>(130.0, 176.0, 84.0); }
+            if (season == 1) { wc = vec3<f32>(178.0, 148.0, 88.0); }
+            if (season == 0) { wc = vec3<f32>(150.0, 134.0, 100.0); }
+            col = wc / 255.0;
+        }
+        if (fs >= 0) {
+            if (season == 0) { discard; }
+            var fc = vec3<f32>(250.0, 214.0, 70.0);
+            if (fs == 1) { fc = vec3<f32>(250.0, 248.0, 238.0); }
+            if (fs == 2) { fc = vec3<f32>(240.0, 128.0, 166.0); }
+            if (fs == 3) { fc = vec3<f32>(156.0, 116.0, 208.0); }
+            if (season == 1) { fc = vec3<f32>(150.0, 110.0, 70.0); }
+            col = fc / 255.0;
+        }
+        if (bs >= 0) {
+            if (season == 2 || season == 0) { discard; }
+            col = vec3<f32>(226.0, 192.0, 92.0) / 255.0;
+        }
+    }
     if (ground && near(col, 247.0, 248.0, 253.0) && (g.look.y < 0.5 || g.look.z > 0.5)) {
         discard;
     }
@@ -499,6 +532,11 @@ fn fs_main(v: VOut) -> FOut {
                     if (h < reach) {
                         col = vec3<f32>(236.0, 241.0, 247.0) / 255.0;
                     }
+                }
+            } else if (is_cover) {
+                let h = vnoise(v.world.xy / 16.0) * 0.7 + vnoise(v.world.xy / 5.0) * 0.3;
+                if (h < reach) {
+                    col = vec3<f32>(228.0, 235.0, 244.0) / 255.0;
                 }
             } else if (cel && !exempt && v.tint == 0u && n.z > 0.35) {
                 let h = f32(hash_u(v.id / 16u) % 1000u) / 1000.0;

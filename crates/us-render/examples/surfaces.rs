@@ -97,6 +97,35 @@ fn main() {
     );
 
     scene.set_calendar(Some(summer));
+    // a field edge: the first corner of the farm, seen from just outside; and open meadow beside it
+    let corner = grid
+        .additions
+        .iter()
+        .find(|a| a.zone == Zone::Farm)
+        .map(|a| pt(a.polygon[0].x, a.polygon[0].y))
+        .unwrap_or(sub);
+    let edgec = Camera::framing(pt(3324.0, 968.0), 110.0, aspect, 30.0, 38.0);
+    let meadow = corner + (corner - farm).normalize_or_zero() * 45.0;
+    let _ = meadow;
+    let meadowc = Camera::framing(pt(1158.0, 1485.0), 60.0, aspect, 25.0, 34.0);
+    save(
+        "fieldedge-summer",
+        &r.render_to_rgba(&scene, &edgec, &style, w, h),
+    );
+    save(
+        "rows-summer",
+        &r.render_to_rgba(
+            &scene,
+            &Camera::framing(pt(1543.0, 2705.0), 110.0, aspect, 30.0, 38.0),
+            &style,
+            w,
+            h,
+        ),
+    );
+    save(
+        "meadow-summer",
+        &r.render_to_rgba(&scene, &meadowc, &style, w, h),
+    );
     save(
         "street-summer",
         &r.render_to_rgba(&scene, &street, &style, w, h),

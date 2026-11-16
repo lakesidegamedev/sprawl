@@ -80,6 +80,57 @@ fn heart(ring: &[Pt]) -> Option<(Pt, f64)> {
     best.filter(|b| b.1 > 14.0)
 }
 
+/// Where a dressed park keeps its loop path, spokes, pond and play area, so ground cover stays off.
+pub struct Layout {
+    c: Pt,
+    ring_r: f64,
+    a0: f64,
+    pond_r: f64,
+    play: Pt,
+    pav: Pt,
+}
+
+/// The layout `add_park` uses for this outline, or None when the park is too small to dress.
+pub fn layout(ring: &[Pt], seed: u64, index: usize) -> Option<Layout> {
+    let (c, room) = heart(ring)?;
+    let mut rng = Rng::new(seed ^ 0x9a2c_41d7, index as u64);
+    let ring_r = (room * 0.5).clamp(9.0, 42.0);
+    let a0 = rng.range(0.0, std::f32::consts::TAU) as f64;
+    let pond_r = (ring_r * 0.32).clamp(3.0, 22.0);
+    let room_out = room - ring_r;
+    Some(Layout {
+        c,
+        ring_r,
+        a0,
+        pond_r,
+        play: at(c, a0 + std::f64::consts::FRAC_PI_4, ring_r + room_out * 0.5),
+        pav: at(
+            c,
+            a0 + std::f64::consts::FRAC_PI_4 + std::f64::consts::PI,
+            ring_r * 0.74,
+        ),
+    })
+}
+
+impl Layout {
+    pub fn blocks(&self, p: Pt) -> bool {
+        let d = p.dist(self.c);
+        if (d - self.ring_r).abs() < 4.5 || d < self.pond_r * 1.5 + 5.0 {
+            return true;
+        }
+        for k in 0..4 {
+            let a = self.a0 + k as f64 * std::f64::consts::FRAC_PI_2;
+            let (dx, dy) = (p.x - self.c.x, p.y - self.c.y);
+            let along = dx * libm::cos(a) + dy * libm::sin(a);
+            let side = (-dx * libm::sin(a) + dy * libm::cos(a)).abs();
+            if along > self.ring_r - 3.0 && side < 4.5 {
+                return true;
+            }
+        }
+        p.dist(self.play) < 13.0 || p.dist(self.pav) < 8.0
+    }
+}
+
 fn bench() -> Obj {
     let mut o = Obj::new();
     o.bx(-0.8, -0.25, 0.0, -0.65, 0.25, 0.4, IRON);

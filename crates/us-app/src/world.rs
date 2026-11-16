@@ -418,6 +418,11 @@ impl LiveScene {
             .collect();
         let n = sim.lots().len();
         let ground_tile_count = scene.chunks.len() - 1;
+        scene.chunks.extend(us_render::cover::build(
+            &town,
+            &land,
+            us_render::cover::Group::Base,
+        ));
         let mut ls = LiveScene {
             scene,
             town,
@@ -956,6 +961,11 @@ impl LiveScene {
             hi,
         });
         self.ground_chunks += 1;
+        if a.zone == Zone::Park {
+            let cover =
+                us_render::cover::build(&town, &self.land, us_render::cover::Group::Park(addition));
+            self.scene.chunks.extend(cover);
+        }
         self.rebuild_roads(sim, Some(addition));
     }
 
