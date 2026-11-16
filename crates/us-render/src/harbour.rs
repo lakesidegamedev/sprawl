@@ -186,7 +186,9 @@ fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32, tint: usize, bands: &[Rgb;
         let f = (len - cum[i - 1]) / (cum[i] - cum[i - 1]).max(1e-6);
         let (a, b) = (dense[i - 1], dense[i]);
         let p = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
-        let l = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt().max(1e-6);
+        let l = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2))
+            .sqrt()
+            .max(1e-6);
         (p, [(b[0] - a[0]) / l, (b[1] - a[1]) / l])
     };
     const SIDES: usize = 14;
@@ -198,9 +200,8 @@ fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32, tint: usize, bands: &[Rgb;
         let flare = 1.0 + 0.5 * (1.0 - ((p[1] - foot) / (h * 0.16)).clamp(0.0, 1.0));
         let th = (leg_th + (crown_th - leg_th) * mid.powf(1.4)) * flare;
         let wx = (wx0 + (wx0 * 0.6 - wx0) * mid.powf(1.4)) * flare;
-        let erode = 1.0
-            + 0.16 * libm::sinf(u * 23.0 + phase)
-            + 0.1 * libm::sinf(u * 51.0 + 2.0 * phase);
+        let erode =
+            1.0 + 0.16 * libm::sinf(u * 23.0 + phase) + 0.1 * libm::sinf(u * 51.0 + 2.0 * phase);
         let nrm = [-t[1], t[0]];
         (0..SIDES)
             .map(|k| {
@@ -209,7 +210,10 @@ fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32, tint: usize, bands: &[Rgb;
                     + 0.16 * libm::sinf(2.0 * a + phase + 6.0 * u)
                     + 0.09 * libm::sinf(3.0 * a + 2.0 * phase - 9.0 * u);
                 let (ca, sa) = (libm::cosf(a), libm::sinf(a));
-                let (e1, e2) = (wx * ca * lump * erode * swell, th * sa * lump * erode * swell);
+                let (e1, e2) = (
+                    wx * ca * lump * erode * swell,
+                    th * sa * lump * erode * swell,
+                );
                 [e1, p[0] + nrm[0] * e2, p[1] + nrm[1] * e2]
             })
             .collect()
@@ -222,7 +226,11 @@ fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32, tint: usize, bands: &[Rgb;
         let ledge = (len % band) < band / 3.0;
         let base = bands[(hash(tint as u64 + 31, seg) % bands.len() as u64) as usize];
         let col = if ledge { darker(base, 0.62) } else { base };
-        let col = if (len / total - 0.5).abs() > 0.5 - 0.06 { STONE_FOOT } else { col };
+        let col = if (len / total - 0.5).abs() > 0.5 - 0.06 {
+            STONE_FOOT
+        } else {
+            col
+        };
         let cur = ring_at(len, if ledge { 1.04 } else { 1.0 });
         // one solid per slice, so each face is turned away from the middle of its own slice
         let m = (prev.len() + cur.len()) as f32;
@@ -233,7 +241,12 @@ fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32, tint: usize, bands: &[Rgb;
             let j = (i + 1) % SIDES;
             // ring points are (x, y, z) with x along the ridge: the pair is (e1, y, z)
             let q = |r: &[[f32; 3]], k: usize| [r[k][0], r[k][1], r[k][2]];
-            o.face(sol, &[q(&prev, i), q(&prev, j), q(&cur, j), q(&cur, i)], col, false);
+            o.face(
+                sol,
+                &[q(&prev, i), q(&prev, j), q(&cur, j), q(&cur, i)],
+                col,
+                false,
+            );
         }
         prev = cur;
     }
@@ -247,7 +260,14 @@ fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32, tint: usize, bands: &[Rgb;
         })
         .collect();
     let crown: Vec<[f32; 2]> = rim.iter().map(|p| [p[0] * 0.7, p[1] * 0.7]).collect();
-    o.loft(&rim, top - 1.4, &crown, top + 1.2, [104, 142, 88], Some([104, 142, 88]));
+    o.loft(
+        &rim,
+        top - 1.4,
+        &crown,
+        top + 1.2,
+        [104, 142, 88],
+        Some([104, 142, 88]),
+    );
 }
 
 fn boat(size: u8, seed: u64) -> Obj {
@@ -517,7 +537,11 @@ pub fn add_horizon(mesh: &mut Mesh, land: &Land, t: &Town) {
             phase,
             tint: placed.len(),
             lean: [0.0, 0.0],
-            taper: if wide { 0.05 } else { 0.1 + 0.16 * rng.range(0.0, 1.0) },
+            taper: if wide {
+                0.05
+            } else {
+                0.1 + 0.16 * rng.range(0.0, 1.0)
+            },
             lobes: if wide { 0.3 } else { 0.24 },
             waist: if wide { 0.08 } else { 0.15 },
             skirt: if wide { 1.3 } else { 1.7 },

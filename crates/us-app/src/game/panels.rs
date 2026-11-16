@@ -732,6 +732,12 @@ impl Game {
                     self.close_sheets();
                     self.sim.dismiss_goals();
                     self.ui.goals.open = false;
+                    // and no election night over the picture; the game is held
+                    self.speed = 0;
+                    self.election = None;
+                    if let Some(r) = self.sim.last_election() {
+                        self.election_seen = r.day;
+                    }
                 }
                 "low" => self.cam.set_angle(n as f32, 18.0),
                 "levers" => self.ui.levers_open = true,

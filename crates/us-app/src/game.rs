@@ -778,6 +778,10 @@ impl State {
                         });
                     });
             }
+            // URBAN_SPRAWL_SMOKE_BARE=1: a picture of the town with no interface over it
+            Screen::Game
+                if self.smoke.as_ref().is_some_and(|s| s.stage >= 2)
+                    && std::env::var("URBAN_SPRAWL_SMOKE_BARE").is_ok_and(|v| v == "1") => {}
             Screen::Game => self.game_ui(ui, &ctx, w, h),
         }
         if let Some(e) = self.error.clone() {

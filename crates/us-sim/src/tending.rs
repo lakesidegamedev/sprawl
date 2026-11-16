@@ -105,4 +105,3 @@ pub fn build_ahead(s: &mut Sim, round: &mut u32) {
         place_near(s, kind, at);
     }
 }
-

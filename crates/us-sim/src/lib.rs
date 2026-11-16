@@ -55,8 +55,8 @@ pub use model::*;
 pub use pressure::*;
 pub use rivals::{Personality, RivalView};
 pub use save::{AUTOSAVE_SLOTS, FIRST_LASTING_VERSION, LoadError, SAVE_VERSION, autosave_path};
-pub use tending::{build_ahead, tend};
 pub use streets::{RoadBuildState, RoadStage, StreetState};
+pub use tending::{build_ahead, tend};
 pub use traffic::RoadTraffic;
 pub use trams::{MAX_LINES as MAX_TRAM_LINES, TramError, TramLineView, TramPlan, TramState};
 
