@@ -512,6 +512,7 @@ fn pick_hall_site(idx: &SegIndex, drafts: &[Draft], radius: f64, river: &River) 
     nominal
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     preset: Preset,
     seed: u64,
