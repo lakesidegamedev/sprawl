@@ -89,7 +89,7 @@ impl Goal {
     pub fn reward_text(self) -> String {
         let mut parts = Vec::new();
         if self.grant() > 0 {
-            parts.push(format!("${} grant", self.grant()));
+            parts.push(format!("${} grant", dollars(self.grant())));
         }
         if self.people() > 0.0 {
             parts.push(format!("{} more settlers", self.people() as i64));
@@ -275,7 +275,7 @@ impl Sim {
                             "New {} wait. Build a {} for ${}.",
                             waiting(c),
                             build.label().to_lowercase(),
-                            cost
+                            dollars(cost)
                         )
                     },
                 )
@@ -288,7 +288,7 @@ impl Sim {
                         format!(
                             "Build a {} (${}) before growth stops.",
                             build.label().to_lowercase(),
-                            cost
+                            dollars(cost)
                         )
                     },
                 )
@@ -350,6 +350,19 @@ impl Sim {
         f(self.goal.last_grant as u64);
         f(self.goal.grant_due as u64);
     }
+}
+
+/// 60000 as 60,000.
+pub fn dollars(v: i64) -> String {
+    let digits = v.abs().to_string();
+    let mut out = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    format!("{}{out}", if v < 0 { "-" } else { "" })
 }
 
 fn waiting(c: Capacity) -> &'static str {

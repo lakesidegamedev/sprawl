@@ -115,7 +115,7 @@ pub fn set_dock_top(ctx: &Context, y: f32) {
 }
 
 /// Top edge of the phone's bottom bar, or an estimate before it has been laid out.
-fn dock_top(ctx: &Context) -> f32 {
+pub(super) fn dock_top(ctx: &Context) -> f32 {
     let screen = ctx.content_rect();
     ctx.data(|d| d.get_temp::<f32>(egui::Id::new("dock_top")))
         .filter(|y| *y > screen.top() && *y <= screen.bottom())
@@ -449,6 +449,9 @@ pub struct UiState {
     pub ordinances_open: bool,
     /// The Tram window (see `trams.rs`).
     pub(super) trams: super::trams::TramUi,
+    /// The growth banner and the goal card (see `growth_banner.rs` and `goals.rs`).
+    pub(super) growth: super::growth_banner::GrowthUi,
+    pub(super) goals: super::goals::GoalsUi,
     /// The map view switcher is open (desktop).
     pub views_open: bool,
     /// Where the Map views button sits, so the switcher opens beside it.
@@ -500,6 +503,8 @@ impl Default for UiState {
             districts_open: false,
             ordinances_open: false,
             trams: Default::default(),
+            growth: Default::default(),
+            goals: Default::default(),
             views_open: false,
             views_rect_y: 300.0,
             paint: None,
@@ -1229,6 +1234,15 @@ impl Game {
                 ("Bond interest", -ledger.interest, TEXT),
                 ("Bond principal", -ledger.principal, TEXT),
             ];
+            if ledger.grants > 0 {
+                // a goal reward, paid into the treasury with the last monthly ledger
+                ui.horizontal(|ui| {
+                    lab(ui, "Goal grant, paid last month", 12.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        lab_c(ui, money(ledger.grants), 12.0, GOOD);
+                    });
+                });
+            }
             for (name, v, col) in rows {
                 ui.horizontal(|ui| {
                     lab(ui, name, 12.0);

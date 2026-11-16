@@ -19,6 +19,8 @@ use winit::keyboard::KeyCode;
 mod charts;
 mod chrome;
 mod districts;
+mod goals;
+mod growth_banner;
 mod panels;
 mod screens;
 mod trams;
@@ -1486,6 +1488,10 @@ impl State {
             }
             if g.ui.trams.open {
                 g.trams_ui(ctx, screen_w);
+            }
+            if g.placed && !g.sim.is_game_over() {
+                g.growth_banner_ui(ctx);
+                g.goals_ui(ctx);
             }
             g.legend_ui(ctx);
             // why panel

@@ -47,7 +47,7 @@ pub use districts::{
 };
 pub use dynamic::{FIRE_DAYS, Rival};
 pub use fires::{BlazeView, Vehicle, VehicleKind};
-pub use goals::{Goal, GoalView, GrowthAlert};
+pub use goals::{Goal, GoalView, GrowthAlert, dollars};
 pub use ledger_view::LedgerNow;
 pub use model::*;
 pub use pressure::*;
