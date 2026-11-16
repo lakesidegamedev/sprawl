@@ -10,6 +10,7 @@ struct Globals {
     tone: vec4<f32>,   // rgb flat tint of the whole picture, a share of lit windows
     look: vec4<f32>,   // x season (1 autumn, 2 spring, 3 summer), y snow, z map view (desaturate), w share of lamps and vehicle lights on (0 to 1)
     wx: vec4<f32>,     // x snow cover 0 to 1, y wet ground, zw wind (east, north) in m/s
+    rock: array<vec4<f32>, 8>, // rows 0 to 3 strata colours, 4 talus, 5 (snow line, tree line, band height, on), 6 (snow rgb, winter drop)
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -236,6 +237,50 @@ fn season_leaf(step: i32, dark: bool, season: i32) -> vec3<f32> {
     return vec3<f32>(64.0, 134.0, 58.0) / 255.0;
 }
 
+
+// Natural ground of a land with a rock look: grass on gentle slopes, stone below faces, rock in
+// stepped bands on steep slopes, bare ground above the tree line and snow above the snow line.
+fn terrain_look(world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let grass = vec3<f32>(116.0, 172.0, 92.0) / 255.0;
+    if (g.rock[5].w < 0.5 || g.look.z > 0.5) {
+        return grass;
+    }
+    let z = world.z;
+    let s = sqrt(max(1.0 - n.z * n.z, 0.0)) / max(n.z, 0.01);
+    let big = vnoise(world.xy / 11.0);
+    let fine = vnoise(world.xy / 3.5);
+    let rock_s = 0.7 + (big - 0.5) * 0.14;
+    let talus_s = 0.45 + (big - 0.5) * 0.1;
+    let snow_line = g.rock[5].x - g.wx.x * g.rock[6].w + (big - 0.5) * 36.0;
+    if (z > snow_line && s < rock_s + 0.35) {
+        var snow = g.rock[6].rgb;
+        if (fine > 0.8) {
+            snow = snow * 0.95;
+        }
+        return snow;
+    }
+    if (s > rock_s) {
+        let band = floor((z + (fine - 0.5) * 1.6) / g.rock[5].z);
+        let pick = hash_u(u32(i32(band) + 65536)) % 4u;
+        var rc = g.rock[pick].rgb;
+        if (z > snow_line && fine > 0.8) {
+            rc = g.rock[6].rgb;
+        }
+        return rc;
+    }
+    if (s > talus_s) {
+        var tc = g.rock[4].rgb;
+        if (fine > 0.72) {
+            tc = tc * 0.9;
+        }
+        return tc;
+    }
+    if (z > g.rock[5].y + (big - 0.5) * 50.0) {
+        return mix(grass, g.rock[4].rgb, 0.75);
+    }
+    return grass;
+}
+
 @fragment
 fn fs_main(v: VOut) -> FOut {
     let n = normalize(v.normal);
@@ -250,6 +295,9 @@ fn fs_main(v: VOut) -> FOut {
         if (near(col, 255.0, 0.0, 255.0)) {
             col = vec3<f32>(f32((v.tint >> 16u) & 255u), f32((v.tint >> 8u) & 255u), f32(v.tint & 255u)) / 255.0;
         }
+    }
+    if (ground && abs(col.r * 255.0 - 116.0) < 0.6 && abs(col.g * 255.0 - 172.0) < 0.6 && abs(col.b * 255.0 - 95.0) < 0.6) {
+        col = terrain_look(v.world, n);
     }
     var emissive = false;
     let season = i32(g.look.x + 0.5);

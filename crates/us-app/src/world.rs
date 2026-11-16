@@ -1135,7 +1135,7 @@ fn coarse_land(land: &Land, town: &Town) -> Land {
             data.push(land.height(x, y) - COARSE_SINK);
         }
     }
-    Land::from_grid(n, size, data, town.water.clone())
+    Land::from_grid(n, size, data, town.water.clone()).with_rock(land.rock())
 }
 
 /// Cut the ground into 256 m tiles by where each face lies; the faces that reach past the map

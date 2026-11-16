@@ -252,6 +252,12 @@ impl Ground {
 
     /// The whole land as a grid of faces in one colour, reaching `apron` metres past the map.
     pub fn terrain(&mut self, land: &Land, apron: f32, color: Rgb) {
+        // land with a rock look is marked so the shader can paint rock and snow on it
+        let color = if land.rock().is_some() {
+            crate::rock::TERRAIN_MARK
+        } else {
+            color
+        };
         if self.land.is_none() {
             let s = land.size();
             self.rect(-apron, -apron, s + apron, s + apron, layer::BASE, color);

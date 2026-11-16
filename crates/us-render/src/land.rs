@@ -36,6 +36,7 @@ struct Inner {
     water: Vec<WaterBody>,
     max: f32,
     min: f32,
+    rock: Option<crate::rock::RockLook>,
 }
 
 /// Height grid and water of one town. Cheap to clone.
@@ -72,6 +73,21 @@ impl Land {
     pub fn from_town(t: &Town) -> Land {
         let data = t.terrain.heightfield(GRID);
         Land::from_grid(GRID, t.size as f32, data, t.water.clone())
+            .with_rock(crate::rock::RockLook::of(t.preset))
+    }
+
+    /// The same land drawn with a rock look (or none).
+    pub fn with_rock(&self, rock: Option<crate::rock::RockLook>) -> Land {
+        let mut inner = (*self.inner).clone();
+        inner.rock = rock;
+        Land {
+            inner: Arc::new(inner),
+        }
+    }
+
+    /// How steep ground is drawn here, if this land has mountains or cliffs.
+    pub fn rock(&self) -> Option<crate::rock::RockLook> {
+        self.inner.rock
     }
 
     /// A grid of `n` by `n` heights over a square map of `size` metres, row by row from y = 0,
@@ -90,6 +106,7 @@ impl Land {
             water: Vec::new(),
             max,
             min,
+            rock: None,
         };
         let mut bodies = Vec::new();
         for ring in water {
