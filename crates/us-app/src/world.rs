@@ -1268,7 +1268,8 @@ mod tests {
         let hall = hall_sites(&town)[0];
         let mut sim = Sim::new_with_rules(&town, hall, 3, 2, us_sim::Rules::sandbox_unlimited());
         sim.unlock_all();
-        for _ in 0..300 {
+        // a young town: the settlers fill the open ground within a few months
+        for _ in 0..40 {
             sim.step_day();
         }
         let mut live = LiveScene::new(town, &sim, true);
