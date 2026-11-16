@@ -28,7 +28,10 @@ fn suburb(t: &Town) -> Vec3 {
         if h.centre.dist(t.hall) < 500.0 {
             continue;
         }
-        let n = houses.iter().filter(|o| o.centre.dist(h.centre) < 60.0).count();
+        let n = houses
+            .iter()
+            .filter(|o| o.centre.dist(h.centre) < 60.0)
+            .count();
         if n > best.0 {
             best = (n, i);
         }
@@ -53,7 +56,11 @@ fn main() {
     let save = |name: &str, f: &Frame| {
         let p = out.join(format!("{prefix}-{name}.png"));
         image::save_buffer(&p, &f.rgba, f.width, f.height, image::ColorType::Rgba8).expect("png");
-        eprintln!("{name}: total {:.2}s gpu {:.2}s", f.stats.total.as_secs_f32(), f.stats.gpu_wait.as_secs_f32());
+        eprintln!(
+            "{name}: total {:.2}s gpu {:.2}s",
+            f.stats.total.as_secs_f32(),
+            f.stats.gpu_wait.as_secs_f32()
+        );
     };
     let summer = Calendar::from_date(6, 21, 13.0);
     let winter = Calendar::from_date(1, 15, 13.0);
@@ -81,21 +88,51 @@ fn main() {
     let midc = Camera::framing(mid, 420.0, aspect, 30.0, 40.0);
     let parkc = Camera::framing(park, 200.0, aspect, 30.0, 38.0);
     let farmc = Camera::framing(farm, 260.0, aspect, 30.0, 38.0);
-    let whole = Camera::framing(hall + Vec3::new(0.0, -150.0, 0.0), 2600.0, aspect, 30.0, 48.0);
+    let whole = Camera::framing(
+        hall + Vec3::new(0.0, -150.0, 0.0),
+        2600.0,
+        aspect,
+        30.0,
+        48.0,
+    );
 
     scene.set_calendar(Some(summer));
-    save("street-summer", &r.render_to_rgba(&scene, &street, &style, w, h));
-    save("park-summer", &r.render_to_rgba(&scene, &parkc, &style, w, h));
-    save("farm-summer", &r.render_to_rgba(&scene, &farmc, &style, w, h));
+    save(
+        "street-summer",
+        &r.render_to_rgba(&scene, &street, &style, w, h),
+    );
+    save(
+        "park-summer",
+        &r.render_to_rgba(&scene, &parkc, &style, w, h),
+    );
+    save(
+        "farm-summer",
+        &r.render_to_rgba(&scene, &farmc, &style, w, h),
+    );
     save("mid-summer", &r.render_to_rgba(&scene, &midc, &style, w, h));
-    save("whole-summer", &r.render_to_rgba(&scene, &whole, &style, w, h));
+    save(
+        "whole-summer",
+        &r.render_to_rgba(&scene, &whole, &style, w, h),
+    );
     scene.set_calendar(Some(winter));
-    save("street-winter", &r.render_to_rgba(&scene, &street, &style, w, h));
-    save("whole-winter", &r.render_to_rgba(&scene, &whole, &style, w, h));
+    save(
+        "street-winter",
+        &r.render_to_rgba(&scene, &street, &style, w, h),
+    );
+    save(
+        "whole-winter",
+        &r.render_to_rgba(&scene, &whole, &style, w, h),
+    );
     scene.set_calendar(Some(night));
-    save("street-night", &r.render_to_rgba(&scene, &street, &style, w, h));
+    save(
+        "street-night",
+        &r.render_to_rgba(&scene, &street, &style, w, h),
+    );
     scene.set_calendar(Some(Calendar::from_date(10, 20, 13.0)));
-    save("street-autumn", &r.render_to_rgba(&scene, &street, &style, w, h));
+    save(
+        "street-autumn",
+        &r.render_to_rgba(&scene, &street, &style, w, h),
+    );
 
     let lake = generate(Preset::LakeTown, 2);
     let mut ls = Scene::from_town(&lake);
@@ -111,9 +148,27 @@ fn main() {
             .unwrap_or(c);
         for (n, cal) in [("summer", summer), ("winter", winter)] {
             ls.set_calendar(Some(cal));
-            save(&format!("lake-{n}"), &r.render_to_rgba(&ls, &Camera::framing(shore, 220.0, aspect, 20.0, 35.0), &style, w, h));
+            save(
+                &format!("lake-{n}"),
+                &r.render_to_rgba(
+                    &ls,
+                    &Camera::framing(shore, 220.0, aspect, 20.0, 35.0),
+                    &style,
+                    w,
+                    h,
+                ),
+            );
         }
         ls.set_calendar(Some(summer));
-        save("lake-wide", &r.render_to_rgba(&ls, &Camera::framing(shore, 900.0, aspect, 20.0, 40.0), &style, w, h));
+        save(
+            "lake-wide",
+            &r.render_to_rgba(
+                &ls,
+                &Camera::framing(shore, 900.0, aspect, 20.0, 40.0),
+                &style,
+                w,
+                h,
+            ),
+        );
     }
 }

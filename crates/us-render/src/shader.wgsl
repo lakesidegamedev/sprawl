@@ -184,31 +184,206 @@ fn natural(c: vec3<f32>) -> bool {
     return (hi - lo > 0.055 || snowy) && !watery;
 }
 
-// Tone multiplier for natural ground at a world place and camera distance.
-fn ground_grain(w: vec2<f32>, dist: f32, snowy: bool) -> f32 {
-    var k = 1.0;
-    if (dist < 1800.0) {
-        // broad patches: worn and lush grass, damp and dry soil, drifts
-        let n = vnoise(w / 9.0) * 0.6 + vnoise(w / 27.0) * 0.4;
-        if (n > 0.64) {
-            k = 1.04;
-        } else if (n < 0.38) {
-            k = 0.955;
-        }
+// Ground kinds, told from the base colour before the season changes it.
+// 0 other, 1 grass, 2 field, 3 sand, 4 park lawn, 5 bare earth.
+fn ground_kind(c: vec3<f32>) -> i32 {
+    if (near(c, 96.0, 176.0, 84.0)) { return 4; }
+    if (near(c, 176.0, 198.0, 106.0) || near(c, 198.0, 186.0, 124.0) || near(c, 140.0, 172.0, 96.0)
+        || near(c, 168.0, 190.0, 110.0) || near(c, 206.0, 194.0, 140.0) || near(c, 128.0, 164.0, 88.0)) {
+        return 2;
     }
-    if (dist < 420.0) {
-        // tufts and stones up close
-        let t = hash2(vec2<i32>(floor(w / 1.3)));
-        if (t > 0.9) {
-            k = k * 0.93;
-        } else if (t < 0.05) {
-            k = k * 1.05;
-        }
+    if (near(c, 214.0, 200.0, 150.0) || near(c, 226.0, 208.0, 150.0) || near(c, 206.0, 196.0, 150.0)) { return 3; }
+    if (is_green(c)) { return 1; }
+    if (natural(c)) { return 5; }
+    return 0;
+}
+
+// A small tuft in a jittered cell of size `cell`: a short upright stroke with a leaning twin.
+// Returns 1 inside a blade, 0 outside.
+fn tuft(w: vec2<f32>, cell: f32, seed: i32) -> f32 {
+    let q = w / cell;
+    let ci = vec2<i32>(floor(q));
+    let h1 = hash2(ci + vec2<i32>(seed, 3));
+    if (h1 < 0.55) {
+        return 0.0;
+    }
+    let h2 = hash2(ci + vec2<i32>(7, seed));
+    let c = vec2<f32>(0.3 + 0.4 * h1, 0.3 + 0.4 * h2);
+    let d = fract(q) - c;
+    // two blades leaning apart (a small V), width about a seventh of the cell
+    let up = d.y * 1.0;
+    let a = abs(d.x - up * 0.55);
+    let b = abs(d.x + up * 0.55);
+    let in_v = d.y > -0.05 && d.y < 0.3 && (a < 0.07 || b < 0.07);
+    return select(0.0, 1.0, in_v);
+}
+
+// Stepped tone multiplier and optional colour for natural ground at a world place and camera
+// distance. Fine detail fades into the mid-scale pattern with distance, never into flat colour.
+fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist: f32, snowy: bool, season: i32) -> vec3<f32> {
+    var c = col;
+    let near_d = dist < 140.0;
+    let mid_d = dist < 600.0;
+    // broad patches at three scales, in three tone bands
+    let big = vnoise(w / 38.0);
+    let mid = vnoise(w / 11.0);
+    let small = vnoise(w / 3.6 + vec2<f32>(5.0, 9.0));
+    var n = big * 0.4 + mid * 0.4 + small * 0.2;
+    if (!mid_d) {
+        n = big * 0.6 + mid * 0.4;
+    }
+    var k = 1.0;
+    if (n > 0.66) {
+        k = 1.05;
+    } else if (n < 0.34) {
+        k = 0.955;
     }
     if (snowy) {
-        k = 1.0 + (k - 1.0) * 0.5;
+        // soft blue shadows in the lee of drifts, no sparkle
+        let d = vnoise(w / 7.0) * 0.6 + vnoise(w / 2.3) * 0.4;
+        var s = vec3<f32>(1.0);
+        if (d < 0.36) {
+            s = vec3<f32>(0.88, 0.93, 1.02);
+        } else if (d < 0.46) {
+            s = vec3<f32>(0.95, 0.97, 1.01);
+        }
+        return c * s;
     }
-    return k;
+    if (kind == 1 || kind == 4) {
+        if (kind == 4) {
+            // mown stripes
+            let sp = floor((w.x + w.y * 0.35) / 5.0);
+            if ((i32(sp) & 1) == 0) {
+                k = k * 1.045;
+            } else {
+                k = k * 0.97;
+            }
+        }
+        // clumps a couple of metres across, darker
+        if (mid_d && vnoise(w / 1.9 + vec2<f32>(31.0, 4.0)) > 0.74) {
+            k = k * 0.95;
+        }
+        c = c * k;
+        if (near_d) {
+            let tf = tuft(w, 1.5, 1);
+            if (tf > 0.5) {
+                c = c * 0.9;
+            }
+            let tl = tuft(w + vec2<f32>(0.7, 0.4), 2.3, 5);
+            if (tl > 0.5) {
+                c = c * 1.1;
+            }
+            // wildflowers in spring and summer
+            if ((season == 2 || season == 3) && kind == 1) {
+                let fc = vec2<i32>(floor(w / 0.55));
+                let fh = hash2(fc + vec2<i32>(11, 17));
+                if (fh > 0.995) {
+                    let sel = hash2(fc + vec2<i32>(3, 5));
+                    if (sel < 0.4) {
+                        c = vec3<f32>(0.97, 0.96, 0.9);
+                    } else if (sel < 0.75) {
+                        c = vec3<f32>(0.98, 0.84, 0.3);
+                    } else {
+                        c = vec3<f32>(0.92, 0.52, 0.66);
+                    }
+                }
+            }
+        }
+        return c;
+    }
+    if (kind == 2) {
+        // crop rows: rows run one way per field colour, a broad band of tone per row
+        let alongx = (u32(base.r * 255.0 + 0.5) & 1u) == 0u;
+        let u = select(w.x, w.y, alongx);
+        let row = fract(u / 1.6);
+        if (dist < 260.0) {
+            if (row < 0.4) {
+                k = k * 0.9;
+            } else if (row > 0.85) {
+                k = k * 1.07;
+            }
+        } else {
+            // far: wider bands, still readable
+            let rowf = fract(u / 6.4);
+            if (rowf < 0.4) {
+                k = k * 0.95;
+            }
+        }
+        return c * k;
+    }
+    if (kind == 3) {
+        // sand ripples: wavy lines
+        let rp = sin((w.x * 0.9 + w.y * 0.5) * 1.3 + vnoise(w / 4.0) * 6.0);
+        if (rp > 0.72) {
+            k = k * 1.05;
+        } else if (rp < -0.8) {
+            k = k * 0.95;
+        }
+        c = c * k;
+        if (near_d && hash2(vec2<i32>(floor(w / 0.8))) > 0.97) {
+            c = c * 0.9;
+        }
+        return c;
+    }
+    // bare earth, gravel: pebbles
+    c = c * k;
+    if (near_d) {
+        let ph = hash2(vec2<i32>(floor(w / 0.6)));
+        if (ph > 0.9) {
+            c = c * 0.88;
+        } else if (ph < 0.06) {
+            c = c * 1.1;
+        }
+    }
+    return c;
+}
+
+// Water kinds from the marker colours: 1 open water, 2 pond, 3 far shallows, 4 near shallows, 5 foam.
+fn water_kind(c: vec3<f32>) -> i32 {
+    if (near(c, 66.0, 132.0, 200.0)) { return 1; }
+    if (near(c, 84.0, 150.0, 212.0)) { return 2; }
+    if (near(c, 60.0, 120.0, 188.0)) { return 3; }
+    if (near(c, 54.0, 108.0, 176.0)) { return 4; }
+    if (near(c, 244.0, 250.0, 254.0)) { return 5; }
+    return 0;
+}
+
+fn water_colour(kind: i32, w: vec2<f32>, dist: f32, t: f32) -> vec3<f32> {
+    let deep = vec3<f32>(52.0, 112.0, 186.0) / 255.0;
+    let far_sh = vec3<f32>(66.0, 138.0, 204.0) / 255.0;
+    let near_sh = vec3<f32>(96.0, 170.0, 222.0) / 255.0;
+    var c = deep;
+    if (kind == 2) { c = vec3<f32>(76.0, 142.0, 208.0) / 255.0; }
+    if (kind == 3) { c = far_sh; }
+    if (kind == 4) { c = near_sh; }
+    // ripples: banded crests drifting with the current, wider spaced when far
+    let scale = select(0.3, 1.7, dist < 220.0);
+    let ph = (w.x * 0.8 + w.y * 0.45) * scale + vnoise(w * scale / 3.5 + vec2<f32>(t * 0.05, 0.0)) * 2.2 - t * 1.2;
+    let r = sin(ph);
+    let r2 = sin(ph * 0.5 + 2.0 + vnoise(w * 0.12) * 4.0 + t * 0.4);
+    if (r > 0.93) {
+        c = mix(c, vec3<f32>(0.86, 0.95, 1.0), 0.6);
+    } else if (r > 0.75 && r2 > 0.3) {
+        c = c * 1.1 + vec3<f32>(0.02, 0.04, 0.05);
+    } else if (r < -0.9) {
+        c = c * 0.95;
+    }
+    if (kind == 5) {
+        // foam: edge moves in and out, broken into dashes
+        let n = vnoise(w * 0.8 + vec2<f32>(t * 0.3, -t * 0.22));
+        if (n > 0.38) {
+            c = vec3<f32>(0.95, 0.98, 1.0);
+        } else {
+            c = near_sh;
+        }
+    } else if (kind == 4) {
+        // a second, broken foam line just off the bank
+        let n = vnoise(w * 0.5 + vec2<f32>(-t * 0.18, t * 0.25));
+        if (n > 0.8) {
+            c = mix(c, vec3<f32>(0.95, 0.98, 1.0), 0.8);
+        }
+    }
+    return c;
 }
 
 fn is_green(c: vec3<f32>) -> bool {
@@ -253,6 +428,14 @@ fn fs_main(v: VOut) -> FOut {
     }
     var emissive = false;
     let season = i32(g.look.x + 0.5);
+    var gkind = 0;
+    var wkind = 0;
+    if (ground && cel && g.look.z < 0.5) {
+        wkind = water_kind(col);
+        if (wkind == 0) {
+            gkind = ground_kind(col);
+        }
+    }
     let pstep = patch_step(col);
     if (pstep >= 0) {
         if (season == 1 && g.look.z < 0.5 && g.look.y < 0.5) {
@@ -338,9 +521,11 @@ fn fs_main(v: VOut) -> FOut {
         let lum = dot(col, vec3<f32>(0.3, 0.59, 0.11));
         col = mix(vec3<f32>(lum), col, 0.12);
     }
-    if (cel && ground && g.look.z < 0.5 && natural(col)) {
+    if (wkind > 0) {
+        col = water_colour(wkind, v.world.xy, v.dist, g.screen.w);
+    } else if (gkind > 0) {
         let snowy = min(col.r, min(col.g, col.b)) > 0.88;
-        col = col * ground_grain(v.world.xy, v.dist, snowy);
+        col = ground_detail(col, v.color.rgb, gkind, v.world.xy, v.dist, snowy, season);
     }
     var k = 1.0;
     if (cel && ground) {
@@ -377,6 +562,11 @@ fn fs_main(v: VOut) -> FOut {
         k = min(k, g.shade.x);
     }
     col = col * k;
+    if (k < 0.97 && !emissive && g.look.z < 0.5) {
+        // cool sky fill in shade: shadowed colour leans blue instead of just darker
+        let sh = clamp((0.97 - k) * 3.0, 0.0, 1.0);
+        col = col * mix(vec3<f32>(1.0), vec3<f32>(0.9, 0.96, 1.08), sh);
+    }
     if (!emissive) {
         col = col * g.tone.rgb;
     }
@@ -437,6 +627,31 @@ fn ink_at(p: vec2<i32>, s: i32) -> bool {
     return false;
 }
 
+// Contact shade: ground within about a metre of something standing on it (a wall, a trunk, a
+// fence) gets one darker, cooler step. Looks at four neighbours of the first sample only.
+fn contact(p: vec2<i32>, px: f32) -> f32 {
+    let a = aux_at(p, 0);
+    if (u32(a.y) != 0u) {
+        return 1.0;
+    }
+    let r = i32(clamp(0.9 / max(px, 0.02), 1.0, 4.0));
+    var offs = array<vec2<i32>, 4>(vec2<i32>(r, 0), vec2<i32>(-r, 0), vec2<i32>(0, r), vec2<i32>(0, -r));
+    var hits = 0;
+    let tol = 0.004 * a.x + 0.3;
+    for (var i = 0; i < 4; i = i + 1) {
+        let b = aux_at(p + offs[i], 0);
+        let idb = u32(b.y);
+        // a real object (not ground, not flat paint) that is close to the ground point in depth
+        if (idb != 0u && idb != EXEMPT && abs(b.x - a.x) < 2.5 + tol) {
+            hits = hits + 1;
+        }
+    }
+    if (hits >= 1) {
+        return 0.88;
+    }
+    return 1.0;
+}
+
 @fragment
 fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
     let p = vec2<i32>(i32(e.clip.x), i32(e.clip.y));
@@ -445,6 +660,10 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
     // metre a pixel, none from a metre and a half (whole-town views keep their roof colours)
     let px = g.screen.z * aux_at(p, 0).x;
     let inked = px < 1.5;
+    var ao = 1.0;
+    if (inked) {
+        ao = contact(p, px);
+    }
     for (var s = 0; s < SAMPLE_COUNT; s = s + 1) {
         var ink = false;
         if (inked) {
@@ -456,7 +675,7 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
         if (ink) {
             acc = acc + g.ink.rgb;
         } else {
-            acc = acc + textureLoad(colour_tex, p, s).rgb;
+            acc = acc + textureLoad(colour_tex, p, s).rgb * ao;
         }
     }
     return vec4<f32>(acc / f32(SAMPLE_COUNT), 1.0);
