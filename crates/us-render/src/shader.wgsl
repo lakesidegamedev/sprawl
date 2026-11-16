@@ -688,7 +688,11 @@ fn fs_main(v: VOut) -> FOut {
     var k = 1.0;
     if (cel && ground) {
         // hillshade: stepped tones by how the slope faces the sun compared with level ground
-        let d = l - g.sun.z;
+        var d = l - g.sun.z;
+        if (g.rock[7].z > 0.5) {
+            // flat desert and sea flats must read flat: a faint swell of the land is not shaded
+            d = d * (1.0 - 0.97 * smoothstep(0.9, 0.97, facet.z));
+        }
         if (d > 0.03) {
             k = 1.1;
         } else if (d > 0.012) {

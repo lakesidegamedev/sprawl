@@ -59,6 +59,8 @@ pub struct Pillar {
     pub squash: f32,
     /// Thickness of the thinnest band of rock, metres.
     pub band: f32,
+    /// Depth of the notches and gullies cut into the outline (0 for none).
+    pub notch: f32,
 }
 
 const RING: usize = 28;
@@ -81,7 +83,12 @@ fn pillar_ring(p: &Pillar, u: f32, scale: f32) -> Vec<[f32; 2]> {
                 + p.lobes
                     * (libm::sinf(2.0 * a + p.phase + 0.7 * u)
                         + 0.6 * libm::sinf(3.0 * a + 2.0 * p.phase - 1.1 * u)
-                        + 0.35 * libm::sinf(5.0 * a + 3.0 * p.phase + 2.0 * u));
+                        + 0.35 * libm::sinf(5.0 * a + 3.0 * p.phase + 2.0 * u))
+                // gullies: narrow cuts that wander round as they climb
+                - p.notch * (libm::sinf(4.0 * a + 2.0 * p.phase + 1.5 * u) - 0.45).max(0.0) * 1.3
+                - p.notch
+                    * 0.8
+                    * (libm::sinf(7.0 * a - p.phase - 2.3 * u + 1.0) - 0.6).max(0.0);
             let rr = p.r * scale * shaft.max(0.25) * k;
             [
                 c[0] + rr * libm::cosf(a),
@@ -439,6 +446,7 @@ pub fn add(mesh: &mut Mesh, land: &Land, t: &Town) {
             skirt: 1.45,
             squash: 0.55 + 0.45 * rnd(5),
             band: 5.0,
+            notch: 0.0,
         };
         if s.arch {
             rock_arch(&mut o, s.r as f32, h, phase, i, &BANDS);
@@ -509,16 +517,17 @@ pub fn add_horizon(mesh: &mut Mesh, land: &Land, t: &Town) {
             phase,
             tint: placed.len(),
             lean: [0.0, 0.0],
-            taper: if wide { 0.03 } else { 0.12 },
-            lobes: if wide { 0.2 } else { 0.1 },
-            waist: if wide { 0.02 } else { 0.05 },
+            taper: if wide { 0.05 } else { 0.1 + 0.16 * rng.range(0.0, 1.0) },
+            lobes: if wide { 0.3 } else { 0.24 },
+            waist: if wide { 0.08 } else { 0.15 },
             skirt: if wide { 1.3 } else { 1.7 },
             band: if wide { 14.0 } else { 18.0 },
             squash: if wide {
                 0.55 + 0.4 * rng.range(0.0, 1.0)
             } else {
-                1.0
+                0.62 + 0.38 * rng.range(0.0, 1.0)
             },
+            notch: if wide { 0.1 } else { 0.18 },
         };
         rock_pillar(&mut o, &pillar, &bands, foot, cap);
         let base = land.height(x, y);
