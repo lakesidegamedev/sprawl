@@ -35,51 +35,108 @@ fn hash(a: u64, b: u64) -> u64 {
     crate::rng::Rng::new(a, b).next_u64()
 }
 
-/// A tower of rock: a broken foot, then layers one on another, each a touch narrower, and a cap.
-/// `foot_h` is the height of the foot above the base of the model at `z0`.
-#[allow(clippy::too_many_arguments)]
-pub fn rock_tower(
-    o: &mut Obj,
-    centre: [f32; 2],
-    r: f32,
-    h: f32,
-    z0: f32,
-    phase: f32,
-    tint: usize,
-    bands: &[Rgb; 5],
-    foot: Rgb,
-    cap: Rgb,
-    taper: f32,
-    lobes: f32,
-) {
-    let sides = 14;
-    let outline = |scale: f32| -> Vec<[f32; 2]> {
-        (0..sides)
-            .map(|i| {
-                let a = std::f32::consts::TAU * i as f32 / sides as f32;
-                let k = 1.0
-                    + lobes * libm::sinf(2.0 * a + phase)
-                    + 0.6 * lobes * libm::sinf(3.0 * a + 2.0 * phase);
-                [
-                    centre[0] + r * scale * k * libm::cosf(a),
-                    centre[1] + r * scale * k * libm::sinf(a),
-                ]
-            })
-            .collect()
-    };
-    let foot_h = (h * 0.2).clamp(4.0, 16.0);
-    o.extrude(&outline(1.3), z0, z0 + foot_h, foot, foot);
-    let mut z = z0 + foot_h;
-    let mut k = 0;
-    while z < z0 + h - 1.0 {
-        let band = (6.0 + (hash(tint as u64, k as u64) % 5) as f32).min(z0 + h - z);
-        let scale = 1.05 - taper * ((z - z0) / h);
-        let c = bands[(k + tint) % bands.len()];
-        o.extrude(&outline(scale), z, z + band, c, c);
-        z += band;
+/// Shape of one pillar of rock.
+#[derive(Clone, Copy)]
+pub struct Pillar {
+    pub centre: [f32; 2],
+    /// Mean radius at the foot of the wall, metres.
+    pub r: f32,
+    pub h: f32,
+    pub z0: f32,
+    pub phase: f32,
+    pub tint: usize,
+    /// How far the top leans from the foot, metres, in x and y.
+    pub lean: [f32; 2],
+    /// Share of the radius lost between foot and top (0 sheer, 0.5 a spike).
+    pub taper: f32,
+    /// Strength of the lobes of the outline.
+    pub lobes: f32,
+    /// Strength of the eroded waists and bulges up the shaft.
+    pub waist: f32,
+    /// Radius of the talus skirt at the foot as a multiple of `r` (1 for none).
+    pub skirt: f32,
+    /// Squash of the plan: 1 round, below 1 a long ridge.
+    pub squash: f32,
+    /// Thickness of the thinnest band of rock, metres.
+    pub band: f32,
+}
+
+const RING: usize = 28;
+
+/// A ring of the pillar at height fraction `u` (0 foot, 1 top).
+fn pillar_ring(p: &Pillar, u: f32, scale: f32) -> Vec<[f32; 2]> {
+    let lean = u * u * (3.0 - 2.0 * u);
+    // an eroded shaft: a waist or two and a bulge, differing between pillars
+    let shaft = 1.0 - p.taper * u.powf(0.8)
+        + p.waist
+            * (0.55 * libm::sinf(5.0 * u + p.phase) + 0.3 * libm::sinf(11.0 * u + 2.0 * p.phase));
+    let c = [
+        p.centre[0] + p.lean[0] * lean,
+        p.centre[1] + p.lean[1] * lean,
+    ];
+    (0..RING)
+        .map(|i| {
+            let a = std::f32::consts::TAU * i as f32 / RING as f32;
+            let k = 1.0
+                + p.lobes
+                    * (libm::sinf(2.0 * a + p.phase + 0.7 * u)
+                        + 0.6 * libm::sinf(3.0 * a + 2.0 * p.phase - 1.1 * u)
+                        + 0.35 * libm::sinf(5.0 * a + 3.0 * p.phase + 2.0 * u));
+            let rr = p.r * scale * shaft.max(0.25) * k;
+            [
+                c[0] + rr * libm::cosf(a),
+                c[1] + rr * p.squash * libm::sinf(a),
+            ]
+        })
+        .collect()
+}
+
+fn darker(c: Rgb, k: f32) -> Rgb {
+    [
+        (c[0] as f32 * k) as u8,
+        (c[1] as f32 * k) as u8,
+        (c[2] as f32 * k) as u8,
+    ]
+}
+
+/// A pillar of rock: a broken skirt of talus at the foot, then a wall in thick bands of different
+/// tone, each ending in a thin dark ledge, with an irregular outline that tapers, bulges and may
+/// lean. The top is a rounded cap of the cap colour.
+pub fn rock_pillar(o: &mut Obj, p: &Pillar, bands: &[Rgb; 5], foot: Rgb, cap: Rgb) {
+    let z0 = p.z0;
+    let top = z0 + p.h;
+    // talus skirt
+    let skirt_h = (p.h * 0.16).clamp(3.0, 22.0);
+    if p.skirt > 1.0 {
+        let lo = pillar_ring(p, 0.0, p.skirt);
+        let hi = pillar_ring(p, skirt_h / p.h, 1.0);
+        o.loft(&lo, z0, &hi, z0 + skirt_h, foot, None);
+    }
+    let mut z = z0 + skirt_h * if p.skirt > 1.0 { 1.0 } else { 0.0 };
+    let mut k = 0u64;
+    while z < top - 2.0 {
+        let step = (p.band * (1.0 + 0.15 * (hash(p.tint as u64 + 31, k) % 7) as f32)).min(top - z);
+        let (u0, u1) = ((z - z0) / p.h, (z + step - z0) / p.h);
+        let c = bands[(hash(p.tint as u64, k + 5) % bands.len() as u64) as usize];
+        // a stratum, then the dark ledge where it ends. Hard and soft layers weather back by
+        // different amounts, so the width changes from one stratum to the next
+        let jit = |k: u64| {
+            1.0 + p.waist * 0.9 * ((hash(p.tint as u64 + 77, k) % 1000) as f32 / 500.0 - 1.0)
+        };
+        let lo = pillar_ring(p, u0, jit(k));
+        let hi = pillar_ring(p, u1, jit(k + 1));
+        o.loft(&lo, z, &hi, z + step - 0.7, c, None);
+        let lip = pillar_ring(p, u1, 1.03 * jit(k + 1));
+        o.loft(&hi, z + step - 0.7, &lip, z + step, darker(c, 0.62), None);
+        z += step;
         k += 1;
     }
-    o.extrude(&outline(0.93), z0 + h - 1.2, z0 + h, cap, cap);
+    // the cap: a rounded top
+    let jt = 1.0 + p.waist * 0.9 * ((hash(p.tint as u64 + 77, k) % 1000) as f32 / 500.0 - 1.0);
+    let rim = pillar_ring(p, 1.0, jt);
+    let crown = pillar_ring(p, 1.0, 0.62 * jt);
+    let dome = (p.r * 0.25).min(p.h * 0.1);
+    o.loft(&rim, top - 0.5, &crown, top + dome, cap, Some(cap));
 }
 
 fn boat(size: u8, seed: u64) -> Obj {
@@ -256,55 +313,81 @@ pub fn add(mesh: &mut Mesh, land: &Land, t: &Town) {
         1.8,
         Some(Sit { land, z: base }),
     );
-    // sea stacks and the arch
+    // sea stacks and the arch: pillars of different sizes, some leaning, narrowing and eroded
     for (i, s) in field.stacks.iter().enumerate() {
         let mut o = Obj::new();
-        let phase = (hash(t.seed, 900 + i as u64) % 628) as f32 / 100.0;
+        let rnd = |k: u64| (hash(t.seed, 900 + 17 * i as u64 + k) % 10_000) as f32 / 10_000.0;
+        let phase = rnd(0) * std::f32::consts::TAU;
+        let h = s.h as f32;
+        let lean_dir = rnd(1) * std::f32::consts::TAU;
+        let lean_len = h * (0.05 + 0.25 * rnd(2));
+        let pillar = |centre: [f32; 2], r: f32, h: f32, lean: [f32; 2], k: usize| Pillar {
+            centre,
+            r,
+            h,
+            z0: -3.0,
+            phase: phase + k as f32 * 1.9,
+            tint: i * 3 + k,
+            lean,
+            taper: 0.3 + 0.32 * rnd(3),
+            lobes: 0.2,
+            waist: 0.22 + 0.14 * rnd(4),
+            skirt: 1.45,
+            squash: 0.55 + 0.45 * rnd(5),
+            band: 5.0,
+        };
         if s.arch {
             let r = s.r as f32;
             let pr = r * 0.46;
+            // two legs that lean towards each other, joined by a span
             for k in [-1.0f32, 1.0] {
-                rock_tower(
+                rock_pillar(
                     &mut o,
-                    [0.0, k * r * 0.62],
-                    pr,
-                    s.h as f32,
-                    -3.0,
-                    phase,
-                    i,
+                    &pillar(
+                        [0.0, k * r * 0.62],
+                        pr,
+                        h,
+                        [0.0, -k * r * 0.18],
+                        (k + 1.0) as usize,
+                    ),
                     &BANDS,
                     STONE_FOOT,
                     [104, 142, 88],
-                    0.3,
-                    0.12,
                 );
             }
-            // the span across the top of the arch
-            let (y0, y1) = (-r * 0.62, r * 0.62);
-            o.bx_top(
-                -pr * 0.9,
-                y0,
-                s.h as f32 * 0.74,
-                pr * 0.8,
-                y1,
-                s.h as f32,
+            let (y0, y1) = (-r * 0.5, r * 0.5);
+            let z0 = h * 0.72;
+            let lo: Vec<[f32; 2]> = vec![
+                [-pr * 0.8, y0],
+                [pr * 0.8, y0],
+                [pr * 0.7, y1],
+                [-pr * 0.7, y1],
+            ];
+            let hi: Vec<[f32; 2]> = vec![
+                [-pr * 0.6, y0 - 1.0],
+                [pr * 0.6, y0 - 1.0],
+                [pr * 0.5, y1 + 1.0],
+                [-pr * 0.5, y1 + 1.0],
+            ];
+            o.loft(
+                &lo,
+                z0,
+                &hi,
+                h * 0.95,
                 BANDS[i % BANDS.len()],
-                [104, 142, 88],
+                Some([104, 142, 88]),
             );
         } else {
-            rock_tower(
+            let lean = [
+                lean_len * libm::cosf(lean_dir),
+                lean_len * libm::sinf(lean_dir),
+            ];
+            rock_pillar(
                 &mut o,
-                [0.0, 0.0],
-                s.r as f32,
-                s.h as f32,
-                -3.0,
-                phase,
-                i,
+                &pillar([0.0, 0.0], s.r as f32, h, lean, 0),
                 &BANDS,
                 STONE_FOOT,
                 [104, 142, 88],
-                0.3,
-                0.12,
             );
         }
         o.emit_on(mesh, &mut next, s.c.x as f32, s.c.y as f32, 0.0, 1.0, None);
@@ -352,21 +435,75 @@ pub fn add_horizon(mesh: &mut Mesh, land: &Land, t: &Town) {
         };
         let phase = rng.range(0.0, std::f32::consts::TAU);
         let mut o = Obj::new();
-        rock_tower(
-            &mut o,
-            [0.0, 0.0],
+        // like the near formations: a sheer banded wall with a lobed outline on a talus skirt
+        let pillar = Pillar {
+            centre: [0.0, 0.0],
             r,
-            hgt,
-            0.0,
+            h: hgt,
+            z0: 0.0,
             phase,
-            placed.len(),
-            &bands,
-            foot,
-            cap,
-            0.1,
-            0.3,
-        );
+            tint: placed.len(),
+            lean: [0.0, 0.0],
+            taper: if wide { 0.03 } else { 0.12 },
+            lobes: if wide { 0.2 } else { 0.1 },
+            waist: if wide { 0.02 } else { 0.05 },
+            skirt: if wide { 1.3 } else { 1.7 },
+            band: if wide { 14.0 } else { 18.0 },
+            squash: if wide {
+                0.55 + 0.4 * rng.range(0.0, 1.0)
+            } else {
+                1.0
+            },
+        };
+        rock_pillar(&mut o, &pillar, &bands, foot, cap);
         let base = land.height(x, y);
         o.emit_on(mesh, &mut next, x, y, 0.0, 1.0, Some(Sit { land, z: base }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use us_gen::{Preset, generate};
+
+    #[test]
+    fn the_sea_lies_at_the_foot_of_the_cliffs_and_stacks_stand_out_of_it() {
+        for seed in 1..=4 {
+            let t = generate(Preset::Coast, seed);
+            let land = Land::from_town(&t);
+            let level = land.water_level(&t.water[0]);
+            assert!(level < 6.0, "seed {seed}: the sea stands {level} m up");
+            let mut mesh = Mesh::default();
+            add(&mut mesh, &land, &t);
+            let RockCoast::Coast(c) = t.terrain.rock_coast() else {
+                panic!("a coast");
+            };
+            assert!(
+                mesh.vertices
+                    .iter()
+                    .all(|v| v.pos.iter().all(|c| c.is_finite())),
+                "seed {seed}: a vertex is not finite"
+            );
+            for s in &c.stacks {
+                let top = mesh
+                    .vertices
+                    .iter()
+                    .filter(|v| {
+                        (v.pos[0] as f64 - s.c.x).abs() < s.r * 2.0
+                            && (v.pos[1] as f64 - s.c.y).abs() < s.r * 2.0
+                    })
+                    .map(|v| v.pos[2])
+                    .fold(f32::MIN, f32::max);
+                assert!(
+                    top as f64 > s.h * 0.85 - 3.0,
+                    "seed {seed}: stack of {} m tops out at {top}",
+                    s.h
+                );
+                assert!(
+                    top > level + 20.0,
+                    "seed {seed}: a stack hardly clears the water"
+                );
+            }
+        }
     }
 }

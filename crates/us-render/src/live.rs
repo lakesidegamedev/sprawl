@@ -11,12 +11,9 @@ use crate::scene::{
 };
 use us_gen::{Pattern, Pt, RoadClass, Town, Zone};
 
-/// White of the surf along the sea's edge.
-const SURF: Rgb = [244, 248, 250];
-
 /// Ground colour of an addition's land in a town of style `p`: the red rock desert has no green
-/// fields or lawns. Farms and parks show the bare ground (parks keep their scrub trees), and the
-/// campus and cemetery wear dry tones.
+/// fields or lawns. Farms, parks, cemeteries and campuses show the bare ground (parks keep their
+/// scrub trees).
 pub fn zone_colour_in(
     p: us_gen::Preset,
     zone: Zone,
@@ -25,11 +22,10 @@ pub fn zone_colour_in(
     index: usize,
 ) -> Option<Rgb> {
     if p == us_gen::Preset::Mesa {
+        // the desert has no lawns, fields or campus greens: those lots show the bare ground, since
+        // any flat colour laid on the sand reads as a pale rectangle
         match zone {
-            Zone::Farm => return None,
-            Zone::Park if pattern != Pattern::Cemetery => return None,
-            Zone::Park => return Some([196, 168, 124]),
-            Zone::Campus => return Some([214, 178, 130]),
+            Zone::Farm | Zone::Park | Zone::Campus => return None,
             _ => {}
         }
     }
@@ -117,63 +113,11 @@ pub fn add_water(g: &mut Ground, land: &Land, t: &Town) {
     add_water_at(g, land, land, t);
 }
 
-fn inside(p: Pt, ring: &[Pt]) -> bool {
-    let mut ins = false;
-    let mut j = ring.len() - 1;
-    for i in 0..ring.len() {
-        let (a, b) = (ring[i], ring[j]);
-        if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
-            ins = !ins;
-        }
-        j = i;
-    }
-    ins
-}
-
-/// A thin strip along the part of the sea's shore that lies on the map, for the surf.
-fn surf_strip(ring: &[Pt], size: f64) -> Option<Vec<Pt>> {
-    let shore: Vec<Pt> = ring
-        .iter()
-        .copied()
-        .filter(|p| p.x < size + 1.0 && p.y < size + 1.0)
-        .collect();
-    if shore.len() < 3 {
-        return None;
-    }
-    let n = shore.len();
-    let mut land_side = Vec::with_capacity(n);
-    for i in 0..n {
-        let (a, b) = (shore[i.saturating_sub(1)], shore[(i + 1).min(n - 1)]);
-        let d = us_gen::pt(b.x - a.x, b.y - a.y);
-        let l = d.len().max(1e-6);
-        // the land side is the normal that points out of the water
-        let mut nrm = us_gen::pt(-d.y / l, d.x / l);
-        let probe = us_gen::pt(shore[i].x + nrm.x * 12.0, shore[i].y + nrm.y * 12.0);
-        if inside(probe, ring) {
-            nrm = us_gen::pt(-nrm.x, -nrm.y);
-        }
-        land_side.push(us_gen::pt(
-            shore[i].x + nrm.x * 5.0,
-            shore[i].y + nrm.y * 5.0,
-        ));
-    }
-    let mut out = land_side;
-    out.extend(shore.iter().rev().copied());
-    Some(out)
-}
-
 /// Like `add_water`, with the water levels taken from `levels` (a finer copy of `land`).
 fn add_water_at(g: &mut Ground, land: &Land, levels: &Land, t: &Town) {
     for w in &t.water {
-        // the sea runs off the map: no sand ring, a crisp white surf line along its shore
-        let sea = t.preset == us_gen::Preset::Coast;
-        if sea {
-            if !land.is_flat()
-                && let Some(strip) = surf_strip(w, t.size)
-            {
-                g.polygon(&strip, layer::SAND + 0.02, SURF);
-            }
-        } else {
+        // the sea runs off the map: no sand ring, the shore foam comes from the water shader
+        if t.preset != us_gen::Preset::Coast {
             g.polygon(&Ground::grow(w, 14.0), layer::SAND, SAND);
         }
         if land.is_flat() {

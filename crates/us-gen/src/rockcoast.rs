@@ -297,6 +297,100 @@ pub struct Cove {
     pub rho: f64,
     /// The sheltered harbour: a beach on its inner shore, cliffs and headlands round its mouth.
     pub harbour: bool,
+    /// Phase of the bumps of an irregular shore.
+    pub phase: f64,
+}
+
+impl Cove {
+    /// Distance from the centre to the shore in direction `a` (radians from +x). The small coves
+    /// are round; the harbour has a wandering shore with small rock points on its two sides and a
+    /// smooth sandy arc on the inland side.
+    pub fn radius(&self, a: f64) -> f64 {
+        if !self.harbour {
+            return self.rho;
+        }
+        let p = self.phase;
+        let mut a = a;
+        while a > std::f64::consts::PI {
+            a -= TAU;
+        }
+        while a < -std::f64::consts::PI {
+            a += TAU;
+        }
+        // the mouth side stays round, so the horns (where the cove meets the open coast) are a
+        // single crossing; the sides and the back wander
+        let wander = smooth(1.15, 1.5, a.abs());
+        let rough = wander * (0.4 + 0.6 * sin(a) * sin(a));
+        let mut k = 1.0
+            + rough
+                * (0.10 * sin(2.0 * a + p)
+                    + 0.06 * sin(3.0 * a + 1.7 * p)
+                    + 0.035 * sin(6.0 * a + 2.3 * p));
+        // small points of rock that run out into the water
+        for (at, w, h) in [
+            (1.6, 0.13, 0.16),
+            (2.1, 0.10, 0.12),
+            (-1.65, 0.12, 0.17),
+            (-2.15, 0.09, 0.11),
+        ] {
+            let d = a - (at + 0.1 * sin(p * 2.0 + at * 3.0));
+            k -= h * libm::exp(-(d / w) * (d / w));
+        }
+        self.rho * k
+    }
+
+    /// Signed distance of a point from the shore of the cove: negative inside the water.
+    pub fn dist(&self, x: f64, y: f64) -> f64 {
+        let (dx, dy) = (x - self.c.x, y - self.c.y);
+        (dx * dx + dy * dy).sqrt() - self.radius(atan2(dy, dx))
+    }
+
+    /// x of the west (`east` false) or east edge of the cove, grown by `inland` metres, along the
+    /// row `y`.
+    pub fn edge_at(&self, y: f64, inland: f64, east: bool) -> Option<f64> {
+        let dy = y - self.c.y;
+        if !self.harbour {
+            let r = self.rho + inland;
+            if dy.abs() >= r {
+                return None;
+            }
+            let w = (r * r - dy * dy).sqrt();
+            return Some(if east { self.c.x + w } else { self.c.x - w });
+        }
+        let reach = self.rho * 1.4 + inland;
+        if dy.abs() >= reach {
+            return None;
+        }
+        let sgn = if east { 1.0 } else { -1.0 };
+        let f = |x: f64| self.dist(x, y) - inland;
+        let (mut out, mut inn) = (self.c.x + sgn * reach, self.c.x);
+        // walk in from outside until the shore is crossed, then bisect
+        let mut x = out;
+        let step = -sgn * 6.0;
+        let mut found = false;
+        while (x - self.c.x) * sgn > 0.0 {
+            let nx = x + step;
+            if f(nx) < 0.0 {
+                inn = nx;
+                out = x;
+                found = true;
+                break;
+            }
+            x = nx;
+        }
+        if !found {
+            return None;
+        }
+        for _ in 0..28 {
+            let m = 0.5 * (out + inn);
+            if f(m) < 0.0 {
+                inn = m;
+            } else {
+                out = m;
+            }
+        }
+        Some(0.5 * (out + inn))
+    }
 }
 
 /// A stack of rock standing in the sea off the cliffs.
@@ -354,6 +448,7 @@ impl CoastField {
             c: pt(0.0, yh),
             rho: rho_h,
             harbour: true,
+            phase: rng.uniform(0.0, TAU),
         }];
         let mut y = if rng.chance(0.5) {
             yh + 1100.0
@@ -366,6 +461,7 @@ impl CoastField {
                 c: pt(0.0, y.clamp(1500.0 - 700.0 * (k as f64), S - 400.0)),
                 rho,
                 harbour: false,
+                phase: 0.0,
             });
             y += if y > yh { 900.0 } else { -900.0 };
         }
@@ -395,7 +491,7 @@ impl CoastField {
         let mut y = 900.0 + srng.uniform(0.0, 200.0);
         while f.stacks.len() < 8 && tries < 120 && y < S - 200.0 {
             tries += 1;
-            let r = srng.uniform(18.0, 34.0);
+            let r = srng.uniform(9.0, 32.0);
             let out = srng.uniform(70.0, 190.0);
             let c = pt(f.edge_x(y, -32.0) + out, y);
             let ok = f.inland(c.x, c.y) < -(60.0 + r)
@@ -406,7 +502,7 @@ impl CoastField {
                 f.stacks.push(Stack {
                     c,
                     r: if arch { r + 12.0 } else { r },
-                    h: srng.uniform(45.0, 95.0),
+                    h: srng.uniform(26.0, 110.0),
                     arch,
                 });
             }
@@ -428,7 +524,7 @@ impl CoastField {
     pub fn inland(&self, x: f64, y: f64) -> f64 {
         let mut d = self.line_x(y) - x;
         for c in &self.coves {
-            let dc = ((x - c.c.x).powi(2) + (y - c.c.y).powi(2)).sqrt() - c.rho;
+            let dc = c.dist(x, y);
             if dc < d {
                 d = dc;
             }
@@ -440,10 +536,8 @@ impl CoastField {
     pub fn edge_x(&self, y: f64, inland: f64) -> f64 {
         let mut x = self.line_x(y) - inland;
         for c in &self.coves {
-            let r = c.rho + inland;
-            let dy = y - c.c.y;
-            if dy.abs() < r {
-                x = x.min(c.c.x - (r * r - dy * dy).sqrt());
+            if let Some(w) = c.edge_at(y, inland, false) {
+                x = x.min(w);
             }
         }
         x
@@ -518,10 +612,8 @@ impl CoastField {
     fn open_edge_x(&self, y: f64, inland: f64) -> f64 {
         let mut x = self.line_x(y) - inland;
         for c in self.coves.iter().filter(|c| !c.harbour) {
-            let r = c.rho + inland;
-            let dy = y - c.c.y;
-            if dy.abs() < r {
-                x = x.min(c.c.x - (r * r - dy * dy).sqrt());
+            if let Some(w) = c.edge_at(y, inland, false) {
+                x = x.min(w);
             }
         }
         x
@@ -532,7 +624,7 @@ impl CoastField {
     pub fn horns(&self, inland: f64) -> (Pt, Pt) {
         let hv = self.coves[0];
         let r = hv.rho + inland;
-        let ex = |y: f64| hv.c.x + (r * r - (y - hv.c.y).powi(2)).max(0.0).sqrt();
+        let ex = |y: f64| hv.edge_at(y, inland, true).unwrap_or(hv.c.x);
         let find = |sign: f64| -> Pt {
             let mut dy = 0.0;
             while dy < r - 1.0 {
@@ -556,7 +648,6 @@ impl CoastField {
         let shelf = -30.0;
         let far = S + 1600.0;
         let hv = self.coves[0];
-        let r = hv.rho + shelf;
         let (hs, hn) = self.horns(shelf);
         let mut ring = Vec::new();
         let (y0, y1) = (-500.0, S + 500.0);
@@ -572,6 +663,7 @@ impl CoastField {
         let steps = 120;
         for i in 0..=steps {
             let a = a0 + (a1 - a0) * i as f64 / steps as f64;
+            let r = hv.radius(a) + shelf;
             ring.push(pt(hv.c.x + r * cos(a), hv.c.y + r * sin(a)));
         }
         let mut y = hn.y;
@@ -648,10 +740,9 @@ impl CoastField {
         let mut boats = Vec::new();
         for (i, deg) in [-34.0f64, 4.0, 38.0].into_iter().enumerate() {
             let a = (deg + rng.uniform(-5.0, 5.0)).to_radians();
-            let root = pt(
-                hv.c.x - (hv.rho + 14.0) * cos(a),
-                hv.c.y + (hv.rho + 14.0) * sin(a),
-            );
+            let th = std::f64::consts::PI - a;
+            let rr = hv.radius(th) + 14.0;
+            let root = pt(hv.c.x + rr * cos(th), hv.c.y + rr * sin(th));
             let len = rng.uniform(70.0, 120.0) - 10.0 * i as f64;
             let tip = pt(root.x + len * cos(a), root.y - len * sin(a));
             piers.push((root, tip));

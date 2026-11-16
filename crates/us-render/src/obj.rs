@@ -555,6 +555,43 @@ impl Obj {
         self
     }
 
+    /// The side of a solid that runs from the outline `lo` at height `z0` to the outline `hi`
+    /// at height `z1` (same number of points, counter-clockwise): a frustum, a leaning column, a
+    /// waist. `top` closes it with a flat face when given.
+    pub fn loft(
+        &mut self,
+        lo: &[[f32; 2]],
+        z0: f32,
+        hi: &[[f32; 2]],
+        z1: f32,
+        color: Rgb,
+        top: Option<Rgb>,
+    ) -> &mut Self {
+        let k = lo.len() as f32;
+        let cx = lo.iter().map(|p| p[0]).sum::<f32>() / k;
+        let cy = lo.iter().map(|p| p[1]).sum::<f32>() / k;
+        let s = self.new_solid([cx, cy, (z0 + z1) / 2.0]);
+        for i in 0..lo.len() {
+            let j = (i + 1) % lo.len();
+            self.face(
+                s,
+                &[
+                    [lo[i][0], lo[i][1], z0],
+                    [lo[j][0], lo[j][1], z0],
+                    [hi[j][0], hi[j][1], z1],
+                    [hi[i][0], hi[i][1], z1],
+                ],
+                color,
+                false,
+            );
+        }
+        if let Some(t) = top {
+            let ring: Vec<V3> = hi.iter().map(|p| [p[0], p[1], z1]).collect();
+            self.face(s, &ring, t, false);
+        }
+        self
+    }
+
     /// A flat coloured panel on a wall running from `a` to `b` (the building outline is
     /// counter-clockwise, so the outside is on the right), just clear of the wall.
     pub fn wall_quad(
