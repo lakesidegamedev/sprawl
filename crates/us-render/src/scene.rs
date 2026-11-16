@@ -24,13 +24,15 @@ pub const PAVING_MALL: Rgb = [208, 200, 198];
 pub const PARK_GREEN: Rgb = [96, 176, 84];
 pub const CAMPUS: Rgb = [196, 210, 160];
 pub const CEMETERY: Rgb = [146, 178, 118];
-pub const FIELDS: [Rgb; 6] = [
+pub const FIELDS: [Rgb; 8] = [
     [176, 198, 106],
     [198, 186, 124],
     [140, 172, 96],
     [168, 190, 110],
     [206, 194, 140],
     [128, 164, 88],
+    [222, 194, 100],
+    [170, 134, 94],
 ];
 pub const WATER: Rgb = [66, 132, 200];
 pub const SAND: Rgb = [214, 200, 150];
@@ -228,7 +230,8 @@ impl Scene {
             .collect();
         let land = Land::from_town(t);
         let ground = build_ground(t, &roads, &land);
-        let (td, chunks) = build_chunks(t, &land);
+        let (td, mut chunks) = build_chunks(t, &land);
+        chunks.extend(crate::cover::build_all(t, &land));
         let mut s = Scene {
             uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
             size: t.size as f32,
@@ -568,11 +571,6 @@ impl Scene {
     }
 }
 
-fn hash2(a: u64, b: u64) -> u64 {
-    let mut r = Rng::new(a, b);
-    r.next_u64()
-}
-
 fn zone_colour(zone: Zone, pattern: Pattern, seed: u64, ai: usize) -> Option<Rgb> {
     match zone {
         Zone::Core => Some(PAVING_CORE),
@@ -584,7 +582,7 @@ fn zone_colour(zone: Zone, pattern: Pattern, seed: u64, ai: usize) -> Option<Rgb
         } else {
             PARK_GREEN
         }),
-        Zone::Farm => Some(FIELDS[(hash2(seed, ai as u64) % FIELDS.len() as u64) as usize]),
+        Zone::Farm => Some(FIELDS[crate::cover::field_index(seed, ai)]),
         Zone::Inner | Zone::Outer => None,
     }
 }
@@ -592,12 +590,12 @@ fn zone_colour(zone: Zone, pattern: Pattern, seed: u64, ai: usize) -> Option<Rgb
 /// Uniform grid over road segments, for "how far is this spot from any road".
 type SegCells = BTreeMap<(i32, i32), Vec<(Pt, Pt, f64)>>;
 
-struct RoadGrid {
+pub(crate) struct RoadGrid {
     cells: SegCells,
 }
 
 impl RoadGrid {
-    fn new(t: &Town) -> RoadGrid {
+    pub(crate) fn new(t: &Town) -> RoadGrid {
         let mut cells: SegCells = BTreeMap::new();
         for r in &t.roads {
             let hw = r.class.half_width();
@@ -618,7 +616,7 @@ impl RoadGrid {
     }
 
     /// Smallest gap between `p` and the edge of any road, within 2 cells.
-    fn clearance(&self, p: Pt) -> f64 {
+    pub(crate) fn clearance(&self, p: Pt) -> f64 {
         let (cx, cy) = ((p.x / 48.0).floor() as i32, (p.y / 48.0).floor() as i32);
         let mut best = f64::INFINITY;
         for x in cx - 1..=cx + 1 {
@@ -658,7 +656,7 @@ const WOODS_PER_TREE: f64 = 60.0;
 
 /// Whether a park patch lies on steep enough ground to be woods: the mean slope over a spread of
 /// points inside it.
-fn wooded(land: &Land, ring: &[Pt]) -> bool {
+pub(crate) fn wooded_ring(land: &Land, ring: &[Pt]) -> bool {
     if land.is_flat() {
         return false;
     }
@@ -702,6 +700,9 @@ fn build_ground(t: &Town, roads: &[RoadInfo], land: &Land) -> Mesh {
     for (ai, a) in t.additions.iter().enumerate() {
         if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, ai) {
             g.polygon(&a.polygon, layer::ZONE, c);
+            if a.zone == Zone::Farm {
+                crate::cover::field_margin(&mut g, &a.polygon);
+            }
         }
     }
     live::add_water(&mut g, land, t);
@@ -848,7 +849,8 @@ fn build_chunks(t: &Town, land: &Land) -> (TownData, Vec<Chunk>) {
     let grid = RoadGrid::new(t);
     for (ai, a) in t.additions.iter().enumerate() {
         // wooded slopes: the generator marks them as park land on steep ground
-        let woods = a.zone == Zone::Park && a.pattern == Pattern::Park && wooded(land, &a.polygon);
+        let woods =
+            a.zone == Zone::Park && a.pattern == Pattern::Park && wooded_ring(land, &a.polygon);
         let per = match (a.zone, a.pattern) {
             (Zone::Park, Pattern::Golf) => 1800.0,
             (Zone::Park, Pattern::Cemetery) => 900.0,

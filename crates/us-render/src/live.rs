@@ -11,10 +11,6 @@ use crate::scene::{
 };
 use us_gen::{Pattern, Pt, RoadClass, Town, Zone};
 
-fn hash2(a: u64, b: u64) -> u64 {
-    crate::rng::Rng::new(a, b).next_u64()
-}
-
 /// Ground colour of an addition's land, if it has one (houses sit on plain grass).
 pub fn zone_colour(zone: Zone, pattern: Pattern, seed: u64, index: usize) -> Option<Rgb> {
     match zone {
@@ -27,7 +23,7 @@ pub fn zone_colour(zone: Zone, pattern: Pattern, seed: u64, index: usize) -> Opt
         } else {
             PARK_GREEN
         }),
-        Zone::Farm => Some(FIELDS[(hash2(seed, index as u64) % FIELDS.len() as u64) as usize]),
+        Zone::Farm => Some(FIELDS[crate::cover::field_index(seed, index)]),
         Zone::Inner | Zone::Outer => None,
     }
 }
@@ -57,6 +53,9 @@ pub fn base_ground_on(land: &Land, t: &Town, farm_additions: &[usize]) -> Mesh {
         let a = &t.additions[ai];
         if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, ai) {
             g.polygon(&a.polygon, layer::ZONE, c);
+            if a.zone == Zone::Farm {
+                crate::cover::field_margin(&mut g, &a.polygon);
+            }
         }
     }
     add_water(&mut g, land, t);
@@ -77,7 +76,50 @@ fn add_water_at(g: &mut Ground, land: &Land, levels: &Land, t: &Town) {
         } else {
             g.polygon_level(w, levels.water_level(w) + layer::WATER - layer::BASE, WATER);
         }
+        let z = if land.is_flat() {
+            layer::WATER
+        } else {
+            levels.water_level(w) + layer::WATER - layer::BASE
+        };
+        add_water_bands(g, w, z);
     }
+}
+
+/// Marker colours the shader turns into shallows and shore foam (it paints its own colours and
+/// animates them). Wide shallows, a nearer band, and the foam line itself.
+pub const SHALLOW_FAR: Rgb = [60, 120, 188];
+pub const SHALLOW_NEAR: Rgb = [54, 108, 176];
+pub const FOAM: Rgb = [244, 250, 254];
+
+/// Bands along the inside of a shore: shallow water that gets lighter towards the bank, and a
+/// foam line. Drawn flat at the water's level just above it.
+fn add_water_bands(g: &mut Ground, ring: &[Pt], z: f32) {
+    if ring.len() < 3 {
+        return;
+    }
+    let mut line: Vec<Pt> = ring.to_vec();
+    if line[0].dist(*line.last().unwrap()) > 1e-6 {
+        line.push(line[0]);
+    }
+    let inward = if crate::ground::signed_area(ring) >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let mut flat = Ground::default();
+    for (width, dz, c) in [
+        (9.0f32, 0.01f32, SHALLOW_FAR),
+        (4.0, 0.02, SHALLOW_NEAR),
+        (1.6, 0.03, FOAM),
+    ] {
+        flat.ribbon(&line, width * 0.5, inward * width * 0.5, z + dz, c);
+    }
+    let base = g.mesh.vertices.len() as u32;
+    g.mesh.vertices.extend_from_slice(&flat.mesh.vertices);
+    g.mesh
+        .plain
+        .extend(flat.mesh.plain.iter().map(|i| i + base));
+    g.mesh.cast.extend(flat.mesh.cast.iter().map(|i| i + base));
 }
 
 /// The base ground again on a coarser copy of the land (`coarse`, built from `fine`), for a

@@ -16,7 +16,7 @@ pub struct Sit<'a> {
 }
 
 impl Sit<'_> {
-    fn place(&self, wx: f32, wy: f32, lz: f32, local_z: f32) -> f32 {
+    pub(crate) fn place(&self, wx: f32, wy: f32, lz: f32, local_z: f32) -> f32 {
         if local_z <= GROUND_LEVEL {
             self.land.height(wx, wy) + lz + 0.02
         } else {

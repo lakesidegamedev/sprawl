@@ -11,6 +11,7 @@
 mod calendar;
 mod camera;
 pub mod civic;
+pub mod cover;
 mod detail;
 pub mod emergency;
 pub mod fleet;
