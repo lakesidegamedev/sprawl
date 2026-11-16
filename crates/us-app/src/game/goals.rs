@@ -19,7 +19,41 @@ pub struct GoalsUi {
 
 const REFRESH_S: f64 = 0.5;
 
-pub(super) fn rows(ui: &mut Ui, goals: &[GoalView], touch: bool) -> Option<us_sim::CivicKind> {
+/// The desktop card is short so it never crowds a panel: one dot per goal, then only the next
+/// goal in full.
+fn next_goal(ui: &mut Ui, goals: &[GoalView]) -> Option<us_sim::CivicKind> {
+    ui.horizontal(|ui| {
+        for g in goals {
+            let (r, _) = ui.allocate_exact_size(vec2(12.0, 12.0), egui::Sense::hover());
+            if g.done {
+                ui.painter().circle_filled(r.center(), 5.0, GOOD);
+            } else {
+                ui.painter()
+                    .circle_stroke(r.center(), 5.0, Stroke::new(1.5, MUTED));
+            }
+        }
+    });
+    let g = goals.iter().find(|g| !g.done)?;
+    ui.add_space(2.0);
+    lab(ui, g.title, 13.0);
+    wrapped(ui, g.hint, 11.5, TEXT);
+    if !g.reward.is_empty() {
+        lab_c(ui, format!("Reward: {}", g.reward), 11.0, ACCENT);
+    }
+    let kind = g.goal.civic()?;
+    let b = ui.add(
+        egui::Button::new(
+            RichText::new(format!("Open Build: {}", kind.label().to_lowercase()))
+                .font(ui_font(12.0))
+                .color(theme::LINE),
+        )
+        .fill(ACCENT)
+        .min_size(vec2(0.0, 24.0)),
+    );
+    b.clicked().then_some(kind)
+}
+
+fn rows(ui: &mut Ui, goals: &[GoalView], touch: bool) -> Option<us_sim::CivicKind> {
     let mut build = None;
     // the first goal not done is spelled out; the rest are one line each
     let next = goals.iter().position(|g| !g.done);
@@ -95,7 +129,7 @@ impl Game {
                 }
             });
         });
-        build = build.or(rows(ui, &goals, false));
+        build = build.or(next_goal(ui, &goals));
         if hide {
             self.sim.dismiss_goals();
             self.ui.goals.open = false;
@@ -116,11 +150,7 @@ impl Game {
         if theme::is_compact(ctx) {
             let up = ctx.content_rect().bottom() - dock_top(ctx) + 8.0;
             // clear of the growth banner, which sits just above the bottom bar
-            let lift = if self.ui.growth.has_alerts() {
-                76.0
-            } else {
-                0.0
-            };
+            let lift = self.ui.growth.height();
             let mut tap = false;
             egui::Area::new(egui::Id::new("goals-chip"))
                 .anchor(Align2::RIGHT_BOTTOM, vec2(-8.0, -up - lift))

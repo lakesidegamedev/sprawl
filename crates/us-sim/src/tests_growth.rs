@@ -441,3 +441,33 @@ fn growth_stops_when_demand_reaches_supply_not_a_month_later() {
         );
     }
 }
+
+/// Where to look for pictures: the first day a capacity blocks growth, the first day a warning
+/// shows, and the day after the first lightning fire, on each test town.
+#[test]
+#[ignore]
+fn probe_picture_days() {
+    for (p, t) in TOWNS {
+        let mut s = untended(p, t);
+        let (mut block, mut warn, mut bolt) = (0, 0, 0);
+        for d in 1..=365 * 3 {
+            s.step_day();
+            if block == 0 && !s.growth_stalls().is_empty() {
+                block = d;
+            }
+            if warn == 0 && s.growth_alerts().iter().any(|a| !a.blocked) {
+                warn = d;
+            }
+            if bolt == 0
+                && s.take_events()
+                    .iter()
+                    .any(|e| e.text.starts_with("Lightning hit"))
+            {
+                bolt = d;
+            }
+        }
+        eprintln!(
+            "{p:?} {t}: first warning day {warn}, first block day {block}, first bolt fire day {bolt}"
+        );
+    }
+}

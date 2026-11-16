@@ -18,8 +18,15 @@ pub struct GrowthUi {
 }
 
 impl GrowthUi {
-    pub fn has_alerts(&self) -> bool {
-        !self.alerts.is_empty()
+    /// About how tall the banner is on a phone, so the goals chip can sit above it.
+    pub fn height(&self) -> f32 {
+        if self.alerts.iter().any(|a| a.blocked) {
+            132.0
+        } else if self.alerts.is_empty() {
+            0.0
+        } else {
+            84.0
+        }
     }
 }
 
@@ -57,7 +64,7 @@ impl Game {
         let width = if compact {
             ctx.content_rect().width() - 16.0
         } else {
-            520.0
+            460.0
         };
         let anchor = if compact {
             let up = ctx.content_rect().bottom() - dock_top(ctx) + 8.0;
@@ -80,7 +87,7 @@ impl Game {
                         ui.set_max_width(width - 22.0);
                         ui.horizontal_wrapped(|ui| {
                             let text = if blocked {
-                                format!("{} {}", main.headline, main.advice)
+                                format!("{}. {}", main.headline, main.advice)
                             } else {
                                 main.headline.clone()
                             };
