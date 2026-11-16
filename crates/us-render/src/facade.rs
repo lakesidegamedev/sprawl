@@ -117,18 +117,30 @@ fn walls_and_tops(o: &Obj) -> (Vec<Wall>, Vec<Top>) {
 
 /// Add facade and roof detail to `o`.
 pub fn dress(o: &mut Obj) {
-    let mut rng = Rng::new(seed_of(o), 0xfaca_de);
+    let mut rng = Rng::new(seed_of(o), 0x00fa_cade);
     let (walls, tops) = walls_and_tops(o);
     let mut add: Vec<(Vec<V3>, Rgb, bool)> = Vec::new();
     let pitch = floor_pitch(o, &walls);
     let boxes = solid_boxes(o);
     let mut windows: Vec<WindowSpec> = Vec::new();
+    // some houses get shutters beside their windows, all in one colour
+    let shutters = rng.chance(0.4);
+    let shutter_col = rng.pick(&[
+        [44, 84, 70],
+        [120, 52, 48],
+        [40, 52, 84],
+        [236, 232, 222],
+        [70, 70, 76],
+    ]);
     for w in &walls {
         if w.len < 2.5 || w.zhi - w.zlo < 2.4 {
             continue;
         }
         let rows = pane_rows(o, w);
         trims(w, &rows, &mut add);
+        if shutters && w.zhi - w.zlo < 9.0 {
+            shutter_pairs(o, w, shutter_col, &mut add);
+        }
         if rows.is_empty() && w.zlo <= 0.5 && w.zhi - w.zlo >= 5.5 && w.len >= 4.0 {
             blank_wall(w, pitch, &boxes, &mut windows);
         }
@@ -191,6 +203,60 @@ fn pane_rows(o: &Obj, w: &Wall) -> Vec<(f32, f32)> {
         }
     }
     out
+}
+
+/// A narrow board each side of every house sized window on the wall.
+fn shutter_pairs(o: &Obj, w: &Wall, col: Rgb, add: &mut Vec<(Vec<V3>, Rgb, bool)>) {
+    let dir = [(w.b[0] - w.a[0]) / w.len, (w.b[1] - w.a[1]) / w.len];
+    let (p, _) = order(w);
+    let flip = p[0] != w.a[0] || p[1] != w.a[1];
+    for q in &o.polys {
+        if !q.flat || q.pts.len() != 4 {
+            continue;
+        }
+        let (mut s0, mut s1, mut z0, mut z1, mut tmax) =
+            (f32::MAX, f32::MIN, f32::MAX, f32::MIN, f32::MIN);
+        let mut tmin = f32::MAX;
+        for v in &q.pts {
+            let (dx, dy) = (v[0] - w.a[0], v[1] - w.a[1]);
+            let s = dx * dir[0] + dy * dir[1];
+            let t = dx * w.out[0] + dy * w.out[1];
+            s0 = s0.min(s);
+            s1 = s1.max(s);
+            z0 = z0.min(v[2]);
+            z1 = z1.max(v[2]);
+            tmax = tmax.max(t);
+            tmin = tmin.min(t);
+        }
+        let (ww, hh) = (s1 - s0, z1 - z0);
+        // the pane itself sits 0.06 out from the wall; frames and mullions sit elsewhere
+        if (tmax - 0.06).abs() > 0.01 || (tmin - 0.06).abs() > 0.01 {
+            continue;
+        }
+        if !(0.7..=2.6).contains(&ww) || !(0.8..=2.4).contains(&hh) || z0 < 0.6 || z1 > w.zhi - 0.2
+        {
+            continue;
+        }
+        if s0 < 0.45 || s1 > w.len - 0.45 || (q.color != GLASS && q.color != crate::parts::GLASS_D)
+        {
+            continue;
+        }
+        for (a, b) in [(s0 - 0.38, s0 - 0.08), (s1 + 0.08, s1 + 0.38)] {
+            let at = |s: f32, z: f32| -> V3 {
+                [
+                    w.a[0] + dir[0] * s + w.out[0] * 0.05,
+                    w.a[1] + dir[1] * s + w.out[1] * 0.05,
+                    z,
+                ]
+            };
+            let quad = if flip {
+                vec![at(b, z0), at(a, z0), at(a, z1), at(b, z1)]
+            } else {
+                vec![at(a, z0), at(b, z0), at(b, z1), at(a, z1)]
+            };
+            add.push((quad, col, false));
+        }
+    }
 }
 
 /// Light bands across the wall in the gaps between rows of windows.
@@ -394,7 +460,20 @@ fn roofs(o: &mut Obj, tops: &[Top], rng: &mut Rng) {
         }
         busy_all.push(([x0, y0, x1, y1], zlo));
     }
-    // the highest top of each solid only; one pass per top
+    // pitched roofs: a box top under one is not a roof anyone sees
+    let mut pitched: Vec<([f32; 4], f32)> = Vec::new();
+    for p in o.polys.iter().filter(|p| p.roof) {
+        let (mut x0, mut y0, mut x1, mut y1, mut z) =
+            (f32::MAX, f32::MAX, f32::MIN, f32::MIN, f32::MIN);
+        for v in &p.pts {
+            x0 = x0.min(v[0]);
+            y0 = y0.min(v[1]);
+            x1 = x1.max(v[0]);
+            y1 = y1.max(v[1]);
+            z = z.max(v[2]);
+        }
+        pitched.push(([x0, y0, x1, y1], z));
+    }
     let mut done: Vec<([f32; 4], f32)> = Vec::new();
     for t in tops {
         let area = (t.r[2] - t.r[0]) * (t.r[3] - t.r[1]);
@@ -414,7 +493,10 @@ fn roofs(o: &mut Obj, tops: &[Top], rng: &mut Rng) {
             let ua = (u.r[2] - u.r[0]) * (u.r[3] - u.r[1]);
             u.solid != t.solid && u.z > t.z + 0.5 && ua > area * 0.4 && overlap(u.r, t.r, 0.0)
         });
-        if covered {
+        let under = pitched
+            .iter()
+            .any(|(r, z)| *z > t.z + 0.2 && overlap(*r, t.r, -0.8));
+        if covered || under {
             continue;
         }
         let busy: Vec<[f32; 4]> = busy_all
@@ -604,5 +686,52 @@ fn unit(o: &mut Obj, kind: u8, r: [f32; 4], z: f32, roof: Rgb) {
                 [196, 222, 236],
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::kit::fit_to_lot;
+    use crate::rng::Rng;
+    use crate::{Region, build_lot_level_in};
+    use us_gen::LotKind;
+
+    fn fingerprint(kind: LotKind, level: u8, seed: u64) -> (usize, u64) {
+        let o = fit_to_lot(
+            build_lot_level_in(Region::Mixed, kind, level, &mut Rng::new(seed, 7)),
+            1000.0,
+        );
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for p in &o.polys {
+            for v in &p.pts {
+                for c in v {
+                    h = (h ^ c.to_bits() as u64).wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+        }
+        (o.polys.len(), h)
+    }
+
+    #[test]
+    fn same_lot_gets_the_same_facade() {
+        for kind in [
+            LotKind::House,
+            LotKind::Shop,
+            LotKind::Office,
+            LotKind::Apartments,
+        ] {
+            for level in 1..=5 {
+                assert_eq!(fingerprint(kind, level, 11), fingerprint(kind, level, 11));
+            }
+        }
+    }
+
+    #[test]
+    fn flat_roofs_gain_clutter_and_stay_in_budget() {
+        // detail never more than doubles the faces of a tall office
+        let (n, _) = fingerprint(LotKind::Office, 5, 3);
+        let bare = build_lot_level_in(Region::Mixed, LotKind::Office, 5, &mut Rng::new(3, 7));
+        assert!(n >= bare.polys.len());
+        assert!(n < bare.polys.len() * 2 + 400);
     }
 }

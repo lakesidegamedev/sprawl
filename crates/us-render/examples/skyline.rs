@@ -65,8 +65,22 @@ fn main() {
             130.0,
         ),
     ] {
-        let mut it = town.lots.iter().filter(|l| kinds.contains(&l.kind));
-        if let Some(l) = it.nth(25) {
+        // the lot of this kind with the most neighbours of the same kind within 70 m
+        let near = |a: &us_gen::Lot| {
+            town.lots
+                .iter()
+                .filter(|b| {
+                    kinds.contains(&b.kind)
+                        && (b.centre.x - a.centre.x).hypot(b.centre.y - a.centre.y) < 70.0
+                })
+                .count()
+        };
+        let best = town
+            .lots
+            .iter()
+            .filter(|l| kinds.contains(&l.kind) && l.density > 0.15)
+            .max_by_key(|l| near(l));
+        if let Some(l) = best {
             views.push((
                 name,
                 Vec3::new(l.centre.x as f32, l.centre.y as f32, 0.0),
