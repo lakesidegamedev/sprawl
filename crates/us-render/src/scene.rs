@@ -704,6 +704,7 @@ fn build_ground(t: &Town, roads: &[RoadInfo], land: &Land) -> Mesh {
             g.polygon(&a.polygon, layer::ZONE, c);
         }
     }
+    crate::decor::paving(&mut g, t);
     live::add_water(&mut g, land, t);
     let draws: Vec<RoadDraw> = roads
         .iter()
@@ -842,6 +843,12 @@ fn build_chunks(t: &Town, land: &Land) -> (TownData, Vec<Chunk>) {
                 break;
             }
         }
+    }
+
+    // street trees and the grounds around the lots
+    {
+        let objs: Vec<&Obj> = looks.iter().map(|l| &l.original).collect();
+        raw.extend(crate::decor::build(t, land, &objs));
     }
 
     // trees in open park land

@@ -90,6 +90,11 @@ fn main() {
             ));
         }
     }
+    // street level, eye-ish height, on the same lot as the "houses" view
+    if let Some(v) = views.iter().find(|v| v.0 == "houses").copied() {
+        views.push(("street", v.1, 52.0, v.3, 13.0));
+    }
+    views.push(("plaza", hall, 85.0, 300.0, 27.0));
     views.push(("whole", Vec3::new(2048.0, 1900.0, 0.0), 4200.0, 30.0, 48.0));
     if let Some(st) = town.stations.iter().find(|s| s.kind == StationKind::Depot) {
         views.push((
