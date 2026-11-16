@@ -1,9 +1,9 @@
-URBAN SPRAWL 1.1.0
+URBAN SPRAWL 1.2.0
 
 Start the game by running urban-sprawl (urban-sprawl.exe on Windows).
 
-New town: pick a town style (Grid, Winding, Sunbelt, Crossroads or Lake town), keep or change
-the seed, choose how you play (Standard, Sandbox, or Sandbox with unlimited money) and a
+New town: pick a town style (Grid, Winding, Sunbelt, Crossroads, Lake town, River gorge, Red
+rock, Mountain valley or Coastal cliffs), keep or change the seed, choose how you play (Standard, Sandbox, or Sandbox with unlimited money) and a
 difficulty, press Start. Then click one of the orange crossroads markers to place your town hall.
 The town builds itself street by street; you run it as the mayor.
 
@@ -27,7 +27,8 @@ What you decide
   bridges, widen streets, group neighbourhoods into districts and switch on ordinances for the
   whole town or one district, and link transit stops into tram lines. Three rival towns compete
   for your people and firms. Weather brings storms, floods, snow and heat waves; fires spread and
-  the fire, police and ambulance crews drive to them. Voters judge you every four years.
+  the fire, police and ambulance crews drive to them. Voters judge you every four years. A first goals card and a growth banner say what the town
+  needs next, such as a water tower when water runs out.
 
 If the game does not start, the log is urban-sprawl.log in your temp folder.
 The Silkscreen and Inter fonts are under the SIL Open Font License (Silkscreen-OFL.txt, Inter-OFL.txt).

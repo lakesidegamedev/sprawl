@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 1.2.0 (2026-11-16)
+
+- Version 1.2.0. Shown version is 1.2.0.
+- Four new town styles: River gorge (a winding gorge with layered rock walls, high bridges at rim height and a switchback road down to a riverside flat), Red rock (sheer banded mesas, buttes and spires with the town wrapped round them, distant mesas on the horizon), Mountain valley (a town on the valley floor between sharp peaks with forest, broken granite and snow caps; the camera lifts so a ridge never hides the town) and Coastal cliffs (high cliffs, a natural harbour bay with breakwaters, piers, moored boats and a lighthouse, eroded sea stacks and an arch, a sea that runs to the horizon). Each has its own weather, sea and rock views raise land value, low harbour ground and desert washes flood in storms.
+- A livelier start: builders start on day one, settlers fill a new town through its first year, and a town left alone reaches about 650 to 1,000 people in a year instead of about 300.
+- Growth walls you can see: when water, power, school seats or clinics run out, one banner under the top bar says what stopped and what to build, with the price and a button that opens Build with it picked; a slimmer warning shows before it is full. Growth now stops exactly when a capacity is full, counting buildings under way.
+- First goals: a card of six steps for the first year (300 people, a water tower, a school, a tax or budget change, 1,000 people, an ordinance or district) with small grants or extra settlers as rewards, shown in the Budget window. Saves keep it in section `GOAL`; older towns open with the goals they already met.
+- Fix: one thunderstorm could start dozens of fires and burn a third of a town without a fire station. A storm now starts at most a few fires, fire spreads less, and the first fire in a town with no station says so. A town left blocked for months loses a little approval.
+- Ground and water: grass tufts, bushes, boulders, flower clumps, reeds, fallen logs and hay bales; farm fields with crop rows along each field, several crops, hedges, stone walls, fences and tree lines; broader meadow colour; animated water with ripples, shallows and moving shore foam; cooler shade and a darker step where things meet the ground.
+- Buildings and streets: floor trim, side windows, roof units, vents, water tanks and roof gardens, ridge caps, shutters and lit windows that vary per building and thin out late at night; street trees along opened streets, house yards with driveways, paths, shrubs and hedges, downtown paving, shop forecourts with benches, planters and cafe tables, depot aprons with trucks.
+- No more grey slabs: downtown, industry and mall land stays natural ground until something is built, each built lot gets its own paving, building sites show bare earth, a paved town square with a fountain surrounds the town hall, and downtown lots away from a street get a footpath.
+- Saved towns keep their buildings and generator; the five older town styles are unchanged.
+
 ## 1.1.0 (2026-11-15)
 
 - Version 1.1.0, a big update. Shown version is 1.1.0.
