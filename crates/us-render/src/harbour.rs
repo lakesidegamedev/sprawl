@@ -139,6 +139,110 @@ pub fn rock_pillar(o: &mut Obj, p: &Pillar, bands: &[Rgb; 5], foot: Rgb, cap: Rg
     o.loft(&rim, top - 0.5, &crown, top + dome, cap, Some(cap));
 }
 
+/// A natural arch: one banded sweep of rock that rises from the sea as a leg, bends over a rounded
+/// opening and comes down as the other leg, so the span is continuous with both. The section is a
+/// lumpy ellipse that is thick at the feet and thins to the crown, and the strata follow the
+/// sweep with a dark ledge between them.
+fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32, tint: usize, bands: &[Rgb; 5]) {
+    let foot = -3.0f32;
+    let c = r * 0.66;
+    let zs = foot + (h - foot) * 0.4;
+    let rise = (h * 0.86 - zs - h * 0.1).max(h * 0.2);
+    let leg_th = r * 0.3;
+    let crown_th = (h * 0.1).clamp(r * 0.14, r * 0.26);
+    let wx0 = r * 0.5;
+    // the centre line, dense, then cut at equal steps
+    let mut dense: Vec<[f32; 2]> = Vec::new();
+    let nl = 40;
+    for k in 0..=nl {
+        dense.push([-c, foot + (zs - foot) * k as f32 / nl as f32]);
+    }
+    let na = 120;
+    for k in 1..na {
+        let t = std::f32::consts::PI * k as f32 / na as f32;
+        dense.push([-c * libm::cosf(t), zs + rise * libm::sinf(t)]);
+    }
+    for k in 0..=nl {
+        dense.push([c, zs + (foot - zs) * k as f32 / nl as f32]);
+    }
+    let mut cum = vec![0.0f32];
+    for w in dense.windows(2) {
+        let d = ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt();
+        cum.push(cum.last().unwrap() + d);
+    }
+    let total = *cum.last().unwrap();
+    let band = 8.0f32;
+    let n = (total / (band / 3.0)).ceil() as usize;
+    let at = |len: f32| -> ([f32; 2], [f32; 2]) {
+        let len = len.clamp(0.0, total);
+        let i = cum.partition_point(|&x| x < len).clamp(1, dense.len() - 1);
+        let f = (len - cum[i - 1]) / (cum[i] - cum[i - 1]).max(1e-6);
+        let (a, b) = (dense[i - 1], dense[i]);
+        let p = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+        let l = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt().max(1e-6);
+        (p, [(b[0] - a[0]) / l, (b[1] - a[1]) / l])
+    };
+    const SIDES: usize = 14;
+    let ring_at = |len: f32, swell: f32| -> Vec<[f32; 3]> {
+        let (p, t) = at(len);
+        let u = len / total;
+        // 0 at the feet, 1 at the crown
+        let mid = libm::sinf(std::f32::consts::PI * u);
+        let flare = 1.0 + 0.5 * (1.0 - ((p[1] - foot) / (h * 0.16)).clamp(0.0, 1.0));
+        let th = (leg_th + (crown_th - leg_th) * mid.powf(1.4)) * flare;
+        let wx = (wx0 + (wx0 * 0.6 - wx0) * mid.powf(1.4)) * flare;
+        let erode = 1.0
+            + 0.16 * libm::sinf(u * 23.0 + phase)
+            + 0.1 * libm::sinf(u * 51.0 + 2.0 * phase);
+        let nrm = [-t[1], t[0]];
+        (0..SIDES)
+            .map(|k| {
+                let a = std::f32::consts::TAU * k as f32 / SIDES as f32;
+                let lump = 1.0
+                    + 0.16 * libm::sinf(2.0 * a + phase + 6.0 * u)
+                    + 0.09 * libm::sinf(3.0 * a + 2.0 * phase - 9.0 * u);
+                let (ca, sa) = (libm::cosf(a), libm::sinf(a));
+                let (e1, e2) = (wx * ca * lump * erode * swell, th * sa * lump * erode * swell);
+                [e1, p[0] + nrm[0] * e2, p[1] + nrm[1] * e2]
+            })
+            .collect()
+    };
+    let mut prev = ring_at(0.0, 1.0);
+    for k in 1..=n {
+        let len = total * k as f32 / n as f32;
+        // a thin ledge at the end of each stratum, then the next stratum's tone
+        let seg = (len / band) as u64;
+        let ledge = (len % band) < band / 3.0;
+        let base = bands[(hash(tint as u64 + 31, seg) % bands.len() as u64) as usize];
+        let col = if ledge { darker(base, 0.62) } else { base };
+        let col = if (len / total - 0.5).abs() > 0.5 - 0.06 { STONE_FOOT } else { col };
+        let cur = ring_at(len, if ledge { 1.04 } else { 1.0 });
+        // one solid per slice, so each face is turned away from the middle of its own slice
+        let m = (prev.len() + cur.len()) as f32;
+        let mid = [0, 1, 2].map(|d| prev.iter().chain(cur.iter()).map(|p| p[d]).sum::<f32>() / m);
+        let sol = o.new_solid(mid);
+        o.solids[sol as usize].merged = true;
+        for i in 0..SIDES {
+            let j = (i + 1) % SIDES;
+            // ring points are (x, y, z) with x along the ridge: the pair is (e1, y, z)
+            let q = |r: &[[f32; 3]], k: usize| [r[k][0], r[k][1], r[k][2]];
+            o.face(sol, &[q(&prev, i), q(&prev, j), q(&cur, j), q(&cur, i)], col, false);
+        }
+        prev = cur;
+    }
+    // a little grass on the crown
+    let (cp, _) = at(total * 0.5);
+    let top = cp[1] + crown_th * 0.9;
+    let rim: Vec<[f32; 2]> = (0..10)
+        .map(|k| {
+            let a = std::f32::consts::TAU * k as f32 / 10.0;
+            [wx0 * 0.4 * libm::cosf(a), c * 0.34 * libm::sinf(a)]
+        })
+        .collect();
+    let crown: Vec<[f32; 2]> = rim.iter().map(|p| [p[0] * 0.7, p[1] * 0.7]).collect();
+    o.loft(&rim, top - 1.4, &crown, top + 1.2, [104, 142, 88], Some([104, 142, 88]));
+}
+
 fn boat(size: u8, seed: u64) -> Obj {
     let mut o = Obj::new();
     let hull = HULLS[(hash(seed, 1) % HULLS.len() as u64) as usize];
@@ -337,46 +441,7 @@ pub fn add(mesh: &mut Mesh, land: &Land, t: &Town) {
             band: 5.0,
         };
         if s.arch {
-            let r = s.r as f32;
-            let pr = r * 0.46;
-            // two legs that lean towards each other, joined by a span
-            for k in [-1.0f32, 1.0] {
-                rock_pillar(
-                    &mut o,
-                    &pillar(
-                        [0.0, k * r * 0.62],
-                        pr,
-                        h,
-                        [0.0, -k * r * 0.18],
-                        (k + 1.0) as usize,
-                    ),
-                    &BANDS,
-                    STONE_FOOT,
-                    [104, 142, 88],
-                );
-            }
-            let (y0, y1) = (-r * 0.5, r * 0.5);
-            let z0 = h * 0.72;
-            let lo: Vec<[f32; 2]> = vec![
-                [-pr * 0.8, y0],
-                [pr * 0.8, y0],
-                [pr * 0.7, y1],
-                [-pr * 0.7, y1],
-            ];
-            let hi: Vec<[f32; 2]> = vec![
-                [-pr * 0.6, y0 - 1.0],
-                [pr * 0.6, y0 - 1.0],
-                [pr * 0.5, y1 + 1.0],
-                [-pr * 0.5, y1 + 1.0],
-            ];
-            o.loft(
-                &lo,
-                z0,
-                &hi,
-                h * 0.95,
-                BANDS[i % BANDS.len()],
-                Some([104, 142, 88]),
-            );
+            rock_arch(&mut o, s.r as f32, h, phase, i, &BANDS);
         } else {
             let lean = [
                 lean_len * libm::cosf(lean_dir),
