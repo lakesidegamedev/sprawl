@@ -19,6 +19,8 @@ use winit::keyboard::KeyCode;
 mod charts;
 mod chrome;
 mod districts;
+mod goals;
+mod growth_banner;
 mod panels;
 mod screens;
 mod trams;
@@ -1239,6 +1241,7 @@ impl State {
             })
         };
         let top_y = hud.response.rect.bottom() + if compact { 6.0 } else { 12.0 };
+        g.ui.growth.top_y = top_y;
 
         if g.placed && compact {
             let dock = egui::Panel::bottom("dock")
@@ -1328,6 +1331,9 @@ impl State {
                 .next_unlock()
                 .map(|(k, n)| format!("Next: {} at {} people", k.label(), charts::group(n)));
             let mut hide_tip = false;
+            // the First goals card takes the place of the milestone goal while it is showing
+            let first_goals = g.sim.goals_visible();
+            let mut open_goal_build = None;
             if compact {
                 // one short stack: the goal on one line, then up to two news toasts
                 let wmax = (ctx.content_rect().width() - 24.0).min(340.0);
@@ -1357,13 +1363,17 @@ impl State {
                                     );
                                 });
                         }
-                        egui::Frame::new()
-                            .fill(Color32::from_rgba_unmultiplied(11, 22, 34, 215))
-                            .stroke(Stroke::new(1.0, theme::EDGE))
-                            .inner_margin(egui::Margin::symmetric(8, 4))
-                            .show(ui, |ui| {
-                                ui.label(RichText::new(goal_text).font(ui_font(12.0)).color(INK));
-                            });
+                        if !first_goals {
+                            egui::Frame::new()
+                                .fill(Color32::from_rgba_unmultiplied(11, 22, 34, 215))
+                                .stroke(Stroke::new(1.0, theme::EDGE))
+                                .inner_margin(egui::Margin::symmetric(8, 4))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(goal_text).font(ui_font(12.0)).color(INK),
+                                    );
+                                });
+                        }
                         for (text, _, bad) in g.coach.toasts.iter().rev().take(
                             if ctx.content_rect().width() > 700.0 {
                                 1
@@ -1393,6 +1403,10 @@ impl State {
                     .show(ctx, |ui| {
                         theme::panel().show(ui, |ui| {
                             ui.set_width(320.0);
+                            if first_goals {
+                                open_goal_build = g.first_goals_card(ui, ctx);
+                                return;
+                            }
                             let goal_text =
                                 |s: String| RichText::new(s).font(ui_font(16.0)).color(INK);
                             label(ui, "Goal", 12.0);
@@ -1425,6 +1439,9 @@ impl State {
             }
             if hide_tip {
                 g.coach.tip_hidden = true;
+            }
+            if let Some(k) = open_goal_build {
+                g.open_build_for(k);
             }
             // event feed
             let inset = g.right_inset();
@@ -1486,6 +1503,10 @@ impl State {
             }
             if g.ui.trams.open {
                 g.trams_ui(ctx, screen_w);
+            }
+            if g.placed && !g.sim.is_game_over() {
+                g.growth_banner_ui(ctx);
+                g.goals_ui(ctx);
             }
             g.legend_ui(ctx);
             // why panel

@@ -21,6 +21,7 @@ mod districts;
 mod dynamic;
 mod econ;
 mod fires;
+mod goals;
 mod growth;
 mod ledger_view;
 mod limits;
@@ -46,6 +47,7 @@ pub use districts::{
 };
 pub use dynamic::{FIRE_DAYS, Rival};
 pub use fires::{BlazeView, Vehicle, VehicleKind};
+pub use goals::{Goal, GoalView, GrowthAlert, dollars};
 pub use ledger_view::LedgerNow;
 pub use model::*;
 pub use pressure::*;
@@ -412,6 +414,16 @@ pub struct Sim {
     pub(crate) fx: fires::FireState,
     /// What the weather has done (saved in the `WTHR` section).
     pub(crate) wx: climate::Climate,
+    /// Goals and the count of blocked months (saved in the `GOAL` section).
+    pub(crate) goal: goals::GoalState,
+}
+
+fn opening_queue() -> ByClass<f64> {
+    let mut q = ByClass::all(0.0);
+    for (c, v) in Class::ALL.into_iter().zip(limits::OPENING_QUEUE) {
+        q.set(c, v);
+    }
+    q
 }
 
 impl Sim {
@@ -456,7 +468,7 @@ impl Sim {
             order_pos: vec![usize::MAX; n_add],
             road_cost_per_month: vec![0; n_add + 1],
             vacant: Vec::new(),
-            acc: 0.0,
+            acc: 4.0,
             treasury: START_TREASURY,
             last_income: 0,
             last_expense: 0,
@@ -507,7 +519,7 @@ impl Sim {
             },
             peak_population: 0,
             fire_days: Vec::new(),
-            queue: ByClass::all(0.0),
+            queue: opening_queue(),
             stalled: [false; 4],
             unlocked: 0,
             fx_sites: Vec::new(),
@@ -518,6 +530,7 @@ impl Sim {
             dist: Default::default(),
             fx: Default::default(),
             wx: Default::default(),
+            goal: Default::default(),
         };
         // reveal order: nearest to the hall first
         let mut ord: Vec<(i64, usize)> = (0..n_add)
@@ -764,6 +777,7 @@ impl Sim {
         self.avenue_hash(&mut f);
         self.tram_hash(&mut f);
         self.fire_hash(&mut f);
+        self.goal_hash(&mut f);
         f(self.runs.len() as u64);
         for r in &self.runs {
             f(r.class as u64);
@@ -848,7 +862,7 @@ impl Sim {
         true
     }
 
-    fn start_one(&mut self) -> bool {
+    fn start_one(&mut self, room: &mut [i64; 4]) -> bool {
         if self.vacant.is_empty() {
             return false;
         }
@@ -856,7 +870,7 @@ impl Sim {
         let mut best: Option<(f64, usize)> = None;
         for (vi, &li) in self.vacant.iter().enumerate() {
             let l = &self.lots[li];
-            if !self.can_start(l.kind) {
+            if !self.can_start(l.kind, room) {
                 continue;
             }
             let noise = roll(self.seed, li as u64, 77) * 140.0;
@@ -880,6 +894,7 @@ impl Sim {
         let kind = self.lots[li].kind;
         let level = self.start_level(li);
         self.take_units(kind, Sim::units_at(kind, level));
+        Sim::use_room(room, kind, level);
         if level > 1 {
             self.lots[li].level = 1;
             self.lots[li].next_level = level;
@@ -995,15 +1010,18 @@ impl Sim {
         let built = self.built_count() as f64;
         let rate = 0.8 * PACE * growth_mult(tax) * (1.0 + (built / (700.0 * PACE)).min(1.5));
         // the mood of the market: all three classes together
-        let rate = rate * (0.6 + 0.8 * self.mean_demand());
+        let rate = rate * (0.6 + 0.8 * self.mean_demand()) * (1.0 + 0.6 * self.settlers());
         // a power cut or a dry water supply stops the builders for the day
         if !self.shortage_today() {
             self.acc += rate;
         }
         self.step_streets();
+        // a full capacity stops starts the same day, counting what is already under way
+        self.refresh_stalls();
+        let mut room = self.start_room();
         while self.acc >= 1.0 {
             self.acc -= 1.0;
-            if !self.start_one() {
+            if !self.start_one(&mut room) {
                 self.acc = self.acc.min(2.0);
                 break;
             }
@@ -1390,3 +1408,6 @@ mod tests_fires;
 
 #[cfg(test)]
 mod tests_weather;
+
+#[cfg(test)]
+mod tests_growth;

@@ -17,6 +17,8 @@ pub struct LedgerNow {
     pub principal: i64,
     /// Fees for the ordinances in force.
     pub ordinances: i64,
+    /// Goal grants paid into the treasury at the last monthly ledger.
+    pub grants: i64,
 }
 
 impl Sim {
@@ -30,6 +32,7 @@ impl Sim {
             interest: lg.interest,
             principal: lg.principal,
             ordinances: self.ordinance_costs(),
+            grants: self.goal_grants_last_month(),
         }
     }
 }
