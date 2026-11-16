@@ -436,6 +436,38 @@ pub fn build(
         }
     }
     riverside_drives(&mut roads, river, preset == Preset::Winding);
+    if extra.style == Some(Preset::Mesa) {
+        // a road that meets the foot of the rock ends on a collector that runs round it
+        for z in &extra.rings {
+            let mut crossed = false;
+            let mut next: Vec<(Vec<Pt>, RoadClass)> = Vec::new();
+            for (l, c) in roads.drain(..) {
+                if c == RoadClass::Highway {
+                    next.push((l, c));
+                    continue;
+                }
+                let parts = clip_line(&l, z, false);
+                if parts.len() != 1 || length(&parts[0]) < length(&l) - 1e-6 {
+                    crossed = true;
+                }
+                next.extend(
+                    parts
+                        .into_iter()
+                        .filter(|p| length(p) > 60.0)
+                        .map(|p| (p, c)),
+                );
+            }
+            roads = next;
+            rails = rails
+                .iter()
+                .flat_map(|l| clip_line(l, z, false))
+                .filter(|p| length(p) > 100.0)
+                .collect();
+            if crossed {
+                roads.push((z.clone(), RoadClass::Collector));
+            }
+        }
+    }
     let _ = TAU;
     Skeleton {
         roads,

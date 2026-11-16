@@ -46,7 +46,7 @@ fn main() {
                 }
             }
             Relief::Coast(c) => {
-                views.push(("wide".into(), on(2700.0, 1900.0), 3800.0, 70.0, 32.0));
+                views.push(("wide".into(), on(2350.0, 2000.0), 2700.0, 75.0, 34.0));
                 let hv = c.coves[0].c;
                 views.push(("harbour".into(), on(hv.x - 250.0, hv.y), 1000.0, 75.0, 22.0));
                 let shore = |y: f64| on(c.edge_x(y, 40.0), y);

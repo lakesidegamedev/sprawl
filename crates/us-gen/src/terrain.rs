@@ -64,7 +64,7 @@ impl Terrain {
         let plain = self.plain_height(x, y);
         match &self.relief {
             Relief::None => plain,
-            Relief::Mesa(m) => plain + m.delta(x, y),
+            Relief::Mesa(m) => m.height(plain, x, y, &|px, py| self.plain_height(px, py)),
             Relief::Coast(c) => c.height(plain, x, y),
         }
     }

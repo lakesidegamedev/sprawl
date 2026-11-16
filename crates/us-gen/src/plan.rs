@@ -278,6 +278,8 @@ pub struct Extra {
     pub zones: Vec<Vec<Pt>>,
     /// Rings that junction work keeps clear of.
     pub wet: Vec<Vec<Pt>>,
+    /// Rings round rock that a road meets and follows (red rock towns).
+    pub rings: Vec<Vec<Pt>>,
     pub sea: Option<CoastField>,
 }
 
@@ -297,9 +299,31 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
     let mut extra = Extra::default();
     match style {
         Preset::Mesa => {
-            let field = MesaField::new(seed, st.arterial_spacing / 2.0, &river);
+            // where roads of the plain layout end: rock keeps clear of them so no road is cut
+            // short by a rock and left with a dead end
+            let probe = skeleton::build(
+                preset,
+                seed,
+                &river,
+                st,
+                &terrain,
+                None,
+                &Extra {
+                    style: Some(style),
+                    ..Extra::default()
+                },
+            );
+            let ends: Vec<Pt> = probe
+                .roads
+                .iter()
+                .filter(|(_, c)| *c != RoadClass::Highway)
+                .flat_map(|(l, _)| [l[0], *l.last().unwrap()])
+                .filter(|p| p.x > 1.0 && p.x < S - 1.0 && p.y < S - 1.0 && p.y > HWY_Y + 1.0)
+                .collect();
+            let field = MesaField::new(seed, st.arterial_spacing / 2.0, &river, &ends);
             extra.zones = field.formations.iter().map(|f| f.footprint(10.0)).collect();
             extra.wet = field.formations.iter().map(|f| f.footprint(40.0)).collect();
+            extra.rings = field.formations.iter().map(|f| f.footprint(16.0)).collect();
             terrain = terrain.with_relief(Relief::Mesa(field));
         }
         Preset::Coast => {

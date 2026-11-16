@@ -154,7 +154,7 @@ fn add_water_at(g: &mut Ground, land: &Land, levels: &Land, t: &Town) {
         let sea = t.preset == us_gen::Preset::Coast;
         if sea {
             if !land.is_flat()
-                && let Some(strip) = surf_strip(w, t.size as f64)
+                && let Some(strip) = surf_strip(w, t.size)
             {
                 g.polygon(&strip, layer::SAND + 0.02, SURF);
             }

@@ -17,8 +17,6 @@ pub struct RockLook {
     pub talus: Rgb,
     /// The layers of a rock face, one colour per band.
     pub bands: [Rgb; 5],
-    /// Metres of height one band covers.
-    pub band_h: f32,
     /// Flat ground standing high above its surroundings (a mesa top).
     pub cap: Option<(Rgb, f32)>,
     /// Beach colour and the height below which it lies.
@@ -36,7 +34,6 @@ const MESA: RockLook = RockLook {
         [228, 164, 100],
         [148, 62, 46],
     ],
-    band_h: 42.0,
     cap: Some(([198, 118, 74], 90.0)),
     beach: None,
 };
@@ -52,7 +49,6 @@ const COAST: RockLook = RockLook {
         [170, 152, 122],
         [132, 126, 120],
     ],
-    band_h: 30.0,
     cap: None,
     beach: Some(([226, 212, 166], 4.2)),
 };
@@ -90,12 +86,22 @@ impl RockLook {
         }
         c = mix(c, self.hollow, smooth(0.8, 2.4, hollow));
         c = mix(c, self.talus, smooth(0.13, 0.3, slope));
+        // a sheer face is one mid tone of its rock: the layers are drawn per pixel by the shader,
+        // since a colour blended between vertices would smear down a tall wall
         let w = smooth(0.34, 0.6, slope);
         if w > 0.0 {
-            // bands step with height; the order is shuffled so neighbours differ
-            let k = (h / self.band_h).floor().max(0.0) as usize;
-            let band = self.bands[[0, 2, 1, 4, 3][k % 5]];
-            c = mix(c, band, w);
+            let mut sum = [0u32; 3];
+            for b in &self.bands {
+                for i in 0..3 {
+                    sum[i] += b[i] as u32;
+                }
+            }
+            let n = self.bands.len() as u32;
+            c = mix(
+                c,
+                [(sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8],
+                w,
+            );
         }
         c
     }
@@ -109,10 +115,11 @@ pub fn vertex_colour(look: &RockLook, land: &Land, x: f32, y: f32) -> Rgb {
     let (hy0, hy1) = (land.height(x, y - e), land.height(x, y + e));
     let slope = (((hx1 - hx0) / (2.0 * e)).powi(2) + ((hy1 - hy0) / (2.0 * e)).powi(2)).sqrt();
     let far = 3.0 * e;
-    let ring = (land.height(x - far, y)
-        + land.height(x + far, y)
-        + land.height(x, y - far)
-        + land.height(x, y + far))
-        * 0.25;
+    // a hollow has higher ground on every side; the foot of a rock has lower ground on one
+    let ring = land
+        .height(x - far, y)
+        .min(land.height(x + far, y))
+        .min(land.height(x, y - far))
+        .min(land.height(x, y + far));
     look.colour(h, slope, ring - h)
 }

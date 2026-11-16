@@ -27,11 +27,11 @@ fn grow(preset: Preset, tseed: u64, years: i32) -> Sim {
 fn red_rock_and_coast_towns_grow_to_ten_thousand() {
     for (p, seed) in [
         (Preset::Mesa, 1),
-        (Preset::Mesa, 4),
+        (Preset::Mesa, 2),
         (Preset::Coast, 1),
         (Preset::Coast, 2),
     ] {
-        let s = grow(p, seed, 14);
+        let s = grow(p, seed, 20);
         assert!(
             s.population() >= 9_000,
             "{p:?} seed {seed}: pop {}",

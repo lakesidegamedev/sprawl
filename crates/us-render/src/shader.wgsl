@@ -211,19 +211,31 @@ fn ground_grain(w: vec2<f32>, dist: f32, snowy: bool) -> f32 {
     return k;
 }
 
-// Layers of a steep rock face: the tone steps with height in uneven bands, with a thin dark ledge
-// line between them, so a wall reads as rock whatever the colour of the style.
-fn rock_bands(z: f32, nz: f32) -> f32 {
-    let t = z / 6.5;
+// Layers of a steep rock face: thick strata of different tone and warmth, each ending in a thin
+// dark ledge line, so a wall reads as layered rock whatever the colour of the style.
+fn rock_bands(z: f32, nz: f32) -> vec3<f32> {
+    let t = z / 22.0;
     let band = floor(t);
-    let tone = 0.86 + 0.2 * hash2(vec2<i32>(i32(band), 31));
-    var k = tone;
-    if (fract(t) < 0.07) {
-        k = 0.74;
+    let h = hash2(vec2<i32>(i32(band), 31));
+    var tint = vec3<f32>(1.0, 1.0, 1.0);
+    if (h < 0.25) {
+        tint = vec3<f32>(1.16, 1.06, 0.92);
+    } else if (h < 0.5) {
+        tint = vec3<f32>(0.8, 0.76, 0.78);
+    } else if (h < 0.75) {
+        tint = vec3<f32>(1.06, 0.9, 0.82);
+    }
+    // a fainter line inside a stratum
+    let f = fract(z / 5.5);
+    if (f < 0.09) {
+        tint = tint * 0.93;
+    }
+    if (fract(t) < 0.035) {
+        tint = tint * 0.62;
     }
     // fade out towards gentle ground so scree is not striped
     let w = clamp((0.72 - nz) / 0.12, 0.0, 1.0);
-    return 1.0 + (k - 1.0) * w;
+    return vec3<f32>(1.0) + (tint - vec3<f32>(1.0)) * w;
 }
 
 fn is_green(c: vec3<f32>) -> bool {

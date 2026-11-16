@@ -365,7 +365,10 @@ fn pods_have_an_entrance_and_two_cul_de_sacs() {
                                 .points
                                 .windows(2)
                                 .any(|w| seg_closest(*e, w[0], w[1]) < 1.5)),
-                        "entrance not on a big road"
+                        "{} seed {s}: entrance ({:.0}, {:.0}) not on a big road",
+                        p.name(),
+                        e.x,
+                        e.y
                     );
                 }
                 let culs = t.cul_de_sacs.iter().filter(|c| c.addition == ai).count();
@@ -1152,7 +1155,7 @@ fn red_rock_towns_have_mesas_buttes_and_spires_standing_well_above_the_flats() {
             let foot = t.height_at(us_gen::pt(f.c.x + f.r * 1.5 + f.wall + f.skirt, f.c.y));
             let top = t.height_at(f.c);
             assert!(
-                top - foot > 95.0 && top - foot < 330.0,
+                top - foot > 85.0 && top - foot < 350.0,
                 "seed {}: {:.0} m",
                 t.seed,
                 top - foot

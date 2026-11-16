@@ -21,7 +21,7 @@ pub enum Rock {
     Spire,
 }
 
-/// One rock formation: a flat top, tiered walls and a talus slope at the foot.
+/// One rock formation: a flat top, a sheer wall and a talus apron of broken rock at the foot.
 #[derive(Clone, Debug)]
 pub struct Formation {
     pub kind: Rock,
@@ -30,19 +30,30 @@ pub struct Formation {
     pub r: f64,
     /// Height of the top above the flats, metres.
     pub top: f64,
-    /// Horizontal width of the wall, metres.
+    /// Horizontal width of the wall, metres (a cell or so: the wall is sheer).
     pub wall: f64,
     /// Width of the talus slope at the foot, metres.
     pub skirt: f64,
-    lobes: [(f64, f64, f64); 3],
+    /// Height of the talus where it meets the wall, metres.
+    pub foot: f64,
+    /// Sine lobes of the outline: (amplitude, phase, frequency).
+    lobes: [(f64, f64, f64); 5],
+    /// A notch cut into the outline: (amplitude, direction).
+    notch: (f64, f64),
+    /// Phases of the lumps in the talus.
+    lump: (f64, f64),
 }
 
 impl Formation {
     fn radius(&self, a: f64) -> f64 {
         let mut k = 1.0;
-        for (i, (amp, ph, f)) in self.lobes.iter().enumerate() {
-            let _ = i;
+        for (amp, ph, f) in self.lobes.iter() {
             k += amp * sin(f * a + ph);
+        }
+        // a notch: a gully cut into the side of the rock
+        let n = cos(a - self.notch.1);
+        if n > 0.0 {
+            k -= self.notch.0 * n.powi(5);
         }
         self.r * k
     }
@@ -51,7 +62,7 @@ impl Formation {
     pub fn edge_dist(&self, x: f64, y: f64) -> f64 {
         let (dx, dy) = (x - self.c.x, y - self.c.y);
         let d = (dx * dx + dy * dy).sqrt();
-        if d > self.r * 1.6 + self.wall + self.skirt + 40.0 {
+        if d > self.r * 1.8 + self.wall + self.skirt + 40.0 {
             return d - self.r;
         }
         d - self.radius(atan2(dy, dx))
@@ -60,20 +71,26 @@ impl Formation {
     /// Height of the formation above the flats at a point, metres.
     pub fn rise(&self, x: f64, y: f64) -> f64 {
         let d = self.edge_dist(x, y);
-        let foot = 0.3 * self.top;
         if d <= 0.0 {
-            // a faint dome so the top is not a perfect plane
-            return self.top + 1.6 * smooth(0.0, 1.0, -d / self.r.max(1.0));
+            // the top is flat
+            return self.top;
         }
         if d <= self.wall {
-            // three tiers with a ledge between each
-            let u = d / self.wall * 3.0;
-            let k = libm::floor(u);
-            let s = (k + smooth(0.5, 1.0, u - k)) / 3.0;
-            return foot + (self.top - foot) * (1.0 - s);
+            // sheer: a straight fall from a crisp edge to the head of the talus
+            return self.foot + (self.top - self.foot) * (1.0 - d / self.wall);
         }
         let u = ((d - self.wall) / self.skirt).clamp(0.0, 1.0);
-        foot * (1.0 - u) * (1.0 - u)
+        let base = self.foot * (1.0 - u).powf(1.6);
+        // broken rock: lumps that vanish at both ends of the slope
+        let lump = sin(x / 17.0 + self.lump.0) * sin(y / 13.0 + self.lump.1);
+        let lumps = 0.22 * self.foot * lump * 4.0 * u * (1.0 - u) * (1.0 - u);
+        (base + lumps).max(0.0)
+    }
+
+    /// How far the flats under the formation are held level to its base, 1 under the rock.
+    fn hold(&self, x: f64, y: f64) -> f64 {
+        let d = self.edge_dist(x, y);
+        1.0 - smooth(self.wall + 0.25 * self.skirt, self.wall + self.skirt, d)
     }
 
     /// Ring round the foot, `extra` metres out from where the talus is walkable.
@@ -87,9 +104,14 @@ impl Formation {
             })
             .collect()
     }
+
+    /// Furthest the foot reaches from the centre, metres.
+    fn reach(&self) -> f64 {
+        self.r * 1.8 + self.wall + self.skirt + 40.0
+    }
 }
 
-/// Mesas, buttes and spires, one to a block of the road grid, and a few dry washes.
+/// Mesas, buttes and spires scattered over the flats, and a few dry washes.
 #[derive(Clone, Debug)]
 pub struct MesaField {
     pub formations: Vec<Formation>,
@@ -99,24 +121,22 @@ pub struct MesaField {
 
 impl MesaField {
     /// `half` is the distance between neighbouring roads of the grid the town is laid on.
-    pub fn new(seed: u64, half: f64, river: &River) -> MesaField {
+    pub fn new(seed: u64, half: f64, river: &River, ends: &[Pt]) -> MesaField {
+        let _ = half;
         let mut rng = Rng::new(seed, 0x3e5a);
-        // block centres of the road grid that are clear of the downtown and the river
+        // candidate centres over the flats, clear of the downtown and the river
         let mut cells: Vec<Pt> = Vec::new();
-        for i in -3..=3i32 {
-            for j in -1..=3i32 {
-                let c = pt(
-                    HALL.x + (i as f64 + 0.5) * half,
-                    HALL.y + (j as f64 + 0.5) * half,
-                );
-                if c.x < 450.0 || c.x > S - 450.0 || c.y > S - 450.0 || c.y < HWY_Y + 450.0 {
-                    continue;
+        let mut y = HWY_Y + 480.0;
+        while y < S - 450.0 {
+            let mut x = 450.0;
+            while x < S - 450.0 {
+                let c = pt(x, y);
+                if c.dist(HALL) > 1000.0 && (c.y - river.y(c.x)).abs() > 580.0 {
+                    cells.push(c);
                 }
-                if c.dist(HALL) < 1000.0 || (c.y - river.y(c.x)).abs() < 580.0 {
-                    continue;
-                }
-                cells.push(c);
+                x += 110.0;
             }
+            y += 110.0;
         }
         for k in (1..cells.len()).rev() {
             let j = rng.below(k + 1);
@@ -140,85 +160,68 @@ impl MesaField {
         ];
         let mut formations: Vec<Formation> = Vec::new();
         for kind in plan {
-            let lobe = |rng: &mut Rng, amp: f64, f: f64| {
-                (amp * rng.uniform(0.6, 1.0), rng.uniform(0.0, TAU), f)
-            };
-            let (r, top, wall, skirt, amp) = match kind {
+            let (r, top, wall, skirt_k, amp) = match kind {
                 Rock::Mesa => (
-                    rng.uniform(135.0, 170.0),
+                    rng.uniform(135.0, 175.0),
                     rng.uniform(170.0, 300.0),
-                    34.0,
-                    rng.uniform(110.0, 140.0),
-                    0.1,
+                    16.0,
+                    rng.uniform(1.8, 2.4),
+                    0.2,
                 ),
                 Rock::Butte => (
-                    rng.uniform(45.0, 80.0),
-                    rng.uniform(110.0, 210.0),
-                    24.0,
-                    rng.uniform(70.0, 95.0),
-                    0.12,
+                    rng.uniform(48.0, 85.0),
+                    rng.uniform(125.0, 210.0),
+                    14.0,
+                    rng.uniform(1.8, 2.4),
+                    0.22,
                 ),
                 Rock::Spire => (
-                    rng.uniform(16.0, 30.0),
+                    rng.uniform(24.0, 38.0),
                     rng.uniform(130.0, 250.0),
-                    14.0,
-                    rng.uniform(45.0, 65.0),
-                    0.1,
+                    12.0,
+                    rng.uniform(1.6, 2.0),
+                    0.16,
                 ),
             };
+            let foot = (0.2 * top).clamp(24.0, 56.0);
             let lobes = [
-                lobe(&mut rng, amp, 2.0),
-                lobe(&mut rng, amp * 0.8, 3.0),
-                lobe(&mut rng, amp * 0.6, 5.0),
+                (amp * rng.uniform(0.6, 1.0), rng.uniform(0.0, TAU), 2.0),
+                (amp * rng.uniform(0.5, 0.9), rng.uniform(0.0, TAU), 3.0),
+                (amp * rng.uniform(0.4, 0.7), rng.uniform(0.0, TAU), 4.0),
+                (amp * rng.uniform(0.2, 0.4), rng.uniform(0.0, TAU), 7.0),
+                (amp * rng.uniform(0.1, 0.25), rng.uniform(0.0, TAU), 11.0),
             ];
+            let notch = if kind == Rock::Spire {
+                (0.0, 0.0)
+            } else {
+                (rng.uniform(0.15, 0.3), rng.uniform(0.0, TAU))
+            };
+            let lump = (rng.uniform(0.0, TAU), rng.uniform(0.0, TAU));
             let mut f = Formation {
                 kind,
                 c: HALL,
                 r,
                 top,
                 wall,
-                skirt,
+                skirt: foot * skirt_k,
+                foot,
                 lobes,
+                notch,
+                lump,
             };
-            let foot = f.r * 1.25 + f.wall + 0.72 * f.skirt + 14.0;
-            // candidate spots: the middle of a block, and for small rock the four quarters
-            let mut spots: Vec<Pt> = Vec::new();
-            for c in &cells {
-                spots.push(*c);
-                if kind != Rock::Mesa {
-                    for ix in -2..=2 {
-                        for iy in -2..=2 {
-                            if ix != 0 || iy != 0 {
-                                spots.push(pt(
-                                    c.x + ix as f64 * half * 0.16,
-                                    c.y + iy as f64 * half * 0.16,
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-            for sp in spots {
-                // inside its own block, clear of the roads that bound it
-                let cell_x = ((sp.x - HALL.x) / half).floor();
-                let cell_y = ((sp.y - HALL.y) / half).floor();
-                let (x0, y0) = (HALL.x + cell_x * half, HALL.y + cell_y * half);
-                let room = foot + 12.0;
-                if sp.x - x0 < room
-                    || x0 + half - sp.x < room
-                    || sp.y - y0 < room
-                    || y0 + half - sp.y < room
-                {
+            let reach = f.r * 1.3 + f.wall + 0.72 * f.skirt + 14.0;
+            let clear = reach + 40.0 + 30.0;
+            for sp in &cells {
+                if ends.iter().any(|e| e.dist(*sp) < clear) {
                     continue;
                 }
-                let clash = formations.iter().any(|g| {
-                    let gf = g.r * 1.25 + g.wall + 0.72 * g.skirt + 14.0;
-                    g.c.dist(sp) < gf + foot + 20.0
-                });
-                if clash {
+                if formations.iter().any(|g| {
+                    let gr = g.r * 1.3 + g.wall + 0.72 * g.skirt + 14.0;
+                    g.c.dist(*sp) < gr + reach + 150.0
+                }) {
                     continue;
                 }
-                f.c = sp;
+                f.c = *sp;
                 formations.push(f.clone());
                 break;
             }
@@ -238,16 +241,22 @@ impl MesaField {
         MesaField { formations, washes }
     }
 
-    /// Height to add to the plain ground at a point.
-    pub fn delta(&self, x: f64, y: f64) -> f64 {
-        let mut add = 0.0;
+    /// Ground height at a point given the plain ground there and `plain_at`, the plain ground
+    /// anywhere (each formation stands level on the ground at its own middle).
+    pub fn height(&self, plain: f64, x: f64, y: f64, plain_at: &dyn Fn(f64, f64) -> f64) -> f64 {
+        let mut h = plain;
         for f in &self.formations {
-            // far from a formation the sums are zero: skip the angle
-            let reach = f.r * 1.6 + f.wall + f.skirt + 40.0;
+            let reach = f.reach();
             if (x - f.c.x).abs() > reach || (y - f.c.y).abs() > reach {
                 continue;
             }
-            add += f.rise(x, y);
+            let hold = f.hold(x, y);
+            if hold <= 0.0 && f.edge_dist(x, y) > f.wall + f.skirt {
+                continue;
+            }
+            // the flats under and round the rock are held level to its base
+            let level = plain_at(f.c.x, f.c.y);
+            h += (level - plain) * hold + f.rise(x, y);
         }
         // washes: a shallow bed with a flat sandy floor
         for (x0, sl, amp, wl, ph, hw, depth) in &self.washes {
@@ -264,10 +273,10 @@ impl MesaField {
                     1100.0,
                     ((x - HALL.x).powi(2) + (y - HALL.y).powi(2)).sqrt(),
                 );
-                add -= depth * bed * keep;
+                h -= depth * bed * keep;
             }
         }
-        add
+        h
     }
 }
 
