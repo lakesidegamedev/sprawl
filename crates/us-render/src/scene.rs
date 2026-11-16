@@ -24,13 +24,15 @@ pub const PAVING_MALL: Rgb = [208, 200, 198];
 pub const PARK_GREEN: Rgb = [96, 176, 84];
 pub const CAMPUS: Rgb = [196, 210, 160];
 pub const CEMETERY: Rgb = [146, 178, 118];
-pub const FIELDS: [Rgb; 6] = [
+pub const FIELDS: [Rgb; 8] = [
     [176, 198, 106],
     [198, 186, 124],
     [140, 172, 96],
     [168, 190, 110],
     [206, 194, 140],
     [128, 164, 88],
+    [222, 194, 100],
+    [170, 134, 94],
 ];
 pub const WATER: Rgb = [66, 132, 200];
 pub const SAND: Rgb = [214, 200, 150];
@@ -169,6 +171,8 @@ pub struct Scene {
     pub weather: crate::weather::WeatherLook,
     /// Animation clock in seconds: cars, smoke and people move with it.
     pub time: f32,
+    /// Colour of the land past the edge of the ground mesh.
+    pub base: Rgb,
     x: Extras,
 }
 
@@ -187,6 +191,7 @@ impl Scene {
             calendar: None,
             weather: Default::default(),
             time: 0.0,
+            base: GRASS,
             x: Extras::default(),
         }
     }
@@ -228,7 +233,8 @@ impl Scene {
             .collect();
         let land = Land::from_town(t);
         let ground = build_ground(t, &roads, &land);
-        let (td, chunks) = build_chunks(t, &land);
+        let (td, mut chunks) = build_chunks(t, &land);
+        chunks.extend(crate::cover::build_all(t, &land));
         let mut s = Scene {
             uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
             size: t.size as f32,
@@ -244,6 +250,9 @@ impl Scene {
             calendar: None,
             weather: Default::default(),
             time: 0.0,
+            base: crate::rock::RockLook::of(t.preset)
+                .and_then(|l| l.ground)
+                .map_or(GRASS, |g| g.flat),
             x: Extras::default(),
         };
         let lots: Vec<LotInfo> = t
@@ -568,36 +577,15 @@ impl Scene {
     }
 }
 
-fn hash2(a: u64, b: u64) -> u64 {
-    let mut r = Rng::new(a, b);
-    r.next_u64()
-}
-
-fn zone_colour(zone: Zone, pattern: Pattern, seed: u64, ai: usize) -> Option<Rgb> {
-    match zone {
-        Zone::Core => Some(PAVING_CORE),
-        Zone::Industry => Some(PAVING_INDUSTRY),
-        Zone::Mall => Some(PAVING_MALL),
-        Zone::Campus => Some(CAMPUS),
-        Zone::Park => Some(if pattern == Pattern::Cemetery {
-            CEMETERY
-        } else {
-            PARK_GREEN
-        }),
-        Zone::Farm => Some(FIELDS[(hash2(seed, ai as u64) % FIELDS.len() as u64) as usize]),
-        Zone::Inner | Zone::Outer => None,
-    }
-}
-
 /// Uniform grid over road segments, for "how far is this spot from any road".
 type SegCells = BTreeMap<(i32, i32), Vec<(Pt, Pt, f64)>>;
 
-struct RoadGrid {
+pub(crate) struct RoadGrid {
     cells: SegCells,
 }
 
 impl RoadGrid {
-    fn new(t: &Town) -> RoadGrid {
+    pub(crate) fn new(t: &Town) -> RoadGrid {
         let mut cells: SegCells = BTreeMap::new();
         for r in &t.roads {
             let hw = r.class.half_width();
@@ -618,7 +606,7 @@ impl RoadGrid {
     }
 
     /// Smallest gap between `p` and the edge of any road, within 2 cells.
-    fn clearance(&self, p: Pt) -> f64 {
+    pub(crate) fn clearance(&self, p: Pt) -> f64 {
         let (cx, cy) = ((p.x / 48.0).floor() as i32, (p.y / 48.0).floor() as i32);
         let mut best = f64::INFINITY;
         for x in cx - 1..=cx + 1 {
@@ -658,7 +646,7 @@ const WOODS_PER_TREE: f64 = 60.0;
 
 /// Whether a park patch lies on steep enough ground to be woods: the mean slope over a spread of
 /// points inside it.
-fn wooded(land: &Land, ring: &[Pt]) -> bool {
+pub(crate) fn wooded_ring(land: &Land, ring: &[Pt]) -> bool {
     if land.is_flat() {
         return false;
     }
@@ -698,12 +686,16 @@ fn trees_for(kind: LotKind, rng: &mut Rng) -> usize {
 
 fn build_ground(t: &Town, roads: &[RoadInfo], land: &Land) -> Mesh {
     let mut g = Ground::on(land);
-    g.terrain(land, 1500.0, GRASS);
+    live::ground_terrain(&mut g, land, t);
     for (ai, a) in t.additions.iter().enumerate() {
-        if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, ai) {
+        if let Some(c) = live::zone_colour_in(t.preset, a.zone, a.pattern, t.seed, ai) {
             g.polygon(&a.polygon, layer::ZONE, c);
+            if a.zone == Zone::Farm {
+                crate::cover::field_margin(&mut g, &a.polygon);
+            }
         }
     }
+    crate::decor::paving(&mut g, t);
     live::add_water(&mut g, land, t);
     let draws: Vec<RoadDraw> = roads
         .iter()
@@ -837,6 +829,9 @@ fn build_chunks(t: &Town, land: &Land) -> (TownData, Vec<Chunk>) {
                 placed.push([lx, ly]);
                 let (rad, h) = (rng.range(1.8, 2.8), rng.range(5.0, 8.0));
                 let (tx, ty) = (x + ct * lx - st * ly, y + st * lx + ct * ly);
+                if land.wet_shelf(tx, ty) {
+                    continue;
+                }
                 let col = kit::tree_variant(rng.pick(&green), tx, ty);
                 raw.push((kit::tree(rad, h, col), tx, ty, 0.0, land.height(tx, ty)));
                 break;
@@ -844,11 +839,22 @@ fn build_chunks(t: &Town, land: &Land) -> (TownData, Vec<Chunk>) {
         }
     }
 
+    // street trees and the grounds around the lots
+    {
+        let objs: Vec<&Obj> = looks.iter().map(|l| &l.original).collect();
+        raw.extend(
+            crate::decor::build(t, land, &objs)
+                .into_iter()
+                .filter(|r| !land.wet_shelf(r.1, r.2)),
+        );
+    }
+
     // trees in open park land
     let grid = RoadGrid::new(t);
     for (ai, a) in t.additions.iter().enumerate() {
         // wooded slopes: the generator marks them as park land on steep ground
-        let woods = a.zone == Zone::Park && a.pattern == Pattern::Park && wooded(land, &a.polygon);
+        let woods =
+            a.zone == Zone::Park && a.pattern == Pattern::Park && wooded_ring(land, &a.polygon);
         let per = match (a.zone, a.pattern) {
             (Zone::Park, Pattern::Golf) => 1800.0,
             (Zone::Park, Pattern::Cemetery) => 900.0,
@@ -873,7 +879,9 @@ fn build_chunks(t: &Town, land: &Land) -> (TownData, Vec<Chunk>) {
             if !in_ring(p, &a.polygon) || grid.clearance(p) < 5.0 {
                 continue;
             }
-            if t.lots.iter().any(|l| l.centre.dist(p) < l.radius + 3.0) {
+            if t.lots.iter().any(|l| l.centre.dist(p) < l.radius + 3.0)
+                || land.wet_shelf(p.x as f32, p.y as f32)
+            {
                 continue;
             }
             let (rad, h) = if woods {
@@ -884,6 +892,43 @@ fn build_chunks(t: &Town, land: &Land) -> (TownData, Vec<Chunk>) {
             let col = kit::tree_variant(rng.pick(&green), p.x as f32, p.y as f32);
             let (tx, ty) = (p.x as f32, p.y as f32);
             raw.push((kit::tree(rad, h, col), tx, ty, 0.0, land.height(tx, ty)));
+        }
+    }
+
+    // forest on mountainsides and along gorge rims
+    if let Some(rock) = land.rock() {
+        let mut rng = Rng::new(t.seed ^ 0x6f0e, 91);
+        let gorge = t.preset == us_gen::Preset::Gorge;
+        let step = if gorge { 15.0f32 } else { 19.0 };
+        let n = (land.size() / step) as i32;
+        for gx in 0..n {
+            for gy in 0..n {
+                let x = (gx as f32 + rng.range(0.1, 0.9)) * step;
+                let y = (gy as f32 + rng.range(0.1, 0.9)) * step;
+                let h = land.height(x, y);
+                let sl = land.slope(x, y);
+                let ok = if gorge {
+                    // the plateau within a short way of the edge
+                    h > 200.0
+                        && sl < 0.22
+                        && (0..8).any(|k| {
+                            let a = k as f32 * std::f32::consts::FRAC_PI_4;
+                            land.height(x + 70.0 * a.cos(), y + 70.0 * a.sin()) < h - 70.0
+                        })
+                } else {
+                    rock.forest_slope > 0.0
+                        && h > 62.0
+                        && h < rock.tree_line - 30.0
+                        && sl > 0.15
+                        && sl < rock.forest_slope - 0.1
+                };
+                if !ok || grid.clearance(pt(x as f64, y as f64)) < 8.0 {
+                    continue;
+                }
+                let (rad, ht) = (rng.range(2.6, 4.2), rng.range(9.0, 16.0));
+                let col = kit::tree_variant(rng.pick(&green), x, y);
+                raw.push((kit::tree(rad, ht, col), x, y, 0.0, h));
+            }
         }
     }
 

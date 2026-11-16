@@ -279,6 +279,7 @@ impl Sim {
         self.recompute_values();
         self.step_unlocks();
         self.step_limits();
+        self.step_goals();
         self.evolve_buildings();
         let lg = self.compute_ledger();
         let ord_cost = self.ordinance_costs();
@@ -286,7 +287,8 @@ impl Sim {
         // storm repairs, flood repairs and plowing, collected over the month
         let wx_cost = self.take_weather_costs();
         let (income, expense) = (lg.income_total(), lg.expense_total() + ord_cost + wx_cost);
-        self.treasury += income - expense;
+        let grants = self.take_goal_grants();
+        self.treasury += income - expense + grants;
         self.last_income = income;
         self.last_expense = expense;
         for l in self.loans.iter_mut() {

@@ -36,6 +36,7 @@ pub(crate) fn sections(s: &Sim) -> Vec<([u8; 4], Vec<u8>)> {
     if !s.dist.is_default() {
         push(b"DIST", &|s, w| s.save_districts(w));
     }
+    push(b"GOAL", &|s, w| s.save_goals(w));
     out
 }
 
@@ -51,6 +52,7 @@ pub(crate) fn load_section(s: &mut Sim, tag: [u8; 4], bytes: &[u8]) -> Res<()> {
         b"WTHR" => s.load_weather(r)?,
         b"DIST" => s.load_districts(r)?,
         b"FIRE" => s.load_fires(r)?,
+        b"GOAL" => s.load_goals(r)?,
         _ => {
             let _ = (s, r.left());
         }
@@ -65,6 +67,9 @@ pub(crate) fn after_load(s: &mut Sim, present: &[[u8; 4]]) {
     // a save from before unlocks: open what the town's size has already earned, quietly
     if !has(b"MILE") {
         s.unlock_silently();
+    }
+    if !has(b"GOAL") {
+        s.goals_for_old_save();
     }
     s.rebuild_fx_sites();
     // RIVL missing: the rivals beyond the first were already made from the seed

@@ -11,8 +11,50 @@ use crate::scene::{
 };
 use us_gen::{Pattern, Pt, RoadClass, Town, Zone};
 
-fn hash2(a: u64, b: u64) -> u64 {
-    crate::rng::Rng::new(a, b).next_u64()
+/// Ground colour of an addition's land in a town of style `p`: the red rock desert has no green
+/// fields or lawns. Farms, parks, cemeteries and campuses show the bare ground (parks keep their
+/// scrub trees).
+pub fn zone_colour_in(
+    p: us_gen::Preset,
+    zone: Zone,
+    pattern: Pattern,
+    seed: u64,
+    index: usize,
+) -> Option<Rgb> {
+    if p == us_gen::Preset::Mesa {
+        // the desert has no lawns, fields or campus greens: those lots show the bare ground, since
+        // any flat colour laid on the sand reads as a pale rectangle
+        match zone {
+            Zone::Farm | Zone::Park | Zone::Campus => return None,
+            _ => {}
+        }
+    }
+    zone_colour(zone, pattern, seed, index)
+}
+
+/// The land of a town: plain grass, or the rock look of its style.
+pub fn ground_terrain(g: &mut Ground, land: &Land, t: &Town) {
+    match crate::rock::RockLook::of(t.preset) {
+        Some(look) if look.ground.is_some() && !land.is_flat() => {
+            // a beach only on the inner shore of a harbour cove: elsewhere the shore is rock
+            let beach = |x: f32, y: f32| match t.terrain.rock_coast() {
+                us_gen::RockCoast::Coast(c) => c.beach_weight(x as f64, y as f64) as f32,
+                _ => 1.0,
+            };
+            // past the map edge a coast keeps going: the cliffs and the sea follow the terrain
+            let size = land.size();
+            let coast = t.preset == us_gen::Preset::Coast;
+            let height = |x: f32, y: f32| {
+                if coast && (x < 0.0 || y < 0.0 || x > size || y > size) {
+                    t.terrain.height(x as f64, y as f64) as f32
+                } else {
+                    land.height(x, y)
+                }
+            };
+            g.terrain_look(land, 1500.0, &look, &height, &beach)
+        }
+        _ => g.terrain(land, 1500.0, GRASS),
+    }
 }
 
 /// Ground colour of an addition's land, if it has one (houses sit on plain grass).
@@ -27,7 +69,7 @@ pub fn zone_colour(zone: Zone, pattern: Pattern, seed: u64, index: usize) -> Opt
         } else {
             PARK_GREEN
         }),
-        Zone::Farm => Some(FIELDS[(hash2(seed, index as u64) % FIELDS.len() as u64) as usize]),
+        Zone::Farm => Some(FIELDS[crate::cover::field_index(seed, index)]),
         Zone::Inner | Zone::Outer => None,
     }
 }
@@ -52,11 +94,14 @@ pub fn base_ground(t: &Town, farm_additions: &[usize]) -> Mesh {
 /// and each river band or lake is a flat sheet at its water level.
 pub fn base_ground_on(land: &Land, t: &Town, farm_additions: &[usize]) -> Mesh {
     let mut g = Ground::on(land);
-    g.terrain(land, 1500.0, GRASS);
+    ground_terrain(&mut g, land, t);
     for &ai in farm_additions {
         let a = &t.additions[ai];
-        if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, ai) {
+        if let Some(c) = zone_colour_in(t.preset, a.zone, a.pattern, t.seed, ai) {
             g.polygon(&a.polygon, layer::ZONE, c);
+            if a.zone == Zone::Farm {
+                crate::cover::field_margin(&mut g, &a.polygon);
+            }
         }
     }
     add_water(&mut g, land, t);
@@ -71,23 +116,75 @@ pub fn add_water(g: &mut Ground, land: &Land, t: &Town) {
 /// Like `add_water`, with the water levels taken from `levels` (a finer copy of `land`).
 fn add_water_at(g: &mut Ground, land: &Land, levels: &Land, t: &Town) {
     for w in &t.water {
-        g.polygon(&Ground::grow(w, 14.0), layer::SAND, SAND);
+        // the sea runs off the map: no sand ring, the shore foam comes from the water shader
+        if t.preset != us_gen::Preset::Coast {
+            g.polygon(&Ground::grow(w, 14.0), layer::SAND, SAND);
+        }
         if land.is_flat() {
             g.polygon(w, layer::WATER, WATER);
         } else {
             g.polygon_level(w, levels.water_level(w) + layer::WATER - layer::BASE, WATER);
         }
+        let z = if land.is_flat() {
+            layer::WATER
+        } else {
+            levels.water_level(w) + layer::WATER - layer::BASE
+        };
+        add_water_bands(g, w, z);
     }
+    if t.preset == us_gen::Preset::Coast && !land.is_flat() {
+        crate::harbour::add(&mut g.mesh, levels, t);
+    }
+    if t.preset == us_gen::Preset::Mesa && !land.is_flat() {
+        crate::harbour::add_horizon(&mut g.mesh, levels, t);
+    }
+}
+
+/// Marker colours the shader turns into shallows and shore foam (it paints its own colours and
+/// animates them). Wide shallows, a nearer band, and the foam line itself.
+pub const SHALLOW_FAR: Rgb = [60, 120, 188];
+pub const SHALLOW_NEAR: Rgb = [54, 108, 176];
+pub const FOAM: Rgb = [244, 250, 254];
+
+/// Bands along the inside of a shore: shallow water that gets lighter towards the bank, and a
+/// foam line. Drawn flat at the water's level just above it.
+fn add_water_bands(g: &mut Ground, ring: &[Pt], z: f32) {
+    if ring.len() < 3 {
+        return;
+    }
+    let mut line: Vec<Pt> = ring.to_vec();
+    if line[0].dist(*line.last().unwrap()) > 1e-6 {
+        line.push(line[0]);
+    }
+    let inward = if crate::ground::signed_area(ring) >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let mut flat = Ground::default();
+    for (width, dz, c) in [
+        (9.0f32, 0.01f32, SHALLOW_FAR),
+        (4.0, 0.02, SHALLOW_NEAR),
+        (1.6, 0.03, FOAM),
+    ] {
+        flat.ribbon(&line, width * 0.5, inward * width * 0.5, z + dz, c);
+    }
+    let base = g.mesh.vertices.len() as u32;
+    g.mesh.vertices.extend_from_slice(&flat.mesh.vertices);
+    g.mesh
+        .plain
+        .extend(flat.mesh.plain.iter().map(|i| i + base));
+    g.mesh.cast.extend(flat.mesh.cast.iter().map(|i| i + base));
 }
 
 /// The base ground again on a coarser copy of the land (`coarse`, built from `fine`), for a
 /// chunk that is far from the camera. Water keeps the fine level so shores line up.
 pub fn base_ground_far_on(fine: &Land, coarse: &Land, t: &Town, farm_additions: &[usize]) -> Mesh {
     let mut g = Ground::on(coarse);
-    g.terrain(coarse, 1500.0, GRASS);
+    ground_terrain(&mut g, coarse, t);
     for &ai in farm_additions {
         let a = &t.additions[ai];
-        if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, ai) {
+        if let Some(c) = zone_colour_in(t.preset, a.zone, a.pattern, t.seed, ai) {
             g.polygon(&a.polygon, layer::ZONE, c);
         }
     }
@@ -104,7 +201,10 @@ pub fn zone_ground(t: &Town, index: usize) -> Mesh {
 pub fn zone_ground_on(land: &Land, t: &Town, index: usize) -> Mesh {
     let mut g = Ground::on(land);
     let a = &t.additions[index];
-    if let Some(c) = zone_colour(a.zone, a.pattern, t.seed, index) {
+    // downtown, industry and malls are not paved over as a slab: the land stays natural and each
+    // building gets its own paving (`decor::lot_pad`) when it is built
+    let slab = !matches!(a.zone, Zone::Core | Zone::Industry | Zone::Mall);
+    if let Some(c) = zone_colour_in(t.preset, a.zone, a.pattern, t.seed, index).filter(|_| slab) {
         g.polygon(&a.polygon, layer::ZONE, c);
     }
     if a.zone == Zone::Park && a.pattern == Pattern::Park {

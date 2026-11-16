@@ -9,7 +9,9 @@ use crate::junctions;
 use crate::lots;
 use crate::patterns::{Layout, Line, curvy_local, grid_lines, pods};
 use crate::polygonize::{polygonize, split_polygon};
+use crate::relief::{self, Relief};
 use crate::rng::Rng;
+use crate::rockcoast::{CoastField, MesaField, RockCoast};
 use crate::skeleton::{self, highway};
 use crate::terrain::Terrain;
 use crate::world::{HALL, HWY_Y, Lake, River, S, dist_hall, map_ring, noise};
@@ -168,6 +170,27 @@ fn poly_difference(a: &[Pt], b: &[Pt]) -> Vec<Vec<Pt>> {
     res.0.iter().map(ring_from_geo).collect()
 }
 
+pub(crate) fn difference_rings(a: &[Pt], b: &[Pt]) -> Vec<Vec<Pt>> {
+    poly_difference(a, b)
+}
+
+pub(crate) fn intersect_rings(a: &[Pt], b: &[Pt]) -> Vec<Vec<Pt>> {
+    poly_intersection(a, b)
+}
+
+/// Union of overlapping rings.
+pub(crate) fn union_rings(rings: &[Vec<Pt>]) -> Vec<Vec<Pt>> {
+    use geo::BooleanOps;
+    let Some((first, rest)) = rings.split_first() else {
+        return Vec::new();
+    };
+    let mut acc = geo::MultiPolygon(vec![to_geo(first)]);
+    for r in rest {
+        acc = acc.union(&to_geo(r));
+    }
+    acc.0.iter().map(ring_from_geo).collect()
+}
+
 fn touches_edge(p: &[Pt]) -> bool {
     p.iter()
         .any(|q| q.x <= 2.0 || q.x >= S - 2.0 || q.y >= S - 2.0)
@@ -177,7 +200,8 @@ fn make_patches(
     roads: &[(Line, RoadClass)],
     rails: &[Line],
     river: &River,
-    lake_zone: Option<&[Pt]>,
+    zones: &[Vec<Pt>],
+    relief: Option<&Relief>,
     rng: &mut Rng,
 ) -> Vec<Vec<Pt>> {
     let mut lines: Vec<Line> = roads.iter().map(|(l, _)| l.clone()).collect();
@@ -186,9 +210,12 @@ fn make_patches(
     let band = river.band(-60.0, 60.0);
     let mut out = Vec::new();
     for sb in polygonize(&lines) {
-        let dry = poly_difference(&sb, &band);
-        let dry: Vec<Vec<Pt>> = match lake_zone {
-            Some(z) => dry
+        let mut dry = match relief {
+            Some(r) => r.dry_parts(&sb, &band),
+            None => poly_difference(&sb, &band),
+        };
+        for z in zones {
+            dry = dry
                 .into_iter()
                 .flat_map(|q| {
                     // a face that surrounds the lake has it as a hole the ring cannot carry:
@@ -205,9 +232,8 @@ fn make_patches(
                 .flat_map(|q| poly_difference(q, z))
                 // float trouble can leave the lake's own face whole: drop anything inside it
                 .filter(|q| !point_in_ring(centroid(q), z))
-                .collect(),
-            None => dry,
-        };
+                .collect();
+        }
         for p in dry {
             let a = area(&p);
             // slivers (a thin strip between two roads that nearly meet) make no use of land
@@ -267,14 +293,91 @@ struct Specials {
     cemetery: bool,
     golf: bool,
     mall: bool,
+    harbour: u8,
+}
+
+/// What the newer styles add to the stage: land that roads and streets keep out of, and water.
+#[derive(Default)]
+pub struct Extra {
+    pub style: Option<Preset>,
+    /// Rings that no street or patch may enter (rock, the sea and its cliff edge).
+    pub zones: Vec<Vec<Pt>>,
+    /// Rings that junction work keeps clear of.
+    pub wet: Vec<Vec<Pt>>,
+    /// Rings round rock that a road meets and follows (red rock towns).
+    pub rings: Vec<Vec<Pt>>,
+    pub sea: Option<CoastField>,
 }
 
 pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
+    // the road and lot layout follows the base style until a newer style has its own
+    let style = preset;
+    let preset = preset.base();
     let mut river_rng = Rng::new(seed, 0x71e7);
-    let river = River::new(&mut river_rng);
-    let lake = (preset == Preset::LakeTown).then(|| Lake::new(&mut Rng::new(seed, 0x1a4e)));
-    let terrain = Terrain::new(seed, &river, lake.as_ref().map(|l| (l.c, l.r)));
-    let built = build(preset, seed, &river, st, &terrain, lake.as_ref());
+    let river = match style {
+        Preset::Gorge => River::gorge(&mut river_rng),
+        Preset::Valley => River::valley(&mut river_rng),
+        // the sea takes the place of the river
+        Preset::Coast => River::none(),
+        _ => River::new(&mut river_rng),
+    };
+    let lake = (style == Preset::LakeTown).then(|| Lake::new(&mut Rng::new(seed, 0x1a4e)));
+    let mut terrain = match style {
+        Preset::Gorge | Preset::Valley => Terrain::styled(seed, &river, style),
+        _ => Terrain::new(seed, &river, lake.as_ref().map(|l| (l.c, l.r))),
+    };
+    let mut pad = 0.0;
+    let relief = relief::build(style, seed, &river, &terrain, &mut pad);
+    let mut extra = Extra::default();
+    match style {
+        Preset::Mesa => {
+            // where roads of the plain layout end: rock keeps clear of them so no road is cut
+            // short by a rock and left with a dead end
+            let probe = skeleton::build(
+                preset,
+                seed,
+                &river,
+                st,
+                &terrain,
+                None,
+                &Extra {
+                    style: Some(style),
+                    ..Extra::default()
+                },
+            );
+            let ends: Vec<Pt> = probe
+                .roads
+                .iter()
+                .filter(|(_, c)| *c != RoadClass::Highway)
+                .flat_map(|(l, _)| [l[0], *l.last().unwrap()])
+                .filter(|p| p.x > 1.0 && p.x < S - 1.0 && p.y < S - 1.0 && p.y > HWY_Y + 1.0)
+                .collect();
+            let field = MesaField::new(seed, st.arterial_spacing / 2.0, &river, &ends);
+            extra.zones = field.formations.iter().map(|f| f.footprint(10.0)).collect();
+            extra.wet = field.formations.iter().map(|f| f.footprint(40.0)).collect();
+            extra.rings = field.formations.iter().map(|f| f.footprint(16.0)).collect();
+            terrain = terrain.with_rock(RockCoast::Mesa(field));
+        }
+        Preset::Coast => {
+            let field = CoastField::new(seed);
+            extra.zones = vec![field.road_zone(72.0)];
+            extra.wet = vec![field.road_zone(150.0)];
+            extra.sea = Some(field.clone());
+            terrain = terrain.with_rock(RockCoast::Coast(field));
+        }
+        _ => {}
+    }
+    extra.style = Some(style);
+    let built = build(
+        preset,
+        seed,
+        &river,
+        st,
+        &terrain,
+        lake.as_ref(),
+        relief.as_ref(),
+        &extra,
+    );
     let mut drafts = built.drafts;
     let additions = built.additions;
 
@@ -300,9 +403,21 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
     let hall_radius = 14.0;
     let hall = pick_hall_site(&idx, &drafts, hall_radius, &river);
     let mut lot_rng = Rng::new(seed, 0x107);
-    let mut water = vec![river.band(-40.0, 40.0)];
+    let mut water = if style == Preset::Coast {
+        Vec::new()
+    } else {
+        vec![river.band(-40.0, 40.0)]
+    };
     if let Some(l) = &lake {
         water.push(l.ring(0.0));
+    }
+    if let Some(c) = &extra.sea {
+        water.push(c.sea_ring());
+    }
+    // no lot (not even a farm) stands on rock or its talus
+    let mut lot_keepout = water.clone();
+    if style == Preset::Mesa {
+        lot_keepout.extend(extra.zones.iter().cloned());
     }
     let (lots, stations, centres) = lots::make_lots(
         &drafts,
@@ -310,7 +425,7 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
         &additions,
         hall,
         hall_radius,
-        &water,
+        &lot_keepout,
         &terrain,
         &mut lot_rng,
         preset,
@@ -334,7 +449,7 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
         })
         .collect();
     Town {
-        preset,
+        preset: style,
         seed,
         size: S,
         highway_y: HWY_Y,
@@ -397,6 +512,7 @@ fn pick_hall_site(idx: &SegIndex, drafts: &[Draft], radius: f64, river: &River) 
     nominal
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     preset: Preset,
     seed: u64,
@@ -404,13 +520,27 @@ pub fn build(
     st: &Settings,
     terrain: &Terrain,
     lake: Option<&Lake>,
+    relief: Option<&Relief>,
+    extra: &Extra,
 ) -> Built {
     let mut rng = Rng::new(seed, 0xa11);
-    let sk = skeleton::build(preset, seed, river, st, terrain, lake);
+    let sk = match relief {
+        Some(r) => {
+            let mut roads = vec![(highway(), RoadClass::Highway)];
+            roads.extend(r.roads.iter().cloned());
+            skeleton::Skeleton {
+                roads,
+                rails: r.rails.clone(),
+                rail_angle: r.rail_angle,
+            }
+        }
+        None => skeleton::build(preset, seed, river, st, terrain, lake, extra),
+    };
     let main_ang = std::f64::consts::FRAC_PI_2;
     let rail_ang = sk.rail_angle;
-    let lake_zone = lake.map(|l| l.ring(55.0));
-    let patches = make_patches(&sk.roads, &sk.rails, river, lake_zone.as_deref(), &mut rng);
+    let mut zones: Vec<Vec<Pt>> = lake.map(|l| l.ring(55.0)).into_iter().collect();
+    zones.extend(extra.zones.iter().cloned());
+    let patches = make_patches(&sk.roads, &sk.rails, river, &zones, relief, &mut rng);
     let (patches, corner) = if preset == Preset::Sunbelt {
         carve_corners(patches, &sk.roads, &mut rng)
     } else {
@@ -467,6 +597,7 @@ pub fn build(
         cemetery: false,
         golf: false,
         mall: false,
+        harbour: 0,
     };
     let mut additions: Vec<Addition> = Vec::new();
     let mut borders_wanted: Vec<usize> = Vec::new();
@@ -494,6 +625,8 @@ pub fn build(
         let lake_ang =
             lake.and_then(|_| flow.filter(|_| dist_pt_ring(c, &lake.unwrap().ring(0.0)) < 650.0));
         let woods = d > 600.0 && mean_slope(terrain, p) > WOODED_SLOPE;
+        // the small district on a gorge's riverside flat is always built on
+        let on_flat = relief.is_some() && terrain.gorge().is_some() && terrain.height_at(c) < 8.0;
         let mut lay = Layout::default();
         let mut zone: Zone;
         let mut pattern: Pattern;
@@ -511,6 +644,30 @@ pub fn build(
                 0.0,
                 1e9,
                 160.0,
+                (0.0, 0.0),
+                false,
+                HALL,
+                0.0,
+                (0.0, 0.0),
+                &mut rng,
+            )
+            .0;
+        } else if sp.harbour < 3
+            && d > 520.0
+            && extra
+                .sea
+                .as_ref()
+                .is_some_and(|f| f.harbour_weight(c.x, c.y) > 0.3)
+        {
+            // the harbour district: warehouses and workshops on the low ground by the beach
+            sp.harbour += 1;
+            zone = Zone::Industry;
+            pattern = Pattern::Industry;
+            lay.streets = grid_lines(
+                p,
+                0.0,
+                220.0,
+                1e9,
                 (0.0, 0.0),
                 false,
                 HALL,
@@ -606,7 +763,7 @@ pub fn build(
             );
             lay.streets = s;
             lay.lanes = l;
-        } else if d < 1100.0 && !sp.cemetery && r < 0.1 {
+        } else if d < 1100.0 && !sp.cemetery && r < 0.1 && !on_flat {
             zone = Zone::Park;
             pattern = Pattern::Cemetery;
             sp.cemetery = true;
@@ -786,7 +943,7 @@ pub fn build(
                 .map(|l| junctions::bend_with_ground(l, p, terrain))
                 .collect();
         }
-        if zone != Zone::Park && rng.f64() < 0.05 && d > 600.0 {
+        if zone != Zone::Park && rng.f64() < 0.05 && d > 600.0 && !on_flat {
             zone = Zone::Park;
             pattern = Pattern::Park;
             is_pod = false;
@@ -836,13 +993,14 @@ pub fn build(
         // trimming can leave a stub of a street with no length: it is not a road
         drafts.retain(|d| !is_street(d) || (d.line.len() >= 2 && length(&d.line) >= 4.0));
     }
-    join_stranded(&mut drafts, &mut additions, river);
+    join_stranded(&mut drafts, &mut additions, river, relief);
     promote_collectors(&mut drafts, st.collector_len);
     if st.version >= 3 {
         let mut wet = vec![river.band(-90.0, 90.0)];
         if let Some(l) = lake {
             wet.push(l.ring(70.0));
         }
+        wet.extend(extra.wet.iter().cloned());
         let mut rng3 = Rng::new(seed, 0x3d03);
         junctions::link_culs(&mut drafts, &additions);
         junctions::through_collectors(&mut drafts, 1300.0);
@@ -1232,7 +1390,12 @@ fn sample_line(line: &[Pt], step: f64) -> Vec<Pt> {
 /// Every street must be reachable from the highway. A group of streets cut off from the rest
 /// gets an entrance road to the nearest connected road when one is under 150 m away and dry;
 /// otherwise its additions go back to farmland.
-fn join_stranded(drafts: &mut Vec<Draft>, additions: &mut [Addition], river: &River) {
+fn join_stranded(
+    drafts: &mut Vec<Draft>,
+    additions: &mut [Addition],
+    river: &River,
+    relief: Option<&Relief>,
+) {
     let wet = river.band(-60.0, 60.0);
     for _round in 0..40 {
         let comp = components(drafts);
@@ -1273,9 +1436,20 @@ fn join_stranded(drafts: &mut Vec<Draft>, additions: &mut [Addition], river: &Ri
                     // dry, and not running along some third road that is cut off too
                     let dry = [0.25, 0.5, 0.75].iter().all(|f| {
                         let q = p.lerp(h.pt, *f);
-                        !point_in_ring(q, &wet) && all_idx.nearest(q, 3.0, None).is_none()
+                        !point_in_ring(q, &wet)
+                            && !relief.is_some_and(|r| r.forbids(q))
+                            && all_idx.nearest(q, 3.0, None).is_none()
+                    }) && relief.is_none_or(|r| {
+                        // a long link must not cut across a ravine between its sample points
+                        let k = (h.dist / 15.0).ceil() as usize;
+                        (1..k).all(|i| !r.forbids(p.lerp(h.pt, i as f64 / k as f64)))
                     });
-                    if dry {
+                    let ends_dry = !relief.is_some_and(|r| {
+                        r.banned
+                            .iter()
+                            .any(|z| point_in_ring(p, z) || point_in_ring(h.pt, z))
+                    });
+                    if dry && ends_dry {
                         best = Some((h.dist, p, h.pt));
                     }
                 }

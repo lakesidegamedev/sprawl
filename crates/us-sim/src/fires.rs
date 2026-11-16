@@ -24,8 +24,10 @@ const SMOKE_MIN: f64 = 8.0;
 const FLAMES_MIN: f64 = 18.0;
 /// Fires spread to buildings this close, metres.
 const SPREAD_M: f64 = 34.0;
-/// Most neighbours one fire sets alight.
-const MAX_SPREAD: u8 = 3;
+/// Most neighbours one fire sets alight. One fire never lights more than one other, and the
+/// more fires burn at once the less each one spreads (neighbours turn out with buckets and
+/// hoses, fire breaks hold), so a single storm cannot raze a town.
+const MAX_SPREAD: u8 = 1;
 /// How far an engine is willing to drive, seconds.
 const DRIVE_LIMIT_S: f64 = 420.0;
 /// Minutes the crew works at the scene after arriving, by stage reached.
@@ -395,6 +397,13 @@ impl Sim {
 
         let name = kind_label(self.lots[i].kind).to_lowercase();
         let street = self.street_name_of_lot(i);
+        if self.fires_total == 1 && self.stations_of(Service::Fire).is_empty() {
+            self.log(
+                EventKind::Fire,
+                "No fire station: fires will spread. Build a fire station.".into(),
+                Some(at),
+            );
+        }
         let text = if !attended {
             format!(
                 "A {name} on {street} is burning. No fire station can reach it, so it will burn out.{hurt_line}"
@@ -525,6 +534,13 @@ impl Sim {
         let wind = self.wind();
         let wind_speed = (wind.x * wind.x + wind.y * wind.y).sqrt();
         let dry = 0.5 + self.dryness();
+        let burning = self
+            .fx
+            .blazes
+            .iter()
+            .filter(|b| b.out_s > from && b.start_s < to)
+            .count() as f64;
+        let crowd = 1.0 / (1.0 + burning);
         for k in 0..n {
             let b = self.fx.blazes[k].clone();
             if b.rolled >= day || b.spread >= MAX_SPREAD {
@@ -570,7 +586,7 @@ impl Sim {
                 };
                 let windf = (1.0 + 0.12 * wind_speed * align).clamp(0.3, 2.5);
                 let prox = 1.0 - d / SPREAD_M;
-                let lam = 0.02 * e * prox * flam * windf * dry * self.ord_fire_factor(j);
+                let lam = 0.02 * e * prox * flam * windf * dry * crowd * self.ord_fire_factor(j);
                 let p = 1.0 - libm::exp(-lam);
                 if roll(
                     self.seed ^ 0x5b7ead,

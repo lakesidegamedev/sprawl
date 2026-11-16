@@ -252,25 +252,67 @@ impl Ground {
 
     /// The whole land as a grid of faces in one colour, reaching `apron` metres past the map.
     pub fn terrain(&mut self, land: &Land, apron: f32, color: Rgb) {
+        let color = if land.rock().is_some() {
+            crate::rock::TERRAIN_MARK
+        } else {
+            color
+        };
+        self.terrain_with(land, apron, &|_, _| color, None);
+    }
+
+    /// Like `terrain`, with the colour chosen per vertex (rock faces, scree, beaches).
+    pub fn terrain_look(
+        &mut self,
+        land: &Land,
+        apron: f32,
+        look: &crate::rock::RockLook,
+        height: &dyn Fn(f32, f32) -> f32,
+        beach: &dyn Fn(f32, f32) -> f32,
+    ) {
+        self.terrain_with(
+            land,
+            apron,
+            &|x, y| crate::rock::vertex_colour(look, land, height, beach, x, y),
+            Some(height),
+        );
+    }
+
+    fn terrain_with(
+        &mut self,
+        land: &Land,
+        apron: f32,
+        colour: &dyn Fn(f32, f32) -> Rgb,
+        height: Option<&dyn Fn(f32, f32) -> f32>,
+    ) {
+        let color = colour(0.0, 0.0);
         if self.land.is_none() {
             let s = land.size();
             self.rect(-apron, -apron, s + apron, s + apron, layer::BASE, color);
             return;
         }
         let (n, step, size) = (land.n(), land.step(), land.size());
-        let mut xs: Vec<f32> = vec![-apron];
+        // the apron is cut into rings of growing width so its colour can vary and water can sink
+        let cuts = [
+            1.0f32, 0.75, 0.52, 0.34, 0.22, 0.14, 0.09, 0.055, 0.034, 0.018, 0.009, 0.004,
+        ];
+        let mut xs: Vec<f32> = cuts.iter().map(|k| -apron * k).collect();
         xs.extend((0..n).map(|i| i as f32 * step));
-        xs.push(size + apron);
+        xs.extend(cuts.iter().rev().map(|k| size + apron * k));
         let m = xs.len();
         let base = self.mesh.vertices.len() as u32;
         for &y in &xs {
             for &x in &xs {
                 // past the map edge the land is held level, so it is shaded level too
                 if x < 0.0 || y < 0.0 || x > size || y > size {
-                    let z = land.height(x, y) + layer::BASE;
-                    self.raw(x, y, z, [0.0, 0.0, 1.0], color, ID_GROUND);
+                    // water that runs off the map (the sea) runs on under its sheet
+                    let z = match land.water_at(pt(x as f64, y as f64)) {
+                        Some(level) => level - 3.0,
+                        None => height.map_or_else(|| land.height(x, y), |f| f(x, y)) + layer::BASE,
+                    };
+                    let c = colour(x, y);
+                    self.raw(x, y, z, [0.0, 0.0, 1.0], c, ID_GROUND);
                 } else {
-                    self.vert(x, y, layer::BASE, color);
+                    self.vert(x, y, layer::BASE, colour(x, y));
                 }
             }
         }
@@ -462,7 +504,8 @@ impl Ground {
                 (Some(b), Some(land)) => {
                     let land = land.clone();
                     let top = b.z(&land, i, v[0], v[1]) + z;
-                    let up = b.weight[i] > 0.5;
+                    // roads on mountain land are cut level into the slope: lit as flat
+                    let up = b.weight[i] > 0.5 || land.rock().is_some();
                     let nrm = if up {
                         [0.0, 0.0, 1.0]
                     } else {
@@ -602,12 +645,20 @@ impl Ground {
                 // the slab's underside seen from the banks
                 since_pier += l as f32;
                 let mid = a.lerp(b, 0.5);
-                if since_pier >= 26.0 && land.water_at(mid).is_some() {
+                let (mx, my) = (mid.x as f32, mid.y as f32);
+                let drop = bed.deck[i] - land.height(mx, my);
+                // tall piers where the deck stands high above the ground, further apart
+                let high = drop > 14.0;
+                let gap = if high { 48.0 } else { 26.0 };
+                if since_pier >= gap && (high || land.water_at(mid).is_some()) {
                     since_pier = 0.0;
                     let z = bed.deck[i] - 1.6;
-                    let (mx, my) = (mid.x as f32, mid.y as f32);
                     let g = land.height(mx, my) - 0.8;
-                    let (hl, hw) = (0.9f32, half * 0.8);
+                    let (hl, hw) = if high {
+                        (1.5f32, half * 0.8)
+                    } else {
+                        (0.9f32, half * 0.8)
+                    };
                     let (ux, uy) = (dx as f32, dy as f32);
                     let c = [
                         (mx - ux * hl - nx * hw, my - uy * hl - ny * hw),

@@ -189,6 +189,8 @@ struct Globals {
     look: [f32; 4],
     /// snow cover, wet ground, wind east and north
     wx: [f32; 4],
+    /// rock look rows, see `rock::RockLook::rows`
+    rock: [[f32; 4]; 8],
 }
 
 struct GpuMesh {
@@ -1227,6 +1229,10 @@ impl Renderer {
             tone: [tone[0], tone[1], tone[2], lit_windows],
             look: [season_code, snow as u8 as f32, map_view as u8 as f32, lamps],
             wx: [snow_cover, wl.wet.clamp(0.0, 1.0), wl.wind[0], wl.wind[1]],
+            rock: scene
+                .land
+                .rock()
+                .map_or_else(crate::rock::RockLook::no_rows, |r| r.rows()),
         };
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&globals));
@@ -1426,9 +1432,9 @@ impl Renderer {
         }
         {
             let mut base = [
-                crate::scene::GRASS[0] as f64 / 255.0,
-                crate::scene::GRASS[1] as f64 / 255.0,
-                crate::scene::GRASS[2] as f64 / 255.0,
+                scene.base[0] as f64 / 255.0,
+                scene.base[1] as f64 / 255.0,
+                scene.base[2] as f64 / 255.0,
             ];
             if map_view {
                 let lum = base[0] * 0.3 + base[1] * 0.59 + base[2] * 0.11;

@@ -167,6 +167,47 @@ fn style(p: Preset) -> Style {
             wind_dir: 4.2,
             flood: 0.6,
         },
+        // river gorge: humid, rainy, the river rises fast between steep walls
+        Preset::Gorge => Style {
+            mean: 11.5,
+            amp: 12.0,
+            wet: 1.35,
+            storm: 1.1,
+            wind: 0.8,
+            wind_dir: 1.2,
+            flood: 1.1,
+        },
+        // red rock high desert: hot summers, cold nights and the odd dusting of snow, dry,
+        // windy, rare flash floods in the washes
+        Preset::Mesa => Style {
+            mean: 13.0,
+            amp: 15.5,
+            wet: 0.55,
+            storm: 0.9,
+            wind: 1.4,
+            wind_dir: 0.8,
+            flood: 0.35,
+        },
+        // mountain valley: cold winters, deep snow, wet summers
+        Preset::Valley => Style {
+            mean: 5.5,
+            amp: 14.0,
+            wet: 1.15,
+            storm: 0.9,
+            wind: 1.0,
+            wind_dir: 2.6,
+            flood: 0.7,
+        },
+        // high coast: mild, wet and windy off the sea
+        Preset::Coast => Style {
+            mean: 11.0,
+            amp: 8.5,
+            wet: 1.25,
+            storm: 1.15,
+            wind: 1.5,
+            wind_dir: 3.6,
+            flood: 0.4,
+        },
     }
 }
 
@@ -990,15 +1031,37 @@ impl Sim {
                 at,
             );
         }
-        // lightning
+        // lightning: most bolts hit trees, parks and open ground at the edge of town and start
+        // nothing. A bolt that hits a building starts a fire only some of the time, more in a dry
+        // spell, and a storm lights at most three fires (one in a damp spell).
         let strikes = (1.0 + 2.0 * precip * roll(self.seed ^ 0x570d, 9, day as u64)) as usize;
+        let dry = self.dryness().clamp(0.0, 1.0);
+        let max_fires = if dry > 0.7 {
+            3
+        } else {
+            1 + (dry * 2.0) as usize
+        };
+        let open: Vec<usize> = (0..self.lots.len())
+            .filter(|&i| {
+                !matches!(self.lots[i].phase, Phase::Hidden)
+                    && !taxed_contains(&self.lots[i], &self.lots[i].phase)
+            })
+            .collect();
+        let mut lit = 0usize;
         for k in 0..strikes {
-            let pick = taxed
-                [(mix(self.seed ^ 0x570e, day as u64, k as u64) % taxed.len() as u64) as usize];
+            let to_open = !open.is_empty() && roll(self.seed ^ 0x5710, day as u64, k as u64) < 0.65;
+            let pick = if to_open {
+                open[(mix(self.seed ^ 0x5711, day as u64, k as u64) % open.len() as u64) as usize]
+            } else {
+                taxed[(mix(self.seed ^ 0x570e, day as u64, k as u64) % taxed.len() as u64) as usize]
+            };
             self.wx.strikes.push(pick);
-            if self.lots[pick].fire.is_none()
-                && roll(self.seed ^ 0x570f, pick as u64, day as u64) < 0.1
+            if !to_open
+                && lit < max_fires
+                && self.lots[pick].fire.is_none()
+                && roll(self.seed ^ 0x570f, pick as u64, day as u64) < 0.12 * (0.5 + dry)
             {
+                lit += 1;
                 let cov = self.coverage[Service::Fire.index()]
                     .get(pick)
                     .copied()
@@ -1207,4 +1270,12 @@ impl Sim {
 
 fn run_len(points: &[Pt]) -> f64 {
     points.windows(2).map(|w| w[0].dist(w[1])).sum()
+}
+
+/// Whether a lot is one of the town's taxed buildings (the ones a bolt can set alight).
+fn taxed_contains(l: &LotState, phase: &Phase) -> bool {
+    matches!(phase, Phase::Built { .. })
+        && !l.exempt
+        && l.civic.is_none()
+        && class_of(l.kind).is_some()
 }

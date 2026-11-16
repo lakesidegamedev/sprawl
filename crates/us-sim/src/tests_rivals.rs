@@ -82,7 +82,14 @@ fn the_town_loses_people_to_a_cheaper_rival_and_the_rival_grows() {
 fn a_cheap_well_run_town_wins_people_back() {
     let mut s = new_sim(11);
     s.set_tax_x10(40);
-    run(&mut s, 365 * 2);
+    // well run: the mayor builds the water, power and schools the settlers need
+    let mut round = 0;
+    for d in 0..365 * 2 {
+        s.step_day();
+        if d % 30 == 5 {
+            crate::tests_balance::build_ahead(&mut s, &mut round);
+        }
+    }
     let r = s.rival_towns();
     let won: i32 = r
         .iter()

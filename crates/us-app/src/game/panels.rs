@@ -115,7 +115,7 @@ pub fn set_dock_top(ctx: &Context, y: f32) {
 }
 
 /// Top edge of the phone's bottom bar, or an estimate before it has been laid out.
-fn dock_top(ctx: &Context) -> f32 {
+pub(super) fn dock_top(ctx: &Context) -> f32 {
     let screen = ctx.content_rect();
     ctx.data(|d| d.get_temp::<f32>(egui::Id::new("dock_top")))
         .filter(|y| *y > screen.top() && *y <= screen.bottom())
@@ -449,6 +449,9 @@ pub struct UiState {
     pub ordinances_open: bool,
     /// The Tram window (see `trams.rs`).
     pub(super) trams: super::trams::TramUi,
+    /// The growth banner and the goal card (see `growth_banner.rs` and `goals.rs`).
+    pub(super) growth: super::growth_banner::GrowthUi,
+    pub(super) goals: super::goals::GoalsUi,
     /// The map view switcher is open (desktop).
     pub views_open: bool,
     /// Where the Map views button sits, so the switcher opens beside it.
@@ -500,6 +503,8 @@ impl Default for UiState {
             districts_open: false,
             ordinances_open: false,
             trams: Default::default(),
+            growth: Default::default(),
+            goals: Default::default(),
             views_open: false,
             views_rect_y: 300.0,
             paint: None,
@@ -722,6 +727,19 @@ impl Game {
             let (k, v) = tok.split_once(':').unwrap_or((tok, ""));
             let n = v.parse::<usize>().unwrap_or(0);
             match k {
+                "clean" => {
+                    // a clear picture: no panels and no goal card
+                    self.close_sheets();
+                    self.sim.dismiss_goals();
+                    self.ui.goals.open = false;
+                    // and no election night over the picture; the game is held
+                    self.speed = 0;
+                    self.election = None;
+                    if let Some(r) = self.sim.last_election() {
+                        self.election_seen = r.day;
+                    }
+                }
+                "low" => self.cam.set_angle(n as f32, 18.0),
                 "levers" => self.ui.levers_open = true,
                 "budget" => self.ui.budget_open = true,
                 "loans" => self.ui.loans_open = true,
@@ -740,6 +758,25 @@ impl Game {
                     let c = self.town.size as f32 * 0.5;
                     self.cam
                         .look_at(Vec3::new(c, c, 0.0), self.town.size as f32 * 1.5);
+                }
+                "rock" | "harbour" => {
+                    // the tallest rock of a red rock town, or the harbour cove of a coastal one
+                    let at = match self.town.terrain.rock_coast() {
+                        us_gen::RockCoast::Mesa(m) => m
+                            .formations
+                            .iter()
+                            .max_by(|a, b| a.top.total_cmp(&b.top))
+                            .map(|f| f.c),
+                        us_gen::RockCoast::Coast(c) => {
+                            let v = c.coves[0];
+                            Some(us_gen::pt(v.c.x - 0.75 * v.rho, v.c.y))
+                        }
+                        _ => None,
+                    };
+                    if let Some(p) = at {
+                        let d = if k == "rock" { 1100.0 } else { 1200.0 };
+                        self.cam.look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), d);
+                    }
                 }
                 "bridge" => {
                     // a road point over water, for a screenshot
@@ -859,6 +896,12 @@ impl Game {
                     self.hour_frozen = true;
                 }
                 "pause" => self.speed = 0,
+                "town" => {
+                    // the town hall from `n` metres away, for a screenshot
+                    let h = self.town.hall;
+                    self.cam
+                        .look_at(Vec3::new(h.x as f32, h.y as f32, 0.0), n.max(300) as f32);
+                }
                 "zoom" => {
                     if let Some(Sel::Lot(i)) = self.sel {
                         let p = self.sim.lots()[i].pos;
@@ -1229,6 +1272,15 @@ impl Game {
                 ("Bond interest", -ledger.interest, TEXT),
                 ("Bond principal", -ledger.principal, TEXT),
             ];
+            if ledger.grants > 0 {
+                // a goal reward, paid into the treasury with the last monthly ledger
+                ui.horizontal(|ui| {
+                    lab(ui, "Goal grant, paid last month", 12.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        lab_c(ui, money(ledger.grants), 12.0, GOOD);
+                    });
+                });
+            }
             for (name, v, col) in rows {
                 ui.horizontal(|ui| {
                     lab(ui, name, 12.0);

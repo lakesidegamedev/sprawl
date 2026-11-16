@@ -43,6 +43,7 @@ impl Sim {
         let day = self.day;
         let (mut upgrades, mut declines) = (0u32, 0u32);
         let (mut up_at, mut down_at): (Option<Pt>, Option<Pt>) = (None, None);
+        let mut room = self.start_room();
         for i in 0..self.lots.len() {
             let l = &self.lots[i];
             let Phase::Built { since, .. } = l.phase else {
@@ -65,10 +66,13 @@ impl Sim {
                 && self.class_demand.get(class) >= 0.2
                 && self.services_avg(i) >= 0.1 * (l.level as f64 - 1.0)
                 && roll_m < UPGRADE_CHANCE * pull
-                && self.can_upgrade(l.kind, l.level)
+                && self.can_upgrade(l.kind, l.level, &room)
             {
                 let (k, lv) = (l.kind, l.level);
                 self.take_units(k, Sim::units_at(k, lv + 1) - Sim::units_at(k, lv));
+                for c in Capacity::ALL {
+                    room[c.index()] -= Sim::lot_demand(k, lv + 1, c) - Sim::lot_demand(k, lv, c);
+                }
                 let l = &self.lots[i];
                 let days = 30 + 15 * l.level as i32 + (roll_m * 100.0) as i32 % 15;
                 let pos = l.pos;

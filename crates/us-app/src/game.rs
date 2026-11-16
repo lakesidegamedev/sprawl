@@ -19,6 +19,8 @@ use winit::keyboard::KeyCode;
 mod charts;
 mod chrome;
 mod districts;
+mod goals;
+mod growth_banner;
 mod panels;
 mod screens;
 mod trams;
@@ -451,6 +453,7 @@ impl State {
         g.cam.keys(dt, pan, rot, fast);
         let (gx, gy) = g.cam.goal_xy();
         g.cam.follow_ground(g.live.ground_at(gx, gy));
+        g.cam.clear_of_terrain(g.live.land());
         g.cam.update(dt);
         if let Some((b, t)) = g.banner.as_mut() {
             *t -= dt;
@@ -701,8 +704,15 @@ impl State {
                         .ok()
                         .and_then(|v| v.parse::<i32>().ok())
                     {
-                        for _ in 0..days {
+                        // URBAN_SPRAWL_SMOKE_TEND=1 looks after the town as it grows (services and
+                        // taxes each month), so it gets past its first limits
+                        let tend = std::env::var("URBAN_SPRAWL_SMOKE_TEND").is_ok_and(|v| v == "1");
+                        let mut round = 0;
+                        for d in 0..days {
                             g.sim.step_day();
+                            if tend && d % 30 == 5 {
+                                us_sim::tend(&mut g.sim, &mut round);
+                            }
                         }
                     }
                     if let Ok(spec) = std::env::var("URBAN_SPRAWL_SMOKE_UI") {
@@ -768,6 +778,10 @@ impl State {
                         });
                     });
             }
+            // URBAN_SPRAWL_SMOKE_BARE=1: a picture of the town with no interface over it
+            Screen::Game
+                if self.smoke.as_ref().is_some_and(|s| s.stage >= 2)
+                    && std::env::var("URBAN_SPRAWL_SMOKE_BARE").is_ok_and(|v| v == "1") => {}
             Screen::Game => self.game_ui(ui, &ctx, w, h),
         }
         if let Some(e) = self.error.clone() {
@@ -1239,6 +1253,7 @@ impl State {
             })
         };
         let top_y = hud.response.rect.bottom() + if compact { 6.0 } else { 12.0 };
+        g.ui.growth.top_y = top_y;
 
         if g.placed && compact {
             let dock = egui::Panel::bottom("dock")
@@ -1328,6 +1343,9 @@ impl State {
                 .next_unlock()
                 .map(|(k, n)| format!("Next: {} at {} people", k.label(), charts::group(n)));
             let mut hide_tip = false;
+            // the First goals card takes the place of the milestone goal while it is showing
+            let first_goals = g.sim.goals_visible();
+            let mut open_goal_build = None;
             if compact {
                 // one short stack: the goal on one line, then up to two news toasts
                 let wmax = (ctx.content_rect().width() - 24.0).min(340.0);
@@ -1357,13 +1375,17 @@ impl State {
                                     );
                                 });
                         }
-                        egui::Frame::new()
-                            .fill(Color32::from_rgba_unmultiplied(11, 22, 34, 215))
-                            .stroke(Stroke::new(1.0, theme::EDGE))
-                            .inner_margin(egui::Margin::symmetric(8, 4))
-                            .show(ui, |ui| {
-                                ui.label(RichText::new(goal_text).font(ui_font(12.0)).color(INK));
-                            });
+                        if !first_goals {
+                            egui::Frame::new()
+                                .fill(Color32::from_rgba_unmultiplied(11, 22, 34, 215))
+                                .stroke(Stroke::new(1.0, theme::EDGE))
+                                .inner_margin(egui::Margin::symmetric(8, 4))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(goal_text).font(ui_font(12.0)).color(INK),
+                                    );
+                                });
+                        }
                         for (text, _, bad) in g.coach.toasts.iter().rev().take(
                             if ctx.content_rect().width() > 700.0 {
                                 1
@@ -1393,6 +1415,10 @@ impl State {
                     .show(ctx, |ui| {
                         theme::panel().show(ui, |ui| {
                             ui.set_width(320.0);
+                            if first_goals {
+                                open_goal_build = g.first_goals_card(ui, ctx);
+                                return;
+                            }
                             let goal_text =
                                 |s: String| RichText::new(s).font(ui_font(16.0)).color(INK);
                             label(ui, "Goal", 12.0);
@@ -1425,6 +1451,9 @@ impl State {
             }
             if hide_tip {
                 g.coach.tip_hidden = true;
+            }
+            if let Some(k) = open_goal_build {
+                g.open_build_for(k);
             }
             // event feed
             let inset = g.right_inset();
@@ -1486,6 +1515,10 @@ impl State {
             }
             if g.ui.trams.open {
                 g.trams_ui(ctx, screen_w);
+            }
+            if g.placed && !g.sim.is_game_over() {
+                g.growth_banner_ui(ctx);
+                g.goals_ui(ctx);
             }
             g.legend_ui(ctx);
             // why panel

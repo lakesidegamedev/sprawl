@@ -124,3 +124,38 @@ fn builders_fill_streets_from_the_buildings_already_standing() {
     assert!(started > 80);
     assert!(beside * 100 >= started * 55, "{beside} of {started}");
 }
+
+#[test]
+fn mountain_towns_grow_stay_solvent_and_floods_spare_the_high_ground() {
+    for (preset, seed) in [(Preset::Gorge, 1), (Preset::Valley, 1)] {
+        let town = generate(preset, seed);
+        let s = run(&town, 7500);
+        let (income, expense) = s.monthly_flow();
+        eprintln!(
+            "{} {seed}: day {} built {} pop {} jobs {} treasury {} income {income} expense {expense} cong {:.2} left {}",
+            preset.name(),
+            s.day,
+            s.built_count(),
+            s.population(),
+            s.jobs(),
+            s.treasury,
+            s.avg_congestion(),
+            s.additions_left()
+        );
+        assert!(s.built_count() > 150, "built {}", s.built_count());
+        assert!(s.population() > 10_000, "population {}", s.population());
+        assert!(s.jobs() > 300, "jobs {}", s.jobs());
+        assert!(
+            income * 10 > expense * 7,
+            "income {income} expense {expense}"
+        );
+        assert!(
+            s.avg_congestion() < 0.8,
+            "congestion {}",
+            s.avg_congestion()
+        );
+        // enough buildable land for a town of about ten thousand
+        let lots = town.lots.len();
+        assert!(lots > 3000, "{} has {lots} lots", preset.name());
+    }
+}

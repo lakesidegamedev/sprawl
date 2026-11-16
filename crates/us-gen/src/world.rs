@@ -16,9 +16,30 @@ pub struct River {
     pub p1: f64,
     pub a2: f64,
     pub p2: f64,
+    /// A third, shorter swing and one wide bend at `bend_x`: only the river of a gorge uses them
+    /// (all zero for every other style, which leaves their rivers exactly as they were).
+    pub a3: f64,
+    pub p3: f64,
+    pub bend_x: f64,
+    pub bend: f64,
 }
 
 impl River {
+    /// A river far off the map, for towns that have none.
+    pub fn none() -> River {
+        River {
+            base: -20000.0,
+            a1: 0.0,
+            p1: 0.0,
+            a2: 0.0,
+            p2: 0.0,
+            a3: 0.0,
+            p3: 0.0,
+            bend_x: 0.0,
+            bend: 0.0,
+        }
+    }
+
     pub fn new(rng: &mut Rng) -> River {
         River {
             base: 2950.0 + rng.uniform(-120.0, 160.0),
@@ -26,11 +47,58 @@ impl River {
             p1: rng.uniform(0.0, TAU),
             a2: 50.0 * rng.uniform(0.8, 1.2),
             p2: rng.uniform(0.0, TAU),
+            a3: 0.0,
+            p3: 0.0,
+            bend_x: 0.0,
+            bend: 0.0,
+        }
+    }
+
+    /// The river of a gorge town: it runs closer to the hall, in wide slow bends.
+    pub fn gorge(rng: &mut Rng) -> River {
+        River {
+            base: 2400.0 + rng.uniform(-80.0, 80.0),
+            a1: 290.0 * rng.uniform(0.85, 1.15),
+            p1: rng.uniform(0.0, TAU),
+            a2: 72.0 * rng.uniform(0.8, 1.2),
+            p2: rng.uniform(0.0, TAU),
+            a3: 0.0 * rng.uniform(0.8, 1.2),
+            p3: rng.uniform(0.0, TAU),
+            bend_x: 2500.0 + rng.uniform(-200.0, 200.0),
+            bend: rng.uniform(150.0, 200.0),
+        }
+    }
+
+    /// The river of a mountain valley: it hugs the middle of the valley floor.
+    pub fn valley(rng: &mut Rng) -> River {
+        River {
+            base: 1720.0 + rng.uniform(-60.0, 60.0),
+            a1: 120.0 * rng.uniform(0.8, 1.2),
+            p1: rng.uniform(0.0, TAU),
+            a2: 36.0 * rng.uniform(0.8, 1.2),
+            p2: rng.uniform(0.0, TAU),
+            a3: 0.0,
+            p3: 0.0,
+            bend_x: 0.0,
+            bend: 0.0,
         }
     }
 
     pub fn y(&self, x: f64) -> f64 {
-        self.base + self.a1 * sin(x / 700.0 + self.p1) + self.a2 * sin(x / 260.0 + self.p2)
+        self.base
+            + self.a1 * sin(x / 700.0 + self.p1)
+            + self.a2 * sin(x / 260.0 + self.p2)
+            + self.a3 * sin(x / 430.0 + self.p3)
+            + self.bend * libm::exp(-((x - self.bend_x) / 520.0).powi(2))
+    }
+
+    /// Slope of the centre line (dy/dx).
+    pub fn dy(&self, x: f64) -> f64 {
+        let u = (x - self.bend_x) / 520.0;
+        self.a1 / 700.0 * cos(x / 700.0 + self.p1)
+            + self.a2 / 260.0 * cos(x / 260.0 + self.p2)
+            + self.a3 / 430.0 * cos(x / 430.0 + self.p3)
+            - self.bend * 2.0 * u / 520.0 * libm::exp(-u * u)
     }
 
     /// Closed polygon of the strip between offsets `off0` and `off1` from the centre line,

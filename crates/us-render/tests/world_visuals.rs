@@ -256,6 +256,9 @@ fn calendar_steps() {
     assert_eq!(at(6.0).phase(), DayPhase::Dawn);
     assert_eq!(at(12.0).lit_windows(), 0.0);
     assert!(at(22.0).lit_windows() > at(18.0).lit_windows());
+    // fewer windows stay lit in the small hours, and the evening peak is untouched
+    assert!(at(3.0).lit_windows() < at(22.0).lit_windows() * 0.7);
+    assert!(at(3.0).lit_windows() > 0.2);
     // smooth: no jump between neighbouring minutes, at any hour
     for m in 0..24 * 60 - 1 {
         let (a, b) = (at(m as f32 / 60.0), at((m + 1) as f32 / 60.0));
