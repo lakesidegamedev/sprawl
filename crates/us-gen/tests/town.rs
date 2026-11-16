@@ -1,7 +1,7 @@
 //! Independent checks on generated towns. Nothing here reuses generator internals.
 
 use std::collections::HashMap;
-use us_gen::{Preset, Pt, Road, RoadClass, Town, Zone, generate};
+use us_gen::{Preset, Pt, Road, RoadClass, Town, Zone, generate, pt};
 
 const SEEDS: [u64; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 const PRESETS: [Preset; 9] = Preset::ALL;
@@ -442,6 +442,37 @@ fn version_one_towns_are_unchanged() {
 }
 
 #[test]
+fn version_three_towns_of_the_five_first_styles_are_unchanged() {
+    // the newer styles must never reach the code of the five 1.0 styles
+    let known = [
+        (Preset::Grid, 1, 0x3226_bdf6_1bd7_8561u64),
+        (Preset::Grid, 2, 0x5687_d114_417a_755au64),
+        (Preset::Grid, 3, 0x1c0f_6c12_41e0_d3d2u64),
+        (Preset::Grid, 4, 0xfc08_ddb4_7d49_9082u64),
+        (Preset::Winding, 1, 0xd3a6_774c_9a5a_64c2u64),
+        (Preset::Winding, 2, 0x14c0_9d25_3ced_f9a4u64),
+        (Preset::Winding, 3, 0x9b92_0a40_c5ac_6f41u64),
+        (Preset::Winding, 4, 0x925e_d1e3_181f_f426u64),
+        (Preset::Sunbelt, 1, 0x7924_7572_1d1c_c46bu64),
+        (Preset::Sunbelt, 2, 0x1d8d_5cb0_0965_d273u64),
+        (Preset::Sunbelt, 3, 0x1b62_1a2d_c6a1_c1a6u64),
+        (Preset::Sunbelt, 4, 0x8488_0390_cd6d_7458u64),
+        (Preset::Crossroads, 1, 0x7c3b_9f12_b203_fda1u64),
+        (Preset::Crossroads, 2, 0x150f_bd21_9114_c683u64),
+        (Preset::Crossroads, 3, 0x17be_ddd8_bfc3_a0e5u64),
+        (Preset::Crossroads, 4, 0xcb12_31c1_3de7_de5au64),
+        (Preset::LakeTown, 1, 0x2fe9_0211_b2a6_62d9u64),
+        (Preset::LakeTown, 2, 0xa77f_d1b4_ddc0_2de0u64),
+        (Preset::LakeTown, 3, 0x812d_7986_5c3a_7addu64),
+        (Preset::LakeTown, 4, 0x5b9a_e8b9_ca1e_764du64),
+    ];
+    for (p, s, fp) in known {
+        let t = us_gen::generate_version(p, s, 3);
+        assert_eq!(t.fingerprint(), fp, "{} seed {s}", p.name());
+    }
+}
+
+#[test]
 fn version_two_towns_are_unchanged() {
     // saves from 1.0.0 and 1.0.1 rebuild their town with generator version 2
     let known = [
@@ -822,8 +853,17 @@ fn ground_is_flat_at_the_hall_and_steep_ground_is_unbuilt() {
             t.preset.name(),
             t.seed
         );
+        // the mountain valley is mostly mountain: its steep share is the point of the style
+        // (a little over half may be steep there; a quarter everywhere else)
+        let limit = if t.preset == Preset::Valley {
+            cells * 6 / 10
+        } else if t.preset == Preset::Gorge {
+            cells * 2 / 5
+        } else {
+            cells / 4
+        };
         assert!(
-            steep * 4 < cells,
+            steep < limit,
             "{} seed {}: too much steep ground",
             t.preset.name(),
             t.seed
@@ -1083,4 +1123,385 @@ fn version_three_towns_have_ramps_between_highway_and_arterial() {
         }
     }
     assert!(ramps >= 20, "only {ramps} ramps in 60 towns");
+}
+
+// ---- river gorge and mountain valley ----
+
+fn style_towns(p: Preset) -> impl Iterator<Item = &'static Town> {
+    towns().iter().filter(move |t| t.preset == p)
+}
+
+/// Heights along a road with the stretches that stand on a bridge left out: where the ground
+/// falls well below the straight line between the ground 120 m before and 120 m after, the road
+/// is carried across and does not follow the ground.
+fn climbs_on_the_ground(t: &Town, r: &Road) -> Vec<f64> {
+    // resampled every 10 m along the road
+    let mut pts: Vec<Pt> = vec![r.points[0]];
+    let mut carry = 0.0;
+    for w in r.points.windows(2) {
+        let l = d(w[0], w[1]);
+        let mut at = 10.0 - carry;
+        while at <= l {
+            pts.push(w[0].lerp(w[1], at / l));
+            at += 10.0;
+        }
+        carry = l - (at - 10.0);
+    }
+    let h: Vec<f64> = pts.iter().map(|p| t.height_at(*p)).collect();
+    let n = pts.len();
+    let reach = 80usize; // 800 m: the widest span
+    let carried: Vec<bool> = (0..n)
+        .map(|i| {
+            let a = i.saturating_sub(reach);
+            let b = (i + reach).min(n - 1);
+            let top_l = h[a..=i].iter().cloned().fold(f64::MIN, f64::max);
+            let top_r = h[i..=b].iter().cloned().fold(f64::MIN, f64::max);
+            top_l.min(top_r) - h[i] > 12.0
+        })
+        .collect();
+    // the abutments at both ends of a span count as part of it
+    let near_span: Vec<bool> = (0..n)
+        .map(|i| {
+            carried[i.saturating_sub(3)..(i + 4).min(n)]
+                .iter()
+                .any(|&c| c)
+        })
+        .collect();
+    let mut grades = Vec::new();
+    // grade over 30 m: a hairpin may have a short steeper bend
+    for i in 0..n.saturating_sub(3) {
+        if !near_span[i..=i + 3].iter().any(|&c| c) {
+            grades.push(((h[i + 3] - h[i]) / d(pts[i], pts[i + 3])).abs());
+        }
+    }
+    grades
+}
+
+#[test]
+fn mountain_roads_stay_within_a_grade_a_road_can_climb() {
+    for p in [Preset::Gorge, Preset::Valley] {
+        for t in style_towns(p) {
+            for (i, r) in t.roads.iter().enumerate() {
+                // streets and collectors inside a patch follow the shared street code on ground the lots allow
+                if !matches!(r.class, RoadClass::Highway | RoadClass::Arterial) {
+                    continue;
+                }
+                let g = climbs_on_the_ground(t, r);
+                if g.len() < 20 {
+                    continue;
+                }
+                let mean = g.iter().sum::<f64>() / g.len() as f64;
+                let worst = g.iter().cloned().fold(0.0, f64::max);
+                // a hairpin road on a gully may be steeper than a street, never past a third
+                assert!(
+                    mean < 0.1 && worst < 0.34,
+                    "{} seed {}: road {i} ({}) climbs at mean {mean:.3}, worst {worst:.3}",
+                    p.name(),
+                    t.seed,
+                    r.class.name()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_gorge_is_deep_and_the_main_road_crosses_it_on_a_bridge() {
+    for t in style_towns(Preset::Gorge) {
+        let mut lo = f64::MAX;
+        let mut hi = f64::MIN;
+        for i in 0..80 {
+            for j in 0..80 {
+                let h = t.height_at(pt(i as f64 * 51.0, 300.0 + j as f64 * 45.0));
+                lo = lo.min(h);
+                hi = hi.max(h);
+            }
+        }
+        assert!(
+            hi - lo > 280.0,
+            "gorge seed {}: only {:.0} m deep",
+            t.seed,
+            hi - lo
+        );
+        // a road that goes down into the gorge and up again is carried over it
+        let spans = t
+            .roads
+            .iter()
+            .filter(|r| matches!(r.class, RoadClass::Arterial | RoadClass::Highway))
+            .filter(|r| {
+                let h: Vec<f64> = r.points.iter().map(|p| t.height_at(*p)).collect();
+                let samples: Vec<f64> = {
+                    let mut v = Vec::new();
+                    for w in r.points.windows(2) {
+                        let k = ((d(w[0], w[1]) / 10.0).ceil() as usize).max(1);
+                        for i in 0..k {
+                            v.push(t.height_at(w[0].lerp(w[1], i as f64 / k as f64)));
+                        }
+                    }
+                    v
+                };
+                let _ = h;
+                samples.windows(40).any(|w| {
+                    let top = w[0].min(w[w.len() - 1]);
+                    let bottom = w.iter().cloned().fold(f64::MAX, f64::min);
+                    top - bottom > 120.0
+                })
+            })
+            .count();
+        assert!(
+            spans >= 2,
+            "gorge seed {}: {spans} roads span a gorge",
+            t.seed
+        );
+    }
+}
+
+#[test]
+fn the_gorge_has_a_flat_bench_and_a_switchback_down_to_it() {
+    for t in style_towns(Preset::Gorge) {
+        // lots on the bench: low ground, a few hundred metres above nothing
+        let low: Vec<&us_gen::Lot> = t
+            .lots
+            .iter()
+            .filter(|l| t.height_at(l.centre) < 8.0)
+            .collect();
+        assert!(
+            low.len() >= 20,
+            "gorge seed {}: {} lots on the riverside flat",
+            t.seed,
+            low.len()
+        );
+        // the switchback is a long road with many turns that ends on the flat
+        let sw = t.roads.iter().find(|r| {
+            r.class == RoadClass::Arterial
+                && t.height_at(*r.points.last().unwrap()) < 8.0
+                && t.height_at(r.points[0]) > 150.0
+        });
+        let sw = sw.unwrap_or_else(|| panic!("gorge seed {}: no road down to the flat", t.seed));
+        // count the hairpins: where the road turns back on itself along the gully
+        let mut turns = 0;
+        let mut last_dir = 0.0f64;
+        let mut prev = sw.points[0];
+        for p in sw.points.iter().skip(1) {
+            if d(prev, *p) < 25.0 {
+                continue;
+            }
+            let dir = (p.x - prev.x).signum();
+            if last_dir != 0.0 && dir != last_dir {
+                turns += 1;
+            }
+            last_dir = dir;
+            prev = *p;
+        }
+        assert!(
+            turns >= 8,
+            "gorge seed {}: switchback has only {turns} bends",
+            t.seed
+        );
+    }
+}
+
+#[test]
+fn floods_reach_only_the_low_flat_of_a_gorge() {
+    for t in style_towns(Preset::Gorge) {
+        let near_water: usize = t
+            .lots
+            .iter()
+            .filter(|l| t.height_at(l.centre) < 12.0)
+            .count();
+        let all = t.lots.len();
+        assert!(
+            near_water * 20 < all,
+            "gorge seed {}: {near_water} of {all} lots on the floor",
+            t.seed
+        );
+    }
+}
+
+#[test]
+fn the_valley_floor_is_the_town_and_ridges_stand_far_above() {
+    for t in style_towns(Preset::Valley) {
+        let mut hi = f64::MIN;
+        for i in 0..80 {
+            for j in 0..80 {
+                hi = hi.max(t.height_at(pt(i as f64 * 51.0, 100.0 + j as f64 * 49.0)));
+            }
+        }
+        assert!(hi > 600.0, "valley seed {}: peaks only {hi:.0} m", t.seed);
+        let low = t
+            .lots
+            .iter()
+            .filter(|l| t.height_at(l.centre) < 90.0)
+            .count();
+        assert!(
+            low * 10 > t.lots.len() * 9,
+            "valley seed {}: lots up the slopes",
+            t.seed
+        );
+        assert!(
+            t.lots.len() > 3500,
+            "valley seed {}: only {} lots",
+            t.seed,
+            t.lots.len()
+        );
+        // a road runs the length of the valley, and one goes up each side valley
+        let long = t
+            .roads
+            .iter()
+            .filter(|r| {
+                r.class == RoadClass::Arterial && d(r.points[0], *r.points.last().unwrap()) > 3500.0
+            })
+            .count();
+        assert!(long >= 2, "valley seed {}: {long} long roads", t.seed);
+    }
+}
+
+/// A road resampled every 5 m: ground heights and distances along it, as the renderer does.
+fn ground_profile(t: &Town, r: &Road) -> (Vec<f32>, Vec<f32>) {
+    let (mut ground, mut cum) = (Vec::new(), Vec::new());
+    let mut s = 0.0f64;
+    for (i, w) in r.points.windows(2).enumerate() {
+        let l = d(w[0], w[1]);
+        let k = ((l / 5.0).ceil() as usize).max(1);
+        for j in 0..k {
+            let p = w[0].lerp(w[1], j as f64 / k as f64);
+            ground.push(t.height_at(p) as f32);
+            cum.push((s + l * j as f64 / k as f64) as f32);
+        }
+        s += l;
+        if i + 2 == r.points.len() {
+            ground.push(t.height_at(w[1]) as f32);
+            cum.push(s as f32);
+        }
+    }
+    (ground, cum)
+}
+
+#[test]
+fn gorge_roads_never_drive_down_a_wall_and_bridges_stand_at_rim_height() {
+    for t in style_towns(Preset::Gorge) {
+        let mut bridges = 0;
+        for (i, r) in t.roads.iter().enumerate() {
+            // streets inside a patch follow the shared street code on ground the lots allow
+            if r.class == RoadClass::Local {
+                continue;
+            }
+            let (g, c) = ground_profile(t, r);
+            if g.len() < 3 {
+                continue;
+            }
+            let decks = us_gen::bridges::high_decks(&g, &c);
+            let worst = us_gen::bridges::surface_grade(&g, &c, &decks);
+            let surface = |k: usize| g[k] + (decks.z[k] - g[k]) * decks.weight[k];
+            // the road as built (deck or ground) never climbs more than the limit anywhere,
+            // approaches to a bridge included
+            let limit = 0.3;
+            assert!(
+                worst <= limit,
+                "gorge seed {}: road {i} ({}) climbs at {worst:.3}",
+                t.seed,
+                r.class.name()
+            );
+            // the switchback keeps an even, climbable grade on its legs
+            if g.iter().any(|&h| h < 8.0) && g[0] > 150.0 {
+                let mut grades: Vec<f32> = (1..g.len())
+                    .map(|k| ((surface(k) - surface(k - 1)) / (c[k] - c[k - 1]).max(1e-3)).abs())
+                    .collect();
+                let mean = grades.iter().sum::<f32>() / grades.len() as f32;
+                grades.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let p95 = grades[grades.len() * 95 / 100];
+                assert!(
+                    mean < 0.12 && p95 < 0.16,
+                    "gorge seed {}: switchback mean {mean:.3}, p95 {p95:.3}",
+                    t.seed
+                );
+            }
+            // a main road that does not end on the low flat stays near rim height
+            let low_end = g.iter().any(|&h| h < 60.0);
+            if matches!(r.class, RoadClass::Arterial | RoadClass::Highway) && !low_end {
+                let top = (0..g.len()).map(surface).fold(f32::MIN, f32::max);
+                let bottom = (0..g.len()).map(surface).fold(f32::MAX, f32::min);
+                assert!(
+                    top - bottom < 70.0,
+                    "gorge seed {}: road {i} drops {:.0} m",
+                    t.seed,
+                    top - bottom
+                );
+            }
+            // decks: rim to rim, standing within a few metres of the rim they start from
+            let mut k = 0;
+            while k < g.len() {
+                if decks.weight[k] > 0.999 && (decks.z[k] - g[k]).abs() < 4.0 {
+                    let mut e = k;
+                    while e + 1 < g.len() && decks.weight[e + 1] > 0.999 {
+                        e += 1;
+                    }
+                    let deepest = (k..=e).map(|q| g[q]).fold(f32::MAX, f32::min);
+                    if decks.z[k] - deepest > 100.0 {
+                        bridges += 1;
+                        assert!(
+                            (decks.z[k] - g[k]).abs() < 4.0 && (decks.z[e] - g[e]).abs() < 4.0,
+                            "gorge seed {}: deck is not at rim height at its ends",
+                            t.seed
+                        );
+                    }
+                    k = e + 1;
+                } else {
+                    k += 1;
+                }
+            }
+        }
+        assert!(bridges >= 1, "gorge seed {}: no high bridge", t.seed);
+    }
+}
+
+#[test]
+fn the_gorge_river_meanders_and_the_valley_has_peaks_of_different_heights() {
+    for t in style_towns(Preset::Gorge) {
+        // the river is the lowest line: follow the lowest sample across each column
+        let mut ys = Vec::new();
+        for i in 0..40 {
+            let x = 100.0 + i as f64 * 95.0;
+            let mut best = (f64::MAX, 0.0);
+            for j in 0..400 {
+                let y = 1200.0 + j as f64 * 5.0;
+                let h = t.height_at(pt(x, y));
+                if h < best.0 {
+                    best = (h, y);
+                }
+            }
+            ys.push(best.1);
+        }
+        let lo = ys.iter().cloned().fold(f64::MAX, f64::min);
+        let hi = ys.iter().cloned().fold(f64::MIN, f64::max);
+        assert!(
+            hi - lo > 300.0,
+            "gorge seed {}: river wanders {:.0} m",
+            t.seed,
+            hi - lo
+        );
+    }
+    for t in style_towns(Preset::Valley) {
+        let mut tops = Vec::new();
+        for b in 0..9 {
+            let mut top = f64::MIN;
+            for i in 0..40 {
+                for j in 0..40 {
+                    let p = pt(
+                        100.0 + b as f64 * 430.0 + i as f64 * 10.0,
+                        2100.0 + j as f64 * 30.0,
+                    );
+                    top = top.max(t.height_at(p));
+                }
+            }
+            tops.push(top);
+        }
+        let lo = tops.iter().cloned().fold(f64::MAX, f64::min);
+        let hi = tops.iter().cloned().fold(f64::MIN, f64::max);
+        assert!(
+            hi - lo > 120.0,
+            "valley seed {}: ridge heights {lo:.0} to {hi:.0}",
+            t.seed
+        );
+    }
 }

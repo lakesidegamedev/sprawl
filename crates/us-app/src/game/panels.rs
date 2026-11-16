@@ -864,6 +864,12 @@ impl Game {
                     self.hour_frozen = true;
                 }
                 "pause" => self.speed = 0,
+                "town" => {
+                    // the town hall from `n` metres away, for a screenshot
+                    let h = self.town.hall;
+                    self.cam
+                        .look_at(Vec3::new(h.x as f32, h.y as f32, 0.0), n.max(300) as f32);
+                }
                 "zoom" => {
                     if let Some(Sel::Lot(i)) = self.sel {
                         let p = self.sim.lots()[i].pos;

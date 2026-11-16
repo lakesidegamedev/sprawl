@@ -10,6 +10,7 @@ struct Globals {
     tone: vec4<f32>,   // rgb flat tint of the whole picture, a share of lit windows
     look: vec4<f32>,   // x season (1 autumn, 2 spring, 3 summer), y snow, z map view (desaturate), w share of lamps and vehicle lights on (0 to 1)
     wx: vec4<f32>,     // x snow cover 0 to 1, y wet ground, zw wind (east, north) in m/s
+    rock: array<vec4<f32>, 8>, // rows 0 to 3 strata colours, 4 talus, 5 (snow line, tree line, band height, on), 6 (snow rgb, winter drop)
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -407,10 +408,85 @@ fn season_leaf(step: i32, dark: bool, season: i32) -> vec3<f32> {
     return vec3<f32>(64.0, 134.0, 58.0) / 255.0;
 }
 
+
+// Natural ground of a land with a rock look: grass on gentle slopes, forest on the lower
+// mountainsides, stone below faces, rock on steep slopes (stepped strata, or fractured granite),
+// bare ground above the tree line and a clean snow cap above the snow line.
+fn terrain_look(world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let grass = vec3<f32>(116.0, 172.0, 92.0) / 255.0;
+    if (g.rock[5].w < 0.5 || g.look.z > 0.5) {
+        return grass;
+    }
+    let z = world.z;
+    let s = sqrt(max(1.0 - n.z * n.z, 0.0)) / max(n.z, 0.01);
+    let big = vnoise(world.xy / 11.0);
+    let fine = vnoise(world.xy / 3.5);
+    let wide = vnoise(world.xy / 90.0);
+    let forest_s = g.rock[7].y;
+    let tree_line = g.rock[5].y + (wide - 0.5) * 70.0;
+    let rock_s = 0.7 + (big - 0.5) * 0.14;
+    let talus_s = 0.45 + (big - 0.5) * 0.1;
+    // the snow edge wanders slowly, so the cap has a clean outline
+    let snow_line = g.rock[5].x - g.wx.x * g.rock[6].w + (wide - 0.5) * 50.0;
+    if (z > snow_line && s < rock_s + 0.4) {
+        return g.rock[6].rgb;
+    }
+    if (forest_s > 0.0 && z < tree_line && s > 0.14 && s < forest_s) {
+        // forest canopy: two greens in clumps
+        let c = vnoise(world.xy / 7.0);
+        if (c > 0.55) {
+            return vec3<f32>(52.0, 112.0, 62.0) / 255.0;
+        }
+        return vec3<f32>(66.0, 130.0, 70.0) / 255.0;
+    }
+    if (s > rock_s) {
+        if (g.rock[7].x > 0.5) {
+            // fractured granite: irregular blocks and cracks, no stripes
+            let blk = vnoise(world.xy / 6.0 + vec2<f32>(z / 8.0, -z / 6.0));
+            let blk2 = vnoise(world.xy / 17.0 + vec2<f32>(-z / 21.0, z / 13.0));
+            var pick = 1u;
+            if (blk2 > 0.62) {
+                pick = 3u;
+            } else if (blk2 < 0.34) {
+                pick = 0u;
+            }
+            if (blk < 0.22) {
+                pick = 2u;
+            }
+            return g.rock[pick].rgb;
+        }
+        let band = floor((z + (fine - 0.5) * 1.6) / g.rock[5].z);
+        let pick = hash_u(u32(i32(band) + 65536)) % 4u;
+        return g.rock[pick].rgb;
+    }
+    if (s > talus_s) {
+        var tc = g.rock[4].rgb;
+        if (fine > 0.72) {
+            tc = tc * 0.9;
+        }
+        return tc;
+    }
+    if (z > tree_line) {
+        // alpine meadow thinning to scree with height
+        let up = clamp((z - tree_line) / 180.0, 0.0, 1.0);
+        if (big < up * 0.9) {
+            return g.rock[4].rgb;
+        }
+        return mix(grass, vec3<f32>(128.0, 160.0, 96.0) / 255.0, 0.5);
+    }
+    return grass;
+}
+
 @fragment
 fn fs_main(v: VOut) -> FOut {
     let n = normalize(v.normal);
-    let l = dot(n, g.sun.xyz);
+    var l = dot(n, g.sun.xyz);
+    // the true normal of the triangle: steep rock is shaded in flat facets, not in the smooth
+    // gradients that interpolated vertex normals give on a coarse grid
+    var facet = normalize(cross(dpdx(v.world), dpdy(v.world)));
+    if (dot(facet, n) < 0.0) {
+        facet = -facet;
+    }
     var col = v.color.rgb;
     let a = v.color.a;
     let cel = a > 0.5;
@@ -420,6 +496,12 @@ fn fs_main(v: VOut) -> FOut {
     if (v.tint != 0u) {
         if (near(col, 255.0, 0.0, 255.0)) {
             col = vec3<f32>(f32((v.tint >> 16u) & 255u), f32((v.tint >> 8u) & 255u), f32(v.tint & 255u)) / 255.0;
+        }
+    }
+    if (ground && abs(col.r * 255.0 - 116.0) < 0.6 && abs(col.g * 255.0 - 172.0) < 0.6 && abs(col.b * 255.0 - 95.0) < 0.6) {
+        col = terrain_look(v.world, n);
+        if (g.rock[5].w > 0.5 && g.look.z < 0.5 && n.z < 0.9) {
+            l = dot(facet, g.sun.xyz);
         }
     }
     var emissive = false;

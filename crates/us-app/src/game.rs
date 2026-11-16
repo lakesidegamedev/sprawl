@@ -453,6 +453,7 @@ impl State {
         g.cam.keys(dt, pan, rot, fast);
         let (gx, gy) = g.cam.goal_xy();
         g.cam.follow_ground(g.live.ground_at(gx, gy));
+        g.cam.clear_of_terrain(g.live.land());
         g.cam.update(dt);
         if let Some((b, t)) = g.banner.as_mut() {
             *t -= dt;

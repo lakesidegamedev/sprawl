@@ -29,8 +29,35 @@ impl River {
         }
     }
 
+    /// The river of a gorge town: it runs closer to the hall, in wide slow bends.
+    pub fn gorge(rng: &mut Rng) -> River {
+        River {
+            base: 2180.0 + rng.uniform(-80.0, 80.0),
+            a1: 290.0 * rng.uniform(0.85, 1.15),
+            p1: rng.uniform(0.0, TAU),
+            a2: 72.0 * rng.uniform(0.8, 1.2),
+            p2: rng.uniform(0.0, TAU),
+        }
+    }
+
+    /// The river of a mountain valley: it hugs the middle of the valley floor.
+    pub fn valley(rng: &mut Rng) -> River {
+        River {
+            base: 1720.0 + rng.uniform(-60.0, 60.0),
+            a1: 120.0 * rng.uniform(0.8, 1.2),
+            p1: rng.uniform(0.0, TAU),
+            a2: 36.0 * rng.uniform(0.8, 1.2),
+            p2: rng.uniform(0.0, TAU),
+        }
+    }
+
     pub fn y(&self, x: f64) -> f64 {
         self.base + self.a1 * sin(x / 700.0 + self.p1) + self.a2 * sin(x / 260.0 + self.p2)
+    }
+
+    /// Slope of the centre line (dy/dx).
+    pub fn dy(&self, x: f64) -> f64 {
+        self.a1 / 700.0 * cos(x / 700.0 + self.p1) + self.a2 / 260.0 * cos(x / 260.0 + self.p2)
     }
 
     /// Closed polygon of the strip between offsets `off0` and `off1` from the centre line,
