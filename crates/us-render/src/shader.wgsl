@@ -477,6 +477,18 @@ fn terrain_look(world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     return grass;
 }
 
+// ---- building facades: which windows are lit. Flat colour only, no glow. One building's
+// windows (a run of consecutive ids) share a habit: some buildings keep many lights on, some
+// few. Dark shop glass is lit more often than house glass, so shop fronts read at night.
+fn window_lit(id: u32, shop: bool) -> bool {
+    let habit = 0.45 + 1.1 * f32(hash_u(id / 48u) % 1000u) / 1000.0;
+    var share = g.tone.w * habit;
+    if (shop) {
+        share = g.tone.w * 1.4 + 0.1;
+    }
+    return f32(hash_u(id) % 1000u) < share * 1000.0;
+}
+
 @fragment
 fn fs_main(v: VOut) -> FOut {
     let n = normalize(v.normal);
@@ -587,7 +599,7 @@ fn fs_main(v: VOut) -> FOut {
         }
         // lit windows and headlights
         if (!cel && g.tone.w > 0.0 && (near(col, 98.0, 156.0, 204.0) || near(col, 64.0, 88.0, 118.0))) {
-            if (f32(hash_u(v.id) % 1000u) < g.tone.w * 1000.0) {
+            if (window_lit(v.id, near(col, 64.0, 88.0, 118.0))) {
                 col = vec3<f32>(255.0, 218.0, 112.0) / 255.0;
                 emissive = true;
             }

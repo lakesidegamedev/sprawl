@@ -101,7 +101,22 @@ impl Calendar {
     /// Share of windows that are lit, 0 to 1. Rises through the evening so windows come on a
     /// few at a time, and falls again through the morning.
     pub fn lit_windows(&self) -> f32 {
-        0.75 * smooth(((self.darkness() - 0.05) / 0.8).clamp(0.0, 1.0))
+        0.75 * smooth(((self.darkness() - 0.05) / 0.8).clamp(0.0, 1.0)) * self.late_share()
+    }
+
+    /// Fewer windows stay lit in the small hours: full until 23:00, about half by 03:00, back to
+    /// full as the morning comes on at 05:00.
+    fn late_share(&self) -> f32 {
+        let h = self.hour.rem_euclid(24.0);
+        if h >= 23.0 {
+            1.0 - 0.15 * (h - 23.0)
+        } else if h < 3.0 {
+            0.85 - 0.35 * (h / 3.0)
+        } else if h < 5.0 {
+            0.5 + 0.5 * ((h - 3.0) / 2.0)
+        } else {
+            1.0
+        }
     }
 
     /// Share of vehicle lights and street lamps that are on, 0 to 1 (they come on a little

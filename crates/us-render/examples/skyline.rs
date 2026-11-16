@@ -6,7 +6,7 @@
 use glam::Vec3;
 use std::path::PathBuf;
 use us_gen::{LotKind, Preset, StationKind, generate};
-use us_render::{Camera, LotState, Renderer, Scene, Style};
+use us_render::{Calendar, Camera, LotState, Renderer, Scene, Style};
 
 fn mature_level(kind: LotKind, density: f64) -> u8 {
     let top = match kind {
@@ -31,6 +31,9 @@ fn main() {
         .and_then(|n| Preset::from_name(&n))
         .unwrap_or(Preset::Grid);
     let seed: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+    // optional hour of day (0 to 24) for a night look, and a view filter
+    let hour: Option<f32> = args.next().and_then(|s| s.parse().ok());
+    let only: Option<String> = args.next();
     std::fs::create_dir_all(&out).expect("create output dir");
     let town = generate(preset, seed);
     let mut scene = Scene::from_town(&town);
@@ -41,6 +44,9 @@ fn main() {
         .map(|(i, l)| (i, Some(mature_level(l.kind, l.density)), LotState::Normal))
         .collect();
     scene.set_lots(&changes);
+    if let Some(h) = hour {
+        scene.set_calendar(Some(Calendar::from_date(6, 21, h)));
+    }
     let mut r = Renderer::new().expect("adapter");
     let (w, h) = (1600u32, 1000u32);
     let aspect = w as f32 / h as f32;
@@ -49,6 +55,47 @@ fn main() {
         ("downtown", hall, 420.0, 30.0, 32.0),
         ("downtown-close", hall, 200.0, 210.0, 28.0),
     ];
+    // a close look at the first lot of some kinds: a street of houses, a shop strip, industry
+    for (name, kinds, ext) in [
+        ("houses", &[LotKind::House][..], 110.0),
+        ("shops", &[LotKind::Strip, LotKind::Shop][..], 110.0),
+        (
+            "industry",
+            &[LotKind::Workshop, LotKind::Warehouse][..],
+            130.0,
+        ),
+    ] {
+        // the lot of this kind with the most neighbours of the same kind within 70 m
+        let near = |a: &us_gen::Lot| {
+            town.lots
+                .iter()
+                .filter(|b| {
+                    kinds.contains(&b.kind)
+                        && (b.centre.x - a.centre.x).hypot(b.centre.y - a.centre.y) < 70.0
+                })
+                .count()
+        };
+        let best = town
+            .lots
+            .iter()
+            .filter(|l| kinds.contains(&l.kind) && l.density > 0.15)
+            .max_by_key(|l| near(l));
+        if let Some(l) = best {
+            views.push((
+                name,
+                Vec3::new(l.centre.x as f32, l.centre.y as f32, 0.0),
+                ext,
+                (l.facing.to_degrees() as f32) + 200.0,
+                34.0,
+            ));
+        }
+    }
+    // street level, eye-ish height, on the same lot as the "houses" view
+    if let Some(v) = views.iter().find(|v| v.0 == "houses").copied() {
+        views.push(("street", v.1, 52.0, v.3, 13.0));
+    }
+    views.push(("plaza", hall, 85.0, 300.0, 27.0));
+    views.push(("whole", Vec3::new(2048.0, 1900.0, 0.0), 4200.0, 30.0, 48.0));
     if let Some(st) = town.stations.iter().find(|s| s.kind == StationKind::Depot) {
         views.push((
             "station",
@@ -72,6 +119,9 @@ fn main() {
         ));
     }
     for (name, target, ext, yaw, pitch) in views {
+        if only.as_deref().is_some_and(|o| o != name) {
+            continue;
+        }
         let target = Vec3::new(target.x, target.y, scene.height_at(target.x, target.y));
         let cam = Camera::framing(target, ext, aspect, yaw, pitch);
         let style = Style {
@@ -81,7 +131,8 @@ fn main() {
             ..Style::default()
         };
         let f = r.render_to_rgba(&scene, &cam, &style, w, h);
-        let path = out.join(format!("{}-{seed}-{name}.png", preset.name()));
+        let tag = hour.map_or(String::new(), |h| format!("-h{h}"));
+        let path = out.join(format!("{}-{seed}-{name}{tag}.png", preset.name()));
         image::save_buffer(&path, &f.rgba, f.width, f.height, image::ColorType::Rgba8)
             .expect("write png");
         eprintln!("{}", path.display());
