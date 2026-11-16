@@ -545,6 +545,7 @@ impl<'a> Ctx<'a> {
             && p.x < self.t.size - 4.0
             && p.y < self.t.size - 4.0
             && !self.water(p)
+            && !self.land.wet_shelf(p.x as f32, p.y as f32)
             && self.roads.clearance(p) > road
             && !self.near_lot(p, 2.5)
     }

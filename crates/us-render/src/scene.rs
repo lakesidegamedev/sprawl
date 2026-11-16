@@ -829,6 +829,9 @@ fn build_chunks(t: &Town, land: &Land) -> (TownData, Vec<Chunk>) {
                 placed.push([lx, ly]);
                 let (rad, h) = (rng.range(1.8, 2.8), rng.range(5.0, 8.0));
                 let (tx, ty) = (x + ct * lx - st * ly, y + st * lx + ct * ly);
+                if land.wet_shelf(tx, ty) {
+                    continue;
+                }
                 let col = kit::tree_variant(rng.pick(&green), tx, ty);
                 raw.push((kit::tree(rad, h, col), tx, ty, 0.0, land.height(tx, ty)));
                 break;
@@ -839,7 +842,11 @@ fn build_chunks(t: &Town, land: &Land) -> (TownData, Vec<Chunk>) {
     // street trees and the grounds around the lots
     {
         let objs: Vec<&Obj> = looks.iter().map(|l| &l.original).collect();
-        raw.extend(crate::decor::build(t, land, &objs));
+        raw.extend(
+            crate::decor::build(t, land, &objs)
+                .into_iter()
+                .filter(|r| !land.wet_shelf(r.1, r.2)),
+        );
     }
 
     // trees in open park land
@@ -872,7 +879,9 @@ fn build_chunks(t: &Town, land: &Land) -> (TownData, Vec<Chunk>) {
             if !in_ring(p, &a.polygon) || grid.clearance(p) < 5.0 {
                 continue;
             }
-            if t.lots.iter().any(|l| l.centre.dist(p) < l.radius + 3.0) {
+            if t.lots.iter().any(|l| l.centre.dist(p) < l.radius + 3.0)
+                || land.wet_shelf(p.x as f32, p.y as f32)
+            {
                 continue;
             }
             let (rad, h) = if woods {

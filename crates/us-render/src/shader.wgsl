@@ -504,7 +504,7 @@ fn window_lit(id: u32, shop: bool) -> bool {
 
 @fragment
 fn fs_main(v: VOut) -> FOut {
-    let n = normalize(v.normal);
+    var n = normalize(v.normal);
     var l = dot(n, g.sun.xyz);
     // the true normal of the triangle: steep rock is shaded in flat facets, not in the smooth
     // gradients that interpolated vertex normals give on a coarse grid
@@ -528,12 +528,19 @@ fn fs_main(v: VOut) -> FOut {
         if (g.rock[5].w > 0.5 && g.look.z < 0.5 && n.z < 0.9) {
             l = dot(facet, g.sun.xyz);
         }
-    } else if (ground && g.rock[7].z > 0.5 && g.look.z < 0.5 && n.z < 0.92) {
-        // looks with CPU ground colours: only steep ground is repainted here
-        col = terrain_look(v.world, n, col);
-        if (n.z < 0.9) {
-            l = dot(facet, g.sun.xyz);
+    } else if (ground && g.rock[7].z > 0.5 && g.look.z < 0.5 && (n.z < 0.92 || facet.z < 0.9)) {
+        // looks with CPU ground colours: only steep ground is repainted here. A wall is judged by
+        // the true normal of its triangle, and lit as if upright: the coarse grid makes tilted
+        // triangles at the foot of a cliff whose sun facing left tall pale spikes on the rock.
+        if (facet.z < 0.9) {
+            n = facet;
+            if (facet.z < 0.86) {
+                let h = normalize(v.normal.xy + vec2<f32>(0.0001, 0.0));
+                n = normalize(vec3<f32>(h * 0.97, 0.24));
+            }
+            l = dot(n, g.sun.xyz);
         }
+        col = terrain_look(v.world, n, col);
     }
     var emissive = false;
     let season = i32(g.look.x + 0.5);

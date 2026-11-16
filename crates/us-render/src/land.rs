@@ -258,6 +258,14 @@ impl Land {
         (1.0 - n[2] * n[2]).max(0.0).sqrt() / n[2].max(0.01)
     }
 
+    /// True on the bare wet rock shelf at the foot of a sea cliff, where nothing grows.
+    pub fn wet_shelf(&self, x: f32, y: f32) -> bool {
+        let Some((_, below)) = self.inner.rock.and_then(|r| r.ground).and_then(|g| g.shelf) else {
+            return false;
+        };
+        self.height(x, y) < below + 1.2
+    }
+
     /// Level of the water at a point, if it is inside a river band or lake.
     pub fn water_at(&self, p: Pt) -> Option<f32> {
         self.inner
