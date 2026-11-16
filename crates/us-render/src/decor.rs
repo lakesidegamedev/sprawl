@@ -925,7 +925,7 @@ impl Streetscape {
 
 /// The paved ground under one built lot in a downtown, industrial or mall district: a pad the
 /// size of the lot, so land that is not built on stays natural. Local to the lot.
-pub fn lot_pad(zone: Zone, r: f32) -> Option<Obj> {
+pub fn lot_pad(zone: Zone, r: f32, footprint: [f32; 4]) -> Option<Obj> {
     use crate::scene::{PAVING_CORE, PAVING_INDUSTRY, PAVING_MALL};
     let base = match zone {
         Zone::Core => PAVING_CORE,
@@ -933,18 +933,42 @@ pub fn lot_pad(zone: Zone, r: f32) -> Option<Obj> {
         Zone::Mall => PAVING_MALL,
         _ => return None,
     };
-    let h = r * 0.92;
+    // the building and a margin of paving, never more than the lot: a big mall or works lot is
+    // paved where it is built, not across the whole circle
+    let m = 7.0;
+    let (x0, y0) = (
+        (footprint[0] - m).max(-r * 0.92),
+        (footprint[1] - m).max(-r * 0.92),
+    );
+    let (x1, y1) = (
+        (footprint[2] + m).min(r * 0.92),
+        (footprint[3] + m).min(r * 0.92),
+    );
+    if x1 - x0 < 2.0 || y1 - y0 < 2.0 {
+        return None;
+    }
     let mut o = Obj::new();
-    quad(&mut o, -h, -h, h, h, 0.03, base);
+    quad(&mut o, x0, y0, x1, y1, 0.03, base);
     if zone == Zone::Core {
         // paving bands: darker squares in a checker
         let dark = shade(base, 0.93);
-        let n = (2.0 * h / 3.5).ceil() as i32;
-        for ix in 0..n {
-            for iy in 0..n {
+        let (nx, ny) = (
+            ((x1 - x0) / 3.5).ceil() as i32,
+            ((y1 - y0) / 3.5).ceil() as i32,
+        );
+        for ix in 0..nx {
+            for iy in 0..ny {
                 if (ix + iy) & 1 == 1 {
-                    let (x0, y0) = (-h + ix as f32 * 3.5, -h + iy as f32 * 3.5);
-                    quad(&mut o, x0, y0, (x0 + 3.5).min(h), (y0 + 3.5).min(h), 0.034, dark);
+                    let (qx, qy) = (x0 + ix as f32 * 3.5, y0 + iy as f32 * 3.5);
+                    quad(
+                        &mut o,
+                        qx,
+                        qy,
+                        (qx + 3.5).min(x1),
+                        (qy + 3.5).min(y1),
+                        0.034,
+                        dark,
+                    );
                 }
             }
         }
@@ -1024,6 +1048,47 @@ mod tests {
             assert_eq!(p.0.polys.len(), q.0.polys.len());
         }
         assert!(a.len() > 1000, "a town gets trees and yards");
+    }
+
+    #[test]
+    fn streetscape_places_what_build_places() {
+        let (t, all) = placed(2);
+        let land = Land::from_town(&t);
+        let scape = Streetscape::new(&t);
+        // every street tree of the one-shot build is among the per-street trees
+        let trees = scape.street_trees(&t, &land);
+        let kept = all
+            .iter()
+            .filter(|p| p.3 == 0.0 && p.0.polys.len() <= 60)
+            .count();
+        assert!(trees.len() >= kept.min(trees.len()) && !trees.is_empty());
+        // a house gets a yard from its own model, the same every time
+        let i = t
+            .lots
+            .iter()
+            .position(|l| l.kind == LotKind::House)
+            .unwrap();
+        let mut rng = Rng::new(t.seed ^ 0x5eed_0000, i as u64 * 7919 + 13);
+        let obj = kit::fit_to_lot(
+            kit::build_lot_in(crate::parts::Region::of(t.preset), LotKind::House, &mut rng),
+            t.lots[i].radius as f32,
+        );
+        let (a, da) = scape.lot_yard(&t, i, &obj);
+        let (b, db) = scape.lot_yard(&t, i, &obj);
+        assert_eq!(a.map(|o| o.polys.len()), b.map(|o| o.polys.len()));
+        assert_eq!(da, db);
+    }
+
+    #[test]
+    fn lot_pad_stays_inside_the_lot() {
+        let pad = lot_pad(Zone::Mall, 50.0, [-10.0, -8.0, 12.0, 9.0]).unwrap();
+        for p in &pad.polys {
+            for v in &p.pts {
+                assert!(v[0].abs() <= 46.0 && v[1].abs() <= 46.0);
+                assert!(v[0] >= -17.1 && v[0] <= 19.1, "pad hugs the building");
+            }
+        }
+        assert!(lot_pad(Zone::Inner, 20.0, [-5.0, -5.0, 5.0, 5.0]).is_none());
     }
 
     #[test]

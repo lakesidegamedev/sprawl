@@ -315,7 +315,7 @@ fn look_obj(
     if matches!(look.state, 2..=4)
         && let Some(a) = ground.1.additions.get(l.addition)
     {
-        d.pad = lot_pad(a.zone, l.radius as f32);
+        d.pad = lot_pad(a.zone, l.radius as f32, d.building.footprint());
     }
     let mut rng = Rng::new(seed ^ 0xb0b0, i as u64);
     let mut dress = |o: &Obj| match look.state {
@@ -636,7 +636,8 @@ impl LiveScene {
         if d.plaza {
             // only beside a finished building
             return self.nearby_lots(here).any(|i| {
-                self.look[i].state == 2 && sim.lots()[i].pos.dist(us_gen::pt(d.x as f64, d.y as f64)) < 35.0
+                self.look[i].state == 2
+                    && sim.lots()[i].pos.dist(us_gen::pt(d.x as f64, d.y as f64)) < 35.0
             });
         }
         // a driveway of a built lot keeps trees off it
@@ -1330,7 +1331,7 @@ impl LiveScene {
         let mut shown = 0;
         if let Some(list) = self.decos.get(&cell) {
             for d in list.iter().filter(|d| self.deco_shown(sim, d)) {
-                let sit = (!self.land.is_flat()).then(|| Sit {
+                let sit = (!self.land.is_flat()).then_some(Sit {
                     land: &self.land,
                     z: d.floor,
                 });
