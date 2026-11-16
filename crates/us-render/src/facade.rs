@@ -553,7 +553,7 @@ fn roofs(o: &mut Obj, tops: &[Top], rng: &mut Rng) {
             }
         }
         let n = ((area / 70.0) as usize).clamp(1, 4);
-        let tall_old = t.z < 20.0 && rng.chance(0.3);
+        let tall_old = t.z < 16.0 && rng.chance(0.14);
         let mut want: Vec<u8> = Vec::new();
         if tall_old {
             want.push(3); // water tank
