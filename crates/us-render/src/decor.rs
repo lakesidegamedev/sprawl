@@ -948,7 +948,13 @@ pub fn lot_pad(zone: Zone, r: f32, footprint: [f32; 4]) -> Option<Obj> {
         return None;
     }
     let mut o = Obj::new();
-    quad(&mut o, x0, y0, x1, y1, 0.03, base);
+    if zone == Zone::Core {
+        // downtown lots are paved edge to edge so built neighbours join into paved blocks; the
+        // plain paving of next-door lots overlaps in one colour, the checker stays by the building
+        quad(&mut o, -r, -r, r, r, 0.03, base);
+    } else {
+        quad(&mut o, x0, y0, x1, y1, 0.03, base);
+    }
     if zone == Zone::Core {
         // paving bands: darker squares in a checker
         let dark = shade(base, 0.93);
