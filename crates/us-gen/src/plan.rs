@@ -9,6 +9,7 @@ use crate::junctions;
 use crate::lots;
 use crate::patterns::{Layout, Line, curvy_local, grid_lines, pods};
 use crate::polygonize::{polygonize, split_polygon};
+use crate::relief::{self, Relief};
 use crate::rng::Rng;
 use crate::skeleton::{self, highway};
 use crate::terrain::Terrain;
@@ -168,6 +169,27 @@ fn poly_difference(a: &[Pt], b: &[Pt]) -> Vec<Vec<Pt>> {
     res.0.iter().map(ring_from_geo).collect()
 }
 
+pub(crate) fn difference_rings(a: &[Pt], b: &[Pt]) -> Vec<Vec<Pt>> {
+    poly_difference(a, b)
+}
+
+pub(crate) fn intersect_rings(a: &[Pt], b: &[Pt]) -> Vec<Vec<Pt>> {
+    poly_intersection(a, b)
+}
+
+/// Union of overlapping rings.
+pub(crate) fn union_rings(rings: &[Vec<Pt>]) -> Vec<Vec<Pt>> {
+    use geo::BooleanOps;
+    let Some((first, rest)) = rings.split_first() else {
+        return Vec::new();
+    };
+    let mut acc = geo::MultiPolygon(vec![to_geo(first)]);
+    for r in rest {
+        acc = acc.union(&to_geo(r));
+    }
+    acc.0.iter().map(ring_from_geo).collect()
+}
+
 fn touches_edge(p: &[Pt]) -> bool {
     p.iter()
         .any(|q| q.x <= 2.0 || q.x >= S - 2.0 || q.y >= S - 2.0)
@@ -178,6 +200,7 @@ fn make_patches(
     rails: &[Line],
     river: &River,
     lake_zone: Option<&[Pt]>,
+    relief: Option<&Relief>,
     rng: &mut Rng,
 ) -> Vec<Vec<Pt>> {
     let mut lines: Vec<Line> = roads.iter().map(|(l, _)| l.clone()).collect();
@@ -186,7 +209,10 @@ fn make_patches(
     let band = river.band(-60.0, 60.0);
     let mut out = Vec::new();
     for sb in polygonize(&lines) {
-        let dry = poly_difference(&sb, &band);
+        let dry = match relief {
+            Some(r) => r.dry_parts(&sb, &band),
+            None => poly_difference(&sb, &band),
+        };
         let dry: Vec<Vec<Pt>> = match lake_zone {
             Some(z) => dry
                 .into_iter()
@@ -274,10 +300,27 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
     let style = preset;
     let preset = preset.base();
     let mut river_rng = Rng::new(seed, 0x71e7);
-    let river = River::new(&mut river_rng);
+    let river = match style {
+        Preset::Gorge => River::gorge(&mut river_rng),
+        Preset::Valley => River::valley(&mut river_rng),
+        _ => River::new(&mut river_rng),
+    };
     let lake = (preset == Preset::LakeTown).then(|| Lake::new(&mut Rng::new(seed, 0x1a4e)));
-    let terrain = Terrain::new(seed, &river, lake.as_ref().map(|l| (l.c, l.r)));
-    let built = build(preset, seed, &river, st, &terrain, lake.as_ref());
+    let terrain = match style {
+        Preset::Gorge | Preset::Valley => Terrain::styled(seed, &river, style),
+        _ => Terrain::new(seed, &river, lake.as_ref().map(|l| (l.c, l.r))),
+    };
+    let mut pad = 0.0;
+    let relief = relief::build(style, seed, &river, &terrain, &mut pad);
+    let built = build(
+        preset,
+        seed,
+        &river,
+        st,
+        &terrain,
+        lake.as_ref(),
+        relief.as_ref(),
+    );
     let mut drafts = built.drafts;
     let additions = built.additions;
 
@@ -407,13 +450,32 @@ pub fn build(
     st: &Settings,
     terrain: &Terrain,
     lake: Option<&Lake>,
+    relief: Option<&Relief>,
 ) -> Built {
     let mut rng = Rng::new(seed, 0xa11);
-    let sk = skeleton::build(preset, seed, river, st, terrain, lake);
+    let sk = match relief {
+        Some(r) => {
+            let mut roads = vec![(highway(), RoadClass::Highway)];
+            roads.extend(r.roads.iter().cloned());
+            skeleton::Skeleton {
+                roads,
+                rails: r.rails.clone(),
+                rail_angle: r.rail_angle,
+            }
+        }
+        None => skeleton::build(preset, seed, river, st, terrain, lake),
+    };
     let main_ang = std::f64::consts::FRAC_PI_2;
     let rail_ang = sk.rail_angle;
     let lake_zone = lake.map(|l| l.ring(55.0));
-    let patches = make_patches(&sk.roads, &sk.rails, river, lake_zone.as_deref(), &mut rng);
+    let patches = make_patches(
+        &sk.roads,
+        &sk.rails,
+        river,
+        lake_zone.as_deref(),
+        relief,
+        &mut rng,
+    );
     let (patches, corner) = if preset == Preset::Sunbelt {
         carve_corners(patches, &sk.roads, &mut rng)
     } else {
@@ -497,6 +559,8 @@ pub fn build(
         let lake_ang =
             lake.and_then(|_| flow.filter(|_| dist_pt_ring(c, &lake.unwrap().ring(0.0)) < 650.0));
         let woods = d > 600.0 && mean_slope(terrain, p) > WOODED_SLOPE;
+        // the small district on a gorge's riverside flat is always built on
+        let on_flat = relief.is_some() && terrain.gorge().is_some() && terrain.height_at(c) < 8.0;
         let mut lay = Layout::default();
         let mut zone: Zone;
         let mut pattern: Pattern;
@@ -609,7 +673,7 @@ pub fn build(
             );
             lay.streets = s;
             lay.lanes = l;
-        } else if d < 1100.0 && !sp.cemetery && r < 0.1 {
+        } else if d < 1100.0 && !sp.cemetery && r < 0.1 && !on_flat {
             zone = Zone::Park;
             pattern = Pattern::Cemetery;
             sp.cemetery = true;
@@ -789,7 +853,7 @@ pub fn build(
                 .map(|l| junctions::bend_with_ground(l, p, terrain))
                 .collect();
         }
-        if zone != Zone::Park && rng.f64() < 0.05 && d > 600.0 {
+        if zone != Zone::Park && rng.f64() < 0.05 && d > 600.0 && !on_flat {
             zone = Zone::Park;
             pattern = Pattern::Park;
             is_pod = false;
@@ -839,7 +903,7 @@ pub fn build(
         // trimming can leave a stub of a street with no length: it is not a road
         drafts.retain(|d| !is_street(d) || (d.line.len() >= 2 && length(&d.line) >= 4.0));
     }
-    join_stranded(&mut drafts, &mut additions, river);
+    join_stranded(&mut drafts, &mut additions, river, relief);
     promote_collectors(&mut drafts, st.collector_len);
     if st.version >= 3 {
         let mut wet = vec![river.band(-90.0, 90.0)];
@@ -1235,7 +1299,12 @@ fn sample_line(line: &[Pt], step: f64) -> Vec<Pt> {
 /// Every street must be reachable from the highway. A group of streets cut off from the rest
 /// gets an entrance road to the nearest connected road when one is under 150 m away and dry;
 /// otherwise its additions go back to farmland.
-fn join_stranded(drafts: &mut Vec<Draft>, additions: &mut [Addition], river: &River) {
+fn join_stranded(
+    drafts: &mut Vec<Draft>,
+    additions: &mut [Addition],
+    river: &River,
+    relief: Option<&Relief>,
+) {
     let wet = river.band(-60.0, 60.0);
     for _round in 0..40 {
         let comp = components(drafts);
@@ -1276,9 +1345,13 @@ fn join_stranded(drafts: &mut Vec<Draft>, additions: &mut [Addition], river: &Ri
                     // dry, and not running along some third road that is cut off too
                     let dry = [0.25, 0.5, 0.75].iter().all(|f| {
                         let q = p.lerp(h.pt, *f);
-                        !point_in_ring(q, &wet) && all_idx.nearest(q, 3.0, None).is_none()
+                        !point_in_ring(q, &wet)
+                            && !relief.is_some_and(|r| r.forbids(q))
+                            && all_idx.nearest(q, 3.0, None).is_none()
                     });
-                    if dry {
+                    let ends_dry = !relief
+                        .is_some_and(|r| r.banned.iter().any(|z| point_in_ring(p, z) || point_in_ring(h.pt, z)));
+                    if dry && ends_dry {
                         best = Some((h.dist, p, h.pt));
                     }
                 }

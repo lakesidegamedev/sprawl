@@ -10,6 +10,7 @@ mod lots;
 mod patterns;
 mod plan;
 mod polygonize;
+mod relief;
 mod rng;
 mod skeleton;
 mod terrain;
