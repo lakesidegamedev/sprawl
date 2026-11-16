@@ -704,8 +704,15 @@ impl State {
                         .ok()
                         .and_then(|v| v.parse::<i32>().ok())
                     {
-                        for _ in 0..days {
+                        // URBAN_SPRAWL_SMOKE_TEND=1 looks after the town as it grows (services and
+                        // taxes each month), so it gets past its first limits
+                        let tend = std::env::var("URBAN_SPRAWL_SMOKE_TEND").is_ok_and(|v| v == "1");
+                        let mut round = 0;
+                        for d in 0..days {
                             g.sim.step_day();
+                            if tend && d % 30 == 5 {
+                                us_sim::tend(&mut g.sim, &mut round);
+                            }
                         }
                     }
                     if let Ok(spec) = std::env::var("URBAN_SPRAWL_SMOKE_UI") {
