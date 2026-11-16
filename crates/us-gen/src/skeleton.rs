@@ -1,7 +1,7 @@
 //! Stage one: the roads and rails that exist before the town does.
 
-use crate::geom::{cos, sin,
-    Pt, clip_line, dedup, dist_pt_line, dist_ring_line, interpolate, length, project, pt,
+use crate::geom::{
+    Pt, clip_line, cos, dedup, dist_pt_line, dist_ring_line, interpolate, length, project, pt, sin,
     split_line_at,
 };
 use crate::plan::Extra;
@@ -618,7 +618,6 @@ fn coast(seed: u64, river: &River, terrain: &Terrain, extra: &Extra) -> Skeleton
         rail_angle,
     }
 }
-
 
 /// Roads that meet the foot of a rock stop there. Two ends close together are joined by a short
 /// stretch of road along the foot; every other end gets a small turning circle, so no road is left
