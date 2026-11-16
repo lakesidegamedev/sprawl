@@ -392,10 +392,10 @@ impl CoastField {
         // sea stacks off the cliffs, clear of the harbour
         let mut srng = Rng::new(seed, 0xc0a6);
         let mut tries = 0;
-        let mut y = 1300.0 + srng.uniform(0.0, 300.0);
-        while f.stacks.len() < 7 && tries < 60 && y < S - 200.0 {
+        let mut y = 900.0 + srng.uniform(0.0, 200.0);
+        while f.stacks.len() < 8 && tries < 120 && y < S - 200.0 {
             tries += 1;
-            let r = srng.uniform(14.0, 30.0);
+            let r = srng.uniform(18.0, 34.0);
             let out = srng.uniform(70.0, 190.0);
             let c = pt(f.edge_x(y, -32.0) + out, y);
             let ok = f.inland(c.x, c.y) < -(60.0 + r)
@@ -406,11 +406,11 @@ impl CoastField {
                 f.stacks.push(Stack {
                     c,
                     r: if arch { r + 12.0 } else { r },
-                    h: srng.uniform(28.0, 75.0),
+                    h: srng.uniform(45.0, 95.0),
                     arch,
                 });
             }
-            y += srng.uniform(150.0, 420.0);
+            y += srng.uniform(120.0, 300.0);
         }
         f
     }
@@ -468,12 +468,14 @@ impl CoastField {
     pub fn beach_weight(&self, x: f64, y: f64) -> f64 {
         let h = self.coves[0];
         let d = self.inland(x, y);
-        if d <= 0.0 {
-            return 1.0;
-        }
         let u = (h.c.x - x) / h.rho;
         let along = 1.0 - smooth(0.75, 1.05, ((y - h.c.y) / h.rho).abs());
-        smooth(0.3, 0.7, u) * along * (1.0 - smooth(55.0, 100.0, d))
+        let fade = if d > 0.0 {
+            1.0 - smooth(55.0, 100.0, d)
+        } else {
+            1.0
+        };
+        smooth(0.3, 0.7, u) * along * fade
     }
 
     /// Height of a point on the coast given the plain ground there.
@@ -502,27 +504,79 @@ impl CoastField {
         // round the inner harbour the land is low
         let top = top * (1.0 - hw) + (5.0 + 0.03 * plain.max(0.0)) * hw;
         // a sheer face, its width varying so the wall has buttresses and gullies; or a beach
-        let wc = 24.0 + 10.0 * sin(y / 31.0 + self.face) + 6.0 * sin(y / 11.0 + 2.0 * self.face);
+        let wc = 40.0 + 12.0 * sin(y / 31.0 + self.face) + 7.0 * sin(y / 11.0 + 2.0 * self.face);
         let mix = smooth(0.04, 0.5, hw);
         let w = wc * (1.0 - mix) + 280.0 * mix;
         let t = (d / w).clamp(0.0, 1.0);
-        let sheer = 1.0 - (1.0 - t).powi(3);
+        let sheer = 1.0 - (1.0 - t).powf(2.4);
         let s = sheer * (1.0 - mix) + smooth(0.0, 1.0, t) * mix;
         top * s
     }
 
+    /// x of the open coast at height y (the straight run and the small coves, not the harbour),
+    /// `inland` metres in from the water.
+    fn open_edge_x(&self, y: f64, inland: f64) -> f64 {
+        let mut x = self.line_x(y) - inland;
+        for c in self.coves.iter().filter(|c| !c.harbour) {
+            let r = c.rho + inland;
+            let dy = y - c.c.y;
+            if dy.abs() < r {
+                x = x.min(c.c.x - (r * r - dy * dy).sqrt());
+            }
+        }
+        x
+    }
+
+    /// The two horns of the harbour at the sea edge: where the round cove meets the open coast.
+    /// Returns (south, north).
+    pub fn horns(&self, inland: f64) -> (Pt, Pt) {
+        let hv = self.coves[0];
+        let r = hv.rho + inland;
+        let ex = |y: f64| hv.c.x + (r * r - (y - hv.c.y).powi(2)).max(0.0).sqrt();
+        let find = |sign: f64| -> Pt {
+            let mut dy = 0.0;
+            while dy < r - 1.0 {
+                let y = hv.c.y + sign * dy;
+                // the cove's east side has left the open coast behind
+                if ex(y) < self.open_edge_x(y, inland) {
+                    break;
+                }
+                dy += 1.0;
+            }
+            let y = hv.c.y + sign * dy;
+            pt(ex(y), y)
+        };
+        (find(-1.0), find(1.0))
+    }
+
     /// Water polygon: everything east of the sea edge, with a flat shelf of ground between it
     /// and the foot of the cliffs. It follows the coast on past the map edge and runs out to a
-    /// far shore so the sea reaches the horizon.
+    /// far shore so the sea reaches the horizon. The harbour is a round bite out of the land.
     pub fn sea_ring(&self) -> Vec<Pt> {
         let shelf = -30.0;
         let far = S + 1600.0;
+        let hv = self.coves[0];
+        let r = hv.rho + shelf;
+        let (hs, hn) = self.horns(shelf);
         let mut ring = Vec::new();
         let (y0, y1) = (-500.0, S + 500.0);
         ring.push(pt(far, y0));
         let mut y = y0;
+        while y < hs.y {
+            ring.push(pt(self.open_edge_x(y, shelf).min(far), y));
+            y += 12.0;
+        }
+        // round the cove, from the south horn through the west to the north horn
+        let a0 = atan2(hs.y - hv.c.y, hs.x - hv.c.x);
+        let a1 = atan2(hn.y - hv.c.y, hn.x - hv.c.x) - TAU;
+        let steps = 120;
+        for i in 0..=steps {
+            let a = a0 + (a1 - a0) * i as f64 / steps as f64;
+            ring.push(pt(hv.c.x + r * cos(a), hv.c.y + r * sin(a)));
+        }
+        let mut y = hn.y;
         while y <= y1 {
-            ring.push(pt(self.edge_x(y, shelf).min(far), y));
+            ring.push(pt(self.open_edge_x(y, shelf).min(far), y));
             y += 12.0;
         }
         ring.push(pt(far, y1));
@@ -569,13 +623,8 @@ impl CoastField {
     pub fn harbour(&self) -> Harbour {
         let hv = self.coves[0];
         let mut rng = Rng::new(self.seed, 0xc0a7);
-        let half = (hv.rho * hv.rho - (0.6 * hv.rho).powi(2)).sqrt();
         // the horns: where the cove meets the open coast
-        let horn = |k: f64| -> Pt {
-            let y = hv.c.y + k * half;
-            pt(self.edge_x(y, -30.0), y)
-        };
-        let (hs, hn) = (horn(-1.0), horn(1.0));
+        let (hs, hn) = self.horns(-30.0);
         // two arms of stone leave the horns and leave a gap between them for boats
         let arm = |from: Pt, toward: f64, reach: f64, bend: f64| -> Vec<Pt> {
             let mid = pt(from.x + 0.45 * reach, from.y + toward * 0.3 * reach);
@@ -591,8 +640,8 @@ impl CoastField {
                 tip,
             ]
         };
-        let south = arm(hs, 1.0, rng.uniform(230.0, 270.0), 0.0);
-        let north = arm(hn, -1.0, rng.uniform(150.0, 190.0), 0.0);
+        let south = arm(hs, 1.0, rng.uniform(330.0, 370.0), 0.0);
+        let north = arm(hn, -1.0, rng.uniform(270.0, 310.0), 0.0);
         let breakwaters = vec![south, north];
         // piers run out from the beach on the inner shore
         let mut piers = Vec::new();
@@ -610,9 +659,11 @@ impl CoastField {
             let (dx, dy) = ((tip.x - root.x) / len, (tip.y - root.y) / len);
             let n = 2 + (i % 2);
             for k in 0..n {
-                let t = 0.4 + 0.5 * k as f64 / n as f64;
+                let t = 0.7 + 0.25 * k as f64 / n as f64;
                 for side in [-1.0, 1.0] {
-                    if rng.chance(0.7) {
+                    if rng.chance(0.7)
+                        && self.inland(root.x + dx * len * t, root.y + dy * len * t) < -40.0
+                    {
                         boats.push(Mooring {
                             at: pt(
                                 root.x + dx * len * t - dy * 5.5 * side,
@@ -642,7 +693,8 @@ impl CoastField {
             });
         }
         // the lighthouse stands on the north headland, a little inland of the cliff edge
-        let lighthouse = pt(self.edge_x(hn.y + 90.0, 55.0), hn.y + 90.0);
+        let ly = hn.y + 150.0;
+        let lighthouse = pt(self.open_edge_x(ly, 70.0), ly);
         Harbour {
             breakwaters,
             piers,

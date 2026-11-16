@@ -252,17 +252,33 @@ impl Ground {
 
     /// The whole land as a grid of faces in one colour, reaching `apron` metres past the map.
     pub fn terrain(&mut self, land: &Land, apron: f32, color: Rgb) {
-        self.terrain_with(land, apron, &|_, _| color);
+        self.terrain_with(land, apron, &|_, _| color, None);
     }
 
     /// Like `terrain`, with the colour chosen per vertex (rock faces, scree, beaches).
-    pub fn terrain_look(&mut self, land: &Land, apron: f32, look: &crate::rocklook::RockLook) {
-        self.terrain_with(land, apron, &|x, y| {
-            crate::rocklook::vertex_colour(look, land, x, y)
-        });
+    pub fn terrain_look(
+        &mut self,
+        land: &Land,
+        apron: f32,
+        look: &crate::rocklook::RockLook,
+        height: &dyn Fn(f32, f32) -> f32,
+        beach: &dyn Fn(f32, f32) -> f32,
+    ) {
+        self.terrain_with(
+            land,
+            apron,
+            &|x, y| crate::rocklook::vertex_colour(look, land, height, beach, x, y),
+            Some(height),
+        );
     }
 
-    fn terrain_with(&mut self, land: &Land, apron: f32, colour: &dyn Fn(f32, f32) -> Rgb) {
+    fn terrain_with(
+        &mut self,
+        land: &Land,
+        apron: f32,
+        colour: &dyn Fn(f32, f32) -> Rgb,
+        height: Option<&dyn Fn(f32, f32) -> f32>,
+    ) {
         let color = colour(0.0, 0.0);
         if self.land.is_none() {
             let s = land.size();
@@ -270,17 +286,25 @@ impl Ground {
             return;
         }
         let (n, step, size) = (land.n(), land.step(), land.size());
-        let mut xs: Vec<f32> = vec![-apron];
+        // the apron is cut into rings of growing width so its colour can vary and water can sink
+        let cuts = [
+            1.0f32, 0.75, 0.52, 0.34, 0.22, 0.14, 0.09, 0.055, 0.034, 0.018, 0.009, 0.004,
+        ];
+        let mut xs: Vec<f32> = cuts.iter().map(|k| -apron * k).collect();
         xs.extend((0..n).map(|i| i as f32 * step));
-        xs.push(size + apron);
+        xs.extend(cuts.iter().rev().map(|k| size + apron * k));
         let m = xs.len();
         let base = self.mesh.vertices.len() as u32;
         for &y in &xs {
             for &x in &xs {
                 // past the map edge the land is held level, so it is shaded level too
                 if x < 0.0 || y < 0.0 || x > size || y > size {
-                    let z = land.height(x, y) + layer::BASE;
-                    let c = colour(x.clamp(0.0, size), y.clamp(0.0, size));
+                    // water that runs off the map (the sea) runs on under its sheet
+                    let z = match land.water_at(pt(x as f64, y as f64)) {
+                        Some(level) => level - 3.0,
+                        None => height.map_or_else(|| land.height(x, y), |f| f(x, y)) + layer::BASE,
+                    };
+                    let c = colour(x, y);
                     self.raw(x, y, z, [0.0, 0.0, 1.0], c, ID_GROUND);
                 } else {
                     self.vert(x, y, layer::BASE, colour(x, y));

@@ -15,6 +15,7 @@ mod detail;
 pub mod emergency;
 pub mod fleet;
 pub mod ground;
+pub mod harbour;
 pub mod instances;
 pub mod kit;
 mod kit_misc;

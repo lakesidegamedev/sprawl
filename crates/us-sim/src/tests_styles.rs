@@ -28,6 +28,9 @@ fn red_rock_and_coast_towns_grow_to_ten_thousand() {
     for (p, seed) in [
         (Preset::Mesa, 1),
         (Preset::Mesa, 2),
+        // these two once stalled while a full ring road round every rock cut the layout up
+        (Preset::Mesa, 3),
+        (Preset::Mesa, 4),
         (Preset::Coast, 1),
         (Preset::Coast, 2),
     ] {

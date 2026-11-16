@@ -18,18 +18,9 @@ fn hash2(a: u64, b: u64) -> u64 {
 /// White of the surf along the sea's edge.
 const SURF: Rgb = [244, 248, 250];
 
-/// Fields and scrub in the dry colours of the desert.
-const DRY_FIELDS: [Rgb; 5] = [
-    [196, 174, 122],
-    [186, 160, 112],
-    [170, 164, 112],
-    [204, 182, 132],
-    [178, 150, 106],
-];
-const DRY_SCRUB: [Rgb; 3] = [[150, 160, 100], [160, 164, 104], [142, 152, 96]];
-
-/// Ground colour of an addition's land in a town of style `p`: the red rock desert has dry fields
-/// and scrub where the other styles have green.
+/// Ground colour of an addition's land in a town of style `p`: the red rock desert has no green
+/// fields or lawns. Farms and parks show the bare ground (parks keep their scrub trees), and the
+/// campus and cemetery wear dry tones.
 pub fn zone_colour_in(
     p: us_gen::Preset,
     zone: Zone,
@@ -39,16 +30,10 @@ pub fn zone_colour_in(
 ) -> Option<Rgb> {
     if p == us_gen::Preset::Mesa {
         match zone {
-            Zone::Farm => {
-                return Some(
-                    DRY_FIELDS[(hash2(seed, index as u64) % DRY_FIELDS.len() as u64) as usize],
-                );
-            }
-            Zone::Park if pattern != Pattern::Cemetery => {
-                return Some(
-                    DRY_SCRUB[(hash2(seed, index as u64) % DRY_SCRUB.len() as u64) as usize],
-                );
-            }
+            Zone::Farm => return None,
+            Zone::Park if pattern != Pattern::Cemetery => return None,
+            Zone::Park => return Some([196, 168, 124]),
+            Zone::Campus => return Some([214, 178, 130]),
             _ => {}
         }
     }
@@ -58,7 +43,24 @@ pub fn zone_colour_in(
 /// The land of a town: plain grass, or the rock look of its style.
 pub fn ground_terrain(g: &mut Ground, land: &Land, t: &Town) {
     match crate::rocklook::look_for(t.preset) {
-        Some(look) if !land.is_flat() => g.terrain_look(land, 1500.0, look),
+        Some(look) if !land.is_flat() => {
+            // a beach only on the inner shore of a harbour cove: elsewhere the shore is rock
+            let beach = |x: f32, y: f32| match t.terrain.relief() {
+                us_gen::Relief::Coast(c) => c.beach_weight(x as f64, y as f64) as f32,
+                _ => 1.0,
+            };
+            // past the map edge a coast keeps going: the cliffs and the sea follow the terrain
+            let size = land.size();
+            let coast = t.preset == us_gen::Preset::Coast;
+            let height = |x: f32, y: f32| {
+                if coast && (x < 0.0 || y < 0.0 || x > size || y > size) {
+                    t.terrain.height(x as f64, y as f64) as f32
+                } else {
+                    land.height(x, y)
+                }
+            };
+            g.terrain_look(land, 1500.0, look, &height, &beach)
+        }
         _ => g.terrain(land, 1500.0, GRASS),
     }
 }
@@ -116,6 +118,19 @@ pub fn add_water(g: &mut Ground, land: &Land, t: &Town) {
     add_water_at(g, land, land, t);
 }
 
+fn inside(p: Pt, ring: &[Pt]) -> bool {
+    let mut ins = false;
+    let mut j = ring.len() - 1;
+    for i in 0..ring.len() {
+        let (a, b) = (ring[i], ring[j]);
+        if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
+            ins = !ins;
+        }
+        j = i;
+    }
+    ins
+}
+
 /// A thin strip along the part of the sea's shore that lies on the map, for the surf.
 fn surf_strip(ring: &[Pt], size: f64) -> Option<Vec<Pt>> {
     let shore: Vec<Pt> = ring
@@ -132,9 +147,10 @@ fn surf_strip(ring: &[Pt], size: f64) -> Option<Vec<Pt>> {
         let (a, b) = (shore[i.saturating_sub(1)], shore[(i + 1).min(n - 1)]);
         let d = us_gen::pt(b.x - a.x, b.y - a.y);
         let l = d.len().max(1e-6);
-        // the sea is to the east: the normal that points west is the land side
+        // the land side is the normal that points out of the water
         let mut nrm = us_gen::pt(-d.y / l, d.x / l);
-        if nrm.x > 0.0 {
+        let probe = us_gen::pt(shore[i].x + nrm.x * 12.0, shore[i].y + nrm.y * 12.0);
+        if inside(probe, ring) {
             nrm = us_gen::pt(-nrm.x, -nrm.y);
         }
         land_side.push(us_gen::pt(
@@ -166,6 +182,12 @@ fn add_water_at(g: &mut Ground, land: &Land, levels: &Land, t: &Town) {
         } else {
             g.polygon_level(w, levels.water_level(w) + layer::WATER - layer::BASE, WATER);
         }
+    }
+    if t.preset == us_gen::Preset::Coast && !land.is_flat() {
+        crate::harbour::add(&mut g.mesh, levels, t);
+    }
+    if t.preset == us_gen::Preset::Mesa && !land.is_flat() {
+        crate::harbour::add_horizon(&mut g.mesh, levels, t);
     }
 }
 

@@ -21,11 +21,13 @@ pub struct RockLook {
     pub cap: Option<(Rgb, f32)>,
     /// Beach colour and the height below which it lies.
     pub beach: Option<(Rgb, f32)>,
+    /// Bare wet rock of the shelf at the foot of a cliff, and the height below which it lies.
+    pub shelf: Option<(Rgb, f32)>,
 }
 
 const MESA: RockLook = RockLook {
-    flat: [208, 160, 116],
-    hollow: [230, 200, 150],
+    flat: [230, 178, 124],
+    hollow: [242, 210, 160],
     talus: [184, 116, 80],
     bands: [
         [170, 78, 52],
@@ -36,21 +38,23 @@ const MESA: RockLook = RockLook {
     ],
     cap: Some(([198, 118, 74], 90.0)),
     beach: None,
+    shelf: None,
 };
 
 const COAST: RockLook = RockLook {
     flat: [112, 164, 96],
     hollow: [150, 176, 110],
-    talus: [136, 130, 112],
+    talus: [150, 130, 104],
     bands: [
-        [120, 120, 126],
-        [150, 142, 128],
-        [98, 102, 112],
-        [170, 152, 122],
-        [132, 126, 120],
+        [152, 124, 98],
+        [180, 150, 112],
+        [122, 102, 86],
+        [194, 166, 126],
+        [142, 116, 94],
     ],
     cap: None,
     beach: Some(([226, 212, 166], 4.2)),
+    shelf: Some(([104, 98, 96], 2.2)),
 };
 
 /// The ground look of a style, if it has one (the five 1.0 styles keep their plain grass).
@@ -76,13 +80,20 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
 impl RockLook {
     /// Colour of the ground at height `h` metres where the land rises `slope` per metre and sits
     /// `hollow` metres below the average of its surroundings.
-    pub fn colour(&self, h: f32, slope: f32, hollow: f32) -> Rgb {
+    pub fn colour(&self, h: f32, slope: f32, hollow: f32, beach: f32) -> Rgb {
         let mut c = self.flat;
         if let Some((cap, from)) = self.cap {
             c = mix(c, cap, smooth(from * 0.6, from, h));
         }
+        if let Some((rock, below)) = self.shelf {
+            c = mix(
+                c,
+                rock,
+                (1.0 - smooth(below * 0.3, below, h)) * (1.0 - beach),
+            );
+        }
         if let Some((sand, below)) = self.beach {
-            c = mix(sand, c, smooth(below * 0.6, below + 1.2, h));
+            c = mix(c, sand, beach * (1.0 - smooth(below * 0.6, below + 1.2, h)));
         }
         c = mix(c, self.hollow, smooth(0.8, 2.4, hollow));
         c = mix(c, self.talus, smooth(0.13, 0.3, slope));
@@ -107,19 +118,63 @@ impl RockLook {
     }
 }
 
-/// Ground colour at a vertex of the land grid.
-pub fn vertex_colour(look: &RockLook, land: &Land, x: f32, y: f32) -> Rgb {
+/// Ground colour at a vertex of the land grid. `height` gives the ground height anywhere (past the
+/// edge of the map it may follow the terrain rather than hold the edge value).
+pub fn vertex_colour(
+    look: &RockLook,
+    land: &Land,
+    height: &dyn Fn(f32, f32) -> f32,
+    beach: &dyn Fn(f32, f32) -> f32,
+    x: f32,
+    y: f32,
+) -> Rgb {
     let e = land.step().max(1.0);
-    let h = land.height(x, y);
-    let (hx0, hx1) = (land.height(x - e, y), land.height(x + e, y));
-    let (hy0, hy1) = (land.height(x, y - e), land.height(x, y + e));
+    let h = height(x, y);
+    let (hx0, hx1) = (height(x - e, y), height(x + e, y));
+    let (hy0, hy1) = (height(x, y - e), height(x, y + e));
     let slope = (((hx1 - hx0) / (2.0 * e)).powi(2) + ((hy1 - hy0) / (2.0 * e)).powi(2)).sqrt();
     let far = 3.0 * e;
     // a hollow has higher ground on every side; the foot of a rock has lower ground on one
-    let ring = land
-        .height(x - far, y)
-        .min(land.height(x + far, y))
-        .min(land.height(x, y - far))
-        .min(land.height(x, y + far));
-    look.colour(h, slope, ring - h)
+    let ring = height(x - far, y)
+        .min(height(x + far, y))
+        .min(height(x, y - far))
+        .min(height(x, y + far));
+    let c = look.colour(h, slope, ring - h, beach(x, y));
+    let size = land.size();
+    if x < 0.0 || y < 0.0 || x > size || y > size {
+        return apron_tint(look, c, x, y);
+    }
+    c
+}
+
+fn hash(ix: i32, iy: i32) -> f32 {
+    let mut h = (ix as u32).wrapping_mul(0x9E37_79B1) ^ (iy as u32).wrapping_mul(0x85EB_CA6B);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 13;
+    (h & 0xFFFF) as f32 / 65535.0
+}
+
+/// Smooth value noise, one cell per `cell` metres.
+fn noise(x: f32, y: f32, cell: f32) -> f32 {
+    let (fx, fy) = (x / cell, y / cell);
+    let (ix, iy) = (fx.floor(), fy.floor());
+    let (u, v) = (smooth(0.0, 1.0, fx - ix), smooth(0.0, 1.0, fy - iy));
+    let (ix, iy) = (ix as i32, iy as i32);
+    let a = hash(ix, iy) + (hash(ix + 1, iy) - hash(ix, iy)) * u;
+    let b = hash(ix, iy + 1) + (hash(ix + 1, iy + 1) - hash(ix, iy + 1)) * u;
+    a + (b - a) * v
+}
+
+/// Ground past the map edge in a desert style: patches of dry scrub and pale sand, so it is not
+/// a single flat plane.
+fn apron_tint(look: &RockLook, c: Rgb, x: f32, y: f32) -> Rgb {
+    if look.cap.is_none() {
+        return c;
+    }
+    let n = noise(x, y, 260.0) * 0.6 + noise(x + 77.0, y - 31.0, 110.0) * 0.4;
+    let scrub = [196, 146, 100];
+    let sand = [242, 204, 154];
+    let c = mix(c, scrub, smooth(0.5, 0.78, n) * 0.7);
+    mix(c, sand, smooth(0.5, 0.25, n) * 0.55)
 }

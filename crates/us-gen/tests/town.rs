@@ -1261,3 +1261,96 @@ fn coastal_towns_have_a_sea_with_cliffs_a_harbour_and_a_coast_road() {
         );
     }
 }
+
+#[test]
+fn the_sea_holds_only_water_and_the_harbour_has_its_works() {
+    use us_gen::Relief;
+    for seed in 1..=4u64 {
+        let t = generate(Preset::Coast, seed);
+        let Relief::Coast(c) = t.terrain.relief() else {
+            panic!("coast relief");
+        };
+        let sea = &t.water[0];
+        // no ground stands in the sea: no wedge of sand or rock is left inside the polygon
+        let mut y = 0.0;
+        while y <= 4096.0 {
+            let mut x = 2000.0;
+            while x <= 4096.0 {
+                let p = us_gen::pt(x, y);
+                if point_in(p, sea) {
+                    assert!(
+                        t.height_at(p) < 0.5,
+                        "seed {seed}: ground {:.1} m in the sea at ({x}, {y})",
+                        t.height_at(p)
+                    );
+                }
+                x += 40.0;
+            }
+            y += 40.0;
+        }
+        let h = c.harbour();
+        assert_eq!(h.breakwaters.len(), 2, "seed {seed}");
+        assert_eq!(h.piers.len(), 3, "seed {seed}");
+        assert!(h.boats.len() >= 12, "seed {seed}: {} boats", h.boats.len());
+        // the lighthouse stands on a headland, well above the sea
+        assert!(
+            t.height_at(h.lighthouse) > 40.0,
+            "seed {seed}: lighthouse {:.0} m",
+            t.height_at(h.lighthouse)
+        );
+        // every boat floats and every pier tip is in the water
+        for b in &h.boats {
+            assert!(point_in(b.at, sea), "seed {seed}: a boat on land");
+        }
+        for (_, tip) in &h.piers {
+            assert!(point_in(*tip, sea), "seed {seed}: a pier ends on land");
+        }
+        // sea stacks stand off the cliffs
+        assert!(
+            c.stacks.len() >= 3,
+            "seed {seed}: {} stacks",
+            c.stacks.len()
+        );
+        for s in &c.stacks {
+            assert!(point_in(s.c, sea), "seed {seed}: a stack on land");
+        }
+        // the beach is on the inner shore of the harbour only
+        let hv = c.coves[0];
+        assert!(c.beach_weight(hv.c.x - hv.rho - 20.0, hv.c.y) > 0.9);
+        assert!(c.beach_weight(c.edge_x(hv.c.y + 1600.0, 20.0), hv.c.y + 1600.0) < 0.05);
+    }
+}
+
+#[test]
+fn red_rock_roads_end_at_the_rock_on_a_circle_or_a_short_link_not_a_ring() {
+    use us_gen::Relief;
+    for seed in 1..=6u64 {
+        let t = generate(Preset::Mesa, seed);
+        let Relief::Mesa(m) = t.terrain.relief() else {
+            panic!("mesa relief");
+        };
+        for f in m
+            .formations
+            .iter()
+            .filter(|f| f.kind != us_gen::Rock::Spire)
+        {
+            // no closed loop of road runs round the foot of a rock: roads touch the ring along
+            // less than most of it
+            let ring = f.footprint(16.0);
+            let covered = ring
+                .iter()
+                .filter(|v| {
+                    t.roads
+                        .iter()
+                        .filter(|r| r.class == RoadClass::Collector)
+                        .any(|r| r.points.iter().any(|p| p.dist(**v) < 8.0))
+                })
+                .count();
+            assert!(
+                (covered as f64) < 0.85 * ring.len() as f64,
+                "seed {seed}: a ring road round a {:?}",
+                f.kind
+            );
+        }
+    }
+}

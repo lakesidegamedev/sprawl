@@ -34,6 +34,7 @@ fn main() {
         match town.terrain.relief() {
             Relief::Mesa(m) => {
                 views.push(("wide".into(), on(2000.0, 1900.0), 3600.0, 200.0, 32.0));
+                views.push(("edge".into(), on(3800.0, 1900.0), 1400.0, 160.0, 55.0));
                 let mut fs: Vec<_> = m.formations.iter().collect();
                 fs.sort_by(|a, b| b.top.total_cmp(&a.top));
                 if let Some(f) = fs.first() {
@@ -74,6 +75,8 @@ fn main() {
                 supersample: 2,
                 shadow_size: 4096,
                 ink_width: 1,
+                shadow_tone: std::env::var("NOSHADOW")
+                    .map_or(Style::default().shadow_tone, |_| 1.0),
                 ..Style::default()
             };
             let f = r.render_to_rgba(&scene, &cam, &style, w, h);

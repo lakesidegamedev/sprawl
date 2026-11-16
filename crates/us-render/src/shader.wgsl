@@ -219,19 +219,19 @@ fn rock_bands(z: f32, nz: f32) -> vec3<f32> {
     let h = hash2(vec2<i32>(i32(band), 31));
     var tint = vec3<f32>(1.0, 1.0, 1.0);
     if (h < 0.25) {
-        tint = vec3<f32>(1.16, 1.06, 0.92);
+        tint = vec3<f32>(1.3, 1.14, 0.88);
     } else if (h < 0.5) {
-        tint = vec3<f32>(0.8, 0.76, 0.78);
+        tint = vec3<f32>(0.68, 0.64, 0.68);
     } else if (h < 0.75) {
-        tint = vec3<f32>(1.06, 0.9, 0.82);
+        tint = vec3<f32>(1.14, 0.86, 0.72);
     }
     // a fainter line inside a stratum
     let f = fract(z / 5.5);
-    if (f < 0.09) {
-        tint = tint * 0.93;
+    if (f < 0.1) {
+        tint = tint * 0.88;
     }
-    if (fract(t) < 0.035) {
-        tint = tint * 0.62;
+    if (fract(t) < 0.05) {
+        tint = tint * 0.5;
     }
     // fade out towards gentle ground so scree is not striped
     let w = clamp((0.72 - nz) / 0.12, 0.0, 1.0);
@@ -369,7 +369,7 @@ fn fs_main(v: VOut) -> FOut {
         let snowy = min(col.r, min(col.g, col.b)) > 0.88;
         col = col * ground_grain(v.world.xy, v.dist, snowy);
     }
-    if (cel && ground && n.z < 0.72 && natural(col)) {
+    if (cel && ground && n.z < 0.72) {
         col = col * rock_bands(v.world.z, n.z);
     }
     var k = 1.0;
