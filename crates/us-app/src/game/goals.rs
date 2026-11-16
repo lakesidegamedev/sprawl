@@ -19,7 +19,7 @@ pub struct GoalsUi {
 
 const REFRESH_S: f64 = 0.5;
 
-fn rows(ui: &mut Ui, goals: &[GoalView], touch: bool) -> Option<us_sim::CivicKind> {
+pub(super) fn rows(ui: &mut Ui, goals: &[GoalView], touch: bool) -> Option<us_sim::CivicKind> {
     let mut build = None;
     // the first goal not done is spelled out; the rest are one line each
     let next = goals.iter().position(|g| !g.done);
@@ -65,7 +65,7 @@ fn rows(ui: &mut Ui, goals: &[GoalView], touch: bool) -> Option<us_sim::CivicKin
 }
 
 impl Game {
-    fn refresh_goals(&mut self, ctx: &Context) {
+    pub(super) fn refresh_goals(&mut self, ctx: &Context) {
         let now = ctx.input(|i| i.time);
         if now - self.ui.goals.asked > REFRESH_S || now < self.ui.goals.asked {
             self.ui.goals.goals = self.sim.goals();
@@ -73,8 +73,39 @@ impl Game {
         }
     }
 
+    /// The First goals card, drawn inside the top-left goal slot on a desktop in place of the
+    /// milestone goal. Returns whether to hide it and a building to open in Build.
+    pub(super) fn first_goals_card(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &Context,
+    ) -> Option<us_sim::CivicKind> {
+        self.refresh_goals(ctx);
+        let goals = self.ui.goals.goals.clone();
+        let done = goals.iter().filter(|g| g.done).count();
+        let (mut hide, mut build) = (false, None);
+        ui.horizontal(|ui| {
+            lab(ui, format!("First goals  {done}/{}", goals.len()), 13.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .small_button(RichText::new("Hide").font(ui_font(11.0)).color(MUTED))
+                    .clicked()
+                {
+                    hide = true;
+                }
+            });
+        });
+        build = build.or(rows(ui, &goals, false));
+        if hide {
+            self.sim.dismiss_goals();
+            self.ui.goals.open = false;
+        }
+        build
+    }
+
+    /// The phone chip and sheet. (A desktop shows the card in the goal slot instead.)
     pub(super) fn goals_ui(&mut self, ctx: &Context) {
-        if !self.sim.goals_visible() {
+        if !theme::is_compact(ctx) || !self.sim.goals_visible() {
             return;
         }
         self.refresh_goals(ctx);
@@ -84,9 +115,15 @@ impl Game {
         let mut hide = false;
         if theme::is_compact(ctx) {
             let up = ctx.content_rect().bottom() - dock_top(ctx) + 8.0;
+            // clear of the growth banner, which sits just above the bottom bar
+            let lift = if self.ui.growth.has_alerts() {
+                76.0
+            } else {
+                0.0
+            };
             let mut tap = false;
             egui::Area::new(egui::Id::new("goals-chip"))
-                .anchor(Align2::RIGHT_BOTTOM, vec2(-8.0, -up))
+                .anchor(Align2::RIGHT_BOTTOM, vec2(-8.0, -up - lift))
                 .show(ctx, |ui| {
                     let b = ui.add(
                         egui::Button::new(
@@ -120,32 +157,8 @@ impl Game {
                     self.ui.goals.open = false;
                 }
             }
-        } else {
-            egui::Area::new(egui::Id::new("goals-card"))
-                .anchor(Align2::RIGHT_BOTTOM, vec2(-14.0, -34.0))
-                .show(ctx, |ui| {
-                    theme::panel().show(ui, |ui| {
-                        ui.set_width(300.0);
-                        ui.horizontal(|ui| {
-                            lab(ui, format!("First goals  {done}/{}", goals.len()), 13.0);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui
-                                        .small_button(
-                                            RichText::new("Hide").font(ui_font(11.0)).color(MUTED),
-                                        )
-                                        .clicked()
-                                    {
-                                        hide = true;
-                                    }
-                                },
-                            );
-                        });
-                        build = rows(ui, &goals, false);
-                    });
-                });
         }
+        // on a desktop the card shows in place of the milestone goal (see `first_goals_card`)
         if hide {
             self.sim.dismiss_goals();
             self.ui.goals.open = false;

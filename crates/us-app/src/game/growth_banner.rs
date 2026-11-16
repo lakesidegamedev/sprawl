@@ -5,7 +5,7 @@
 use super::Game;
 use super::panels::{dock_top, lab_c};
 use crate::theme::{self, ACCENT, BAD, INK, MUTED, TEXT, ui_font};
-use egui::{Align2, Color32, Context, RichText, Stroke, vec2};
+use egui::{Align2, Context, RichText, Stroke, vec2};
 use us_sim::GrowthAlert;
 
 /// What the banner remembers between frames: the sim is asked twice a second, not every frame.
@@ -13,127 +13,137 @@ use us_sim::GrowthAlert;
 pub struct GrowthUi {
     alerts: Vec<GrowthAlert>,
     asked: f64,
+    /// Where the top bar ends, set by the game each frame.
+    pub top_y: f32,
+}
+
+impl GrowthUi {
+    pub fn has_alerts(&self) -> bool {
+        !self.alerts.is_empty()
+    }
 }
 
 /// Seconds between asks.
 const REFRESH_S: f64 = 0.5;
-/// Alerts shown at once on a desktop; a phone has room for one.
-const SHOWN: usize = 2;
 
 impl Game {
-    /// Draw the banner above the map (desktop) or above the bottom bar (phone).
+    /// One compact banner: top centre under the top bar on a desktop, above the bottom bar on a
+    /// phone. It shows the most urgent block with its button; other blocks are one short line
+    /// inside it. With nothing blocked, a slim line warns about the capacity nearest to full.
     pub(super) fn growth_banner_ui(&mut self, ctx: &Context) {
         let now = ctx.input(|i| i.time);
         if now - self.ui.growth.asked > REFRESH_S || now < self.ui.growth.asked {
             self.ui.growth.alerts = self.sim.growth_alerts();
             self.ui.growth.asked = now;
         }
-        if self.ui.growth.alerts.is_empty() {
+        let alerts = &self.ui.growth.alerts;
+        if alerts.is_empty() {
             return;
         }
         let compact = theme::is_compact(ctx);
-        let n = if compact { 1 } else { SHOWN };
-        let shown: Vec<GrowthAlert> = self.ui.growth.alerts.iter().take(n).cloned().collect();
-        let others: Vec<&str> = self
-            .ui
-            .growth
-            .alerts
+        // blocked first; the sim lists them in order of urgency
+        let main = alerts
             .iter()
-            .skip(n)
-            .map(|a| a.capacity.label())
+            .find(|a| a.blocked)
+            .unwrap_or(&alerts[0])
+            .clone();
+        let also: Vec<String> = alerts
+            .iter()
+            .filter(|a| a.capacity != main.capacity && (a.blocked || !main.blocked))
+            .map(|a| a.capacity.label().to_lowercase())
             .collect();
+        let blocked = main.blocked;
         let mut open_build = None;
+        let width = if compact {
+            ctx.content_rect().width() - 16.0
+        } else {
+            520.0
+        };
         let anchor = if compact {
-            let up = ctx.content_rect().bottom() - dock_top(ctx) + 54.0;
+            let up = ctx.content_rect().bottom() - dock_top(ctx) + 8.0;
             (Align2::CENTER_BOTTOM, vec2(0.0, -up))
         } else {
-            // above the key hints, clear of the news toasts at the top
-            (Align2::CENTER_BOTTOM, vec2(0.0, -40.0))
+            // under the top bar, and under the placement banner when one is showing
+            let y = self.ui.growth.top_y + if self.banner.is_some() { 48.0 } else { 0.0 };
+            (Align2::CENTER_TOP, vec2(0.0, y))
         };
         egui::Area::new(egui::Id::new("growth-banner"))
             .anchor(anchor.0, anchor.1)
-            .order(egui::Order::Foreground)
+            .order(egui::Order::Middle)
             .show(ctx, |ui| {
-                let width = if compact {
-                    ctx.content_rect().width() - 24.0
-                } else {
-                    460.0
-                };
                 ui.set_max_width(width);
-                if !others.is_empty() {
-                    theme::panel()
-                        .inner_margin(egui::Margin::symmetric(8, 3))
-                        .show(ui, |ui| {
-                            lab_c(
-                                ui,
-                                format!("Also close to full: {}", others.join(", ")),
-                                11.0,
-                                MUTED,
-                            );
-                        });
-                    ui.add_space(4.0);
-                }
-                for a in &shown {
-                    let col = if a.blocked { BAD } else { ACCENT };
-                    theme::panel()
-                        .stroke(Stroke::new(1.5, col))
-                        .inner_margin(egui::Margin::symmetric(10, 6))
-                        .show(ui, |ui| {
-                            ui.set_width(width - 22.0);
+                let col = if blocked { BAD } else { ACCENT };
+                theme::panel()
+                    .stroke(Stroke::new(1.5, col))
+                    .inner_margin(egui::Margin::symmetric(10, 5))
+                    .show(ui, |ui| {
+                        ui.set_max_width(width - 22.0);
+                        ui.horizontal_wrapped(|ui| {
+                            let text = if blocked {
+                                format!("{} {}", main.headline, main.advice)
+                            } else {
+                                main.headline.clone()
+                            };
                             ui.add(
                                 egui::Label::new(
-                                    RichText::new(&a.headline)
-                                        .font(ui_font(if compact { 14.0 } else { 15.0 }))
-                                        .color(if a.blocked { BAD } else { INK }),
+                                    RichText::new(text)
+                                        .font(ui_font(if blocked { 13.0 } else { 12.0 }))
+                                        .color(if blocked { INK } else { TEXT }),
                                 )
                                 .wrap(),
                             );
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(&a.advice).font(ui_font(12.0)).color(TEXT),
-                                )
-                                .wrap(),
-                            );
-                            lab_c(
-                                ui,
-                                format!(
-                                    "{} of {} in use",
-                                    super::charts::group(a.demand),
-                                    super::charts::group(a.supply)
-                                ),
-                                11.0,
-                                MUTED,
-                            );
-                            if !a.under_construction {
+                            if !main.under_construction {
                                 let label = format!(
-                                    "Build a {} ${}",
-                                    a.build.label().to_lowercase(),
-                                    us_sim::dollars(a.cost)
+                                    "Build {} ${}",
+                                    main.build.label().to_lowercase(),
+                                    us_sim::dollars(main.cost)
                                 );
                                 let b = ui.add(
                                     egui::Button::new(
                                         RichText::new(label)
-                                            .font(ui_font(12.5))
-                                            .color(if a.can_afford { theme::LINE } else { INK }),
+                                            .font(ui_font(12.0))
+                                            .color(if main.can_afford { theme::LINE } else { INK }),
                                     )
-                                    .fill(if a.can_afford { ACCENT } else { theme::RAISED })
-                                    .min_size(vec2(0.0, if compact { theme::TOUCH } else { 26.0 })),
+                                    .fill(if main.can_afford {
+                                        ACCENT
+                                    } else {
+                                        theme::RAISED
+                                    })
+                                    .min_size(vec2(0.0, if compact { theme::TOUCH } else { 22.0 })),
                                 );
                                 if b.clicked() {
-                                    open_build = Some(a.build);
+                                    open_build = Some(main.build);
                                 }
-                                if !a.can_afford {
-                                    lab_c(
-                                        ui,
-                                        "Not enough in the treasury yet. Take a bond or wait.",
-                                        11.0,
-                                        Color32::from_rgb(240, 170, 110),
-                                    );
-                                }
+                            } else {
+                                lab_c(ui, "One is being built.", 11.0, MUTED);
                             }
                         });
-                    ui.add_space(4.0);
-                }
+                        let mut extra = Vec::new();
+                        if blocked {
+                            extra.push(format!(
+                                "{} of {} in use.",
+                                super::charts::group(main.demand),
+                                super::charts::group(main.supply)
+                            ));
+                            if !main.can_afford && !main.under_construction {
+                                extra.push("Not enough money yet: take a bond or wait.".into());
+                            }
+                        }
+                        if !also.is_empty() {
+                            extra.push(format!(
+                                "{}: {}.",
+                                if blocked {
+                                    "Also full"
+                                } else {
+                                    "Also near full"
+                                },
+                                also.join(", ")
+                            ));
+                        }
+                        if !extra.is_empty() {
+                            lab_c(ui, extra.join(" "), 11.0, MUTED);
+                        }
+                    });
             });
         if let Some(kind) = open_build {
             self.open_build_for(kind);

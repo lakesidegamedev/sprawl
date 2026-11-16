@@ -244,7 +244,7 @@ impl Sim {
     pub fn growth_alerts(&self) -> Vec<GrowthAlert> {
         let mut out = Vec::new();
         for c in Capacity::ALL {
-            let st = self.capacity_with(c, false);
+            let st = self.committed_status(c);
             let blocked = self.stalled[c.index()];
             if !blocked && st.ratio() < crate::limits::WARN_AT {
                 continue;
