@@ -151,7 +151,10 @@ impl Game {
 
     /// The phone chip and sheet. (A desktop shows the card in the goal slot instead.)
     pub(super) fn goals_ui(&mut self, ctx: &Context) {
-        if !theme::is_compact(ctx) || !self.sim.goals_visible() {
+        if !theme::is_compact(ctx)
+            || !self.sim.goals_visible()
+            || (self.any_sheet() && !self.ui.goals.open)
+        {
             return;
         }
         self.refresh_goals(ctx);

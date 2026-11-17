@@ -372,8 +372,8 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let down = state == ElementState::Pressed;
-                let on_ui =
-                    resp.consumed || pointer_over_ui(&gfx.egui_ctx, st.pointer_pixels(), 0.0);
+                // The pointer may have moved since egui last processed its queued events.
+                let on_ui = pointer_over_ui(&gfx.egui_ctx, st.pointer_pixels(), 0.0);
                 match button {
                     MouseButton::Left => st.mouse_button(true, down, on_ui),
                     MouseButton::Right => st.mouse_button(false, down, on_ui),
@@ -381,7 +381,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if !resp.consumed && !pointer_over_ui(&gfx.egui_ctx, st.pointer_pixels(), 0.0) {
+                if !pointer_over_ui(&gfx.egui_ctx, st.pointer_pixels(), 0.0) {
                     let lines = match delta {
                         MouseScrollDelta::LineDelta(_, y) => y,
                         MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,

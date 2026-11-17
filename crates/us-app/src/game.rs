@@ -351,7 +351,7 @@ impl State {
         self.cursor
     }
 
-    pub fn mouse_button(&mut self, left: bool, down: bool, consumed: bool) {
+    pub fn mouse_button(&mut self, left: bool, down: bool, on_ui: bool) {
         let slot = if left {
             &mut self.left
         } else {
@@ -360,13 +360,13 @@ impl State {
         if down {
             *slot = Some(Press {
                 dragged: false,
-                on_ui: consumed,
+                on_ui,
                 travel: 0.0,
             });
         } else if let Some(p) = slot.take()
             && !p.dragged
             && !p.on_ui
-            && !consumed
+            && !on_ui
             && self.screen == Screen::Game
         {
             if left {
