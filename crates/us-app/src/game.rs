@@ -6,7 +6,7 @@ use crate::cam::CamCtl;
 use crate::theme::{self, ACCENT, BAD, INK, TEXT, heading, ui_font};
 use crate::world::LiveScene;
 use egui::{Align2, Color32, Pos2, RichText, Stroke, vec2};
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -314,7 +314,7 @@ impl State {
         let mut live = LiveScene::new(town, &sim, true);
         live.sync(&mut sim, 1.0e9);
         let mut cam = CamCtl::overview(4096.0, 1.7);
-        cam.look_at(Vec3::new(hall.x as f32, hall.y as f32, 0.0), 800.0);
+        cam.look_at(Vec2::new(hall.x as f32, hall.y as f32), 800.0);
         self.demo = Some(Demo { live, cam });
     }
 
@@ -436,7 +436,7 @@ impl State {
         if self.screen != Screen::Game {
             if let Some(d) = self.demo.as_mut() {
                 d.cam.keys(dt, (0.0, 0.0), 0.07, false);
-                d.cam.update(dt);
+                d.cam.update(dt, d.live.land());
             }
             return;
         }
@@ -451,10 +451,7 @@ impl State {
         let cycle = self.settings.day_night;
         let Some(g) = self.game.as_mut() else { return };
         g.cam.keys(dt, pan, rot, fast);
-        let (gx, gy) = g.cam.goal_xy();
-        g.cam.follow_ground(g.live.ground_at(gx, gy));
-        g.cam.clear_of_terrain(g.live.land());
-        g.cam.update(dt);
+        g.cam.update(dt, g.live.land());
         if let Some((b, t)) = g.banner.as_mut() {
             *t -= dt;
             if *t <= 0.0 {
@@ -608,7 +605,7 @@ impl State {
         let mut live = LiveScene::new(town.clone(), &sim, true);
         live.sync(&mut sim, 1.0e9);
         let mut cam = CamCtl::overview(town.size as f32, 1.7);
-        cam.look_at(Vec3::new(sim.hall.x as f32, sim.hall.y as f32, 0.0), 650.0);
+        cam.look_at(Vec2::new(sim.hall.x as f32, sim.hall.y as f32), 650.0);
         let rules = sim.rules();
         let name = format!("{} {}", screens::town_name(preset.label()), seed);
         let mut g = Game::new(
@@ -1962,7 +1959,7 @@ impl Game {
         self.speed = 2;
         self.sel = if self.compact { None } else { Some(Sel::Hall) };
         self.cam
-            .look_at(Vec3::new(site.x as f32, site.y as f32, 0.0), 650.0);
+            .look_at(Vec2::new(site.x as f32, site.y as f32), 650.0);
         self.banner = Some((
             "Town hall placed. The main street joins the highway.".into(),
             7.0,

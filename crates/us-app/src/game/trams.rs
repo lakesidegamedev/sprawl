@@ -68,7 +68,7 @@ impl Game {
             if let Some(l) = self.sim.tram_lines().first() {
                 let m = l.points[l.points.len() / 2];
                 self.cam
-                    .look_at(glam::Vec3::new(m.x as f32, m.y as f32, 0.0), 260.0);
+                    .look_at(glam::Vec2::new(m.x as f32, m.y as f32), 260.0);
             }
         }
         self.ui.trams.open = true;

@@ -40,13 +40,15 @@ impl Camera {
     }
 
     pub fn view(&self, aspect: f32) -> View {
-        let tilt = self.tilt_deg.clamp(5.0, 89.0).to_radians();
+        let from_vertical = (90.0 - self.tilt_deg.clamp(5.0, 90.0)).to_radians();
+        let (run, rise) = from_vertical.sin_cos();
         let yaw = self.yaw_deg.to_radians();
         let fwd = Vec3::new(yaw.sin(), yaw.cos(), 0.0);
-        let eye = self.target - fwd * (self.distance * tilt.cos())
-            + Vec3::Z * (self.distance * tilt.sin());
+        let eye = self.target - fwd * (self.distance * run) + Vec3::Z * (self.distance * rise);
         let (near, far) = (self.distance * 0.1, self.distance * 8.0);
-        let view = Mat4::look_at_rh(eye, self.target, Vec3::Z);
+        // Derive screen up from heading so an overhead view keeps its orientation.
+        let up = fwd * rise + Vec3::Z * run;
+        let view = Mat4::look_at_rh(eye, self.target, up);
         let proj = Mat4::perspective_rh(self.fov_deg.to_radians(), aspect, near, far);
         let view_proj = proj * view;
         View {

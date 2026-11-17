@@ -4,6 +4,7 @@
 //! The grid is sampled with the same two-triangle split the ground mesh uses, so anything placed
 //! with [`Land::height`] sits exactly on the drawn surface.
 
+use glam::Vec3;
 use std::sync::Arc;
 use us_gen::{Pt, Town, pt};
 
@@ -232,6 +233,51 @@ impl Land {
         } else {
             let h01 = self.sample(ix, iy + 1);
             h00 + (h01 - h00) * v + (h11 - h01) * u
+        }
+    }
+
+    /// Whether a line starting on or above the ground stays above the drawn triangles.
+    pub fn segment_above_ground(&self, start: Vec3, end: Vec3) -> bool {
+        let scale = f64::from(self.step());
+        let start64 = start.as_dvec3();
+        let offset = end.as_dvec3() - start64;
+        let a = start64 / scale;
+        let d = offset / scale;
+
+        // The height along the segment is linear between crossings of these three sets of
+        // grid lines. Beyond the map edge, height() holds the edge and only x or y matters.
+        let crossings = |origin: f64, delta: f64| {
+            if delta == 0.0 {
+                return (f64::INFINITY, f64::INFINITY);
+            }
+            let boundary = if delta > 0.0 {
+                origin.floor() + 1.0
+            } else {
+                origin.ceil() - 1.0
+            };
+            ((boundary - origin) / delta, delta.abs().recip())
+        };
+        let (mut x, dx) = crossings(a.x, d.x);
+        let (mut y, dy) = crossings(a.y, d.y);
+        let (mut diagonal, dd) = crossings(a.x - a.y, d.x - d.y);
+        loop {
+            let t = x.min(y).min(diagonal).min(1.0);
+            let p = (start64 + offset * t).as_vec3();
+            if p.z < self.height(p.x, p.y) {
+                return false;
+            }
+            if t == 1.0 || (end.z >= start.z && p.z > self.max_height()) {
+                return true;
+            }
+            if x == t {
+                x += dx;
+            }
+            if y == t {
+                y += dy;
+            }
+            if diagonal == t {
+                diagonal += dd;
+            }
         }
     }
 

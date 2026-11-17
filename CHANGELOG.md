@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix the camera on steep maps so the view follows the terrain while moving, lifts over ridges that block the town, and lowers again over open ground.
+
 ## 1.2.0 (2026-11-16)
 
 - Version 1.2.0. Shown version is 1.2.0.
