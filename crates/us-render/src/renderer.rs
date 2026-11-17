@@ -256,6 +256,7 @@ pub struct Renderer {
     shadow_pipeline: wgpu::RenderPipeline,
     edge_pipelines: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     compare: wgpu::Sampler,
+    compare_near: wgpu::Sampler,
     uniforms: wgpu::Buffer,
     shadow: Option<ShadowMap>,
     dummy_shadow: wgpu::TextureView,
@@ -689,12 +690,16 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-        let compare = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            compare: Some(wgpu::CompareFunction::LessEqual),
-            ..Default::default()
-        });
+        let comparison_sampler = |filter| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                mag_filter: filter,
+                min_filter: filter,
+                compare: Some(wgpu::CompareFunction::LessEqual),
+                ..Default::default()
+            })
+        };
+        let compare = comparison_sampler(wgpu::FilterMode::Nearest);
+        let compare_near = comparison_sampler(wgpu::FilterMode::Linear);
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
             size: std::mem::size_of::<Globals>() as u64,
@@ -731,6 +736,7 @@ impl Renderer {
             shadow_pipeline,
             edge_pipelines: Vec::new(),
             compare,
+            compare_near,
             uniforms,
             shadow: None,
             dummy_shadow,
@@ -1324,6 +1330,14 @@ impl Renderer {
             );
         }
         let shadow = self.shadow.as_ref().unwrap();
+        // At map scale a shadow texel is smaller than a screen pixel. Use the cheaper
+        // lookup there, and soften the visible steps at street level.
+        let world_per_pixel = globals.screen[2] * camera.distance;
+        let compare = if world_per_pixel < 1.5 {
+            &self.compare_near
+        } else {
+            &self.compare
+        };
         let group0 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("globals"),
             layout: &self.layout0,
@@ -1338,7 +1352,7 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.compare),
+                    resource: wgpu::BindingResource::Sampler(compare),
                 },
             ],
         });
@@ -1645,10 +1659,14 @@ fn light_matrix(scene: &Scene, view: &View, sun: Vec3, size: u32) -> (Mat4, f32,
         hi = hi.max(p);
     }
     let half = ((hi.x - lo.x).max(hi.y - lo.y) / 2.0) * 1.03 + 6.0;
-    let (cx, cy) = ((hi.x + lo.x) / 2.0, (hi.y + lo.y) / 2.0);
+    let texel = 2.0 * half / size as f32;
+    let anchor = lv.transform_point3(Vec3::ZERO);
+    let snap = |middle: f32, origin: f32| ((middle - origin) / texel).round() * texel + origin;
+    let cx = snap((hi.x + lo.x) / 2.0, anchor.x);
+    let cy = snap((hi.y + lo.y) / 2.0, anchor.y);
     let (near, far) = (-hi.z - 120.0, -lo.z + 120.0);
     let proj = Mat4::orthographic_rh(cx - half, cx + half, cy - half, cy + half, near, far);
-    (proj * lv, 2.0 * half / size as f32, far - near)
+    (proj * lv, texel, far - near)
 }
 
 #[cfg(test)]

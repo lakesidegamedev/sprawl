@@ -24,7 +24,7 @@
 ### For developers
 
 - Use a two-channel outline attachment where the adapter supports it at the selected sample count. Keep full-precision distance and face IDs and retain the wider attachment as a fallback.
-- Cull chunks against all six clip planes with wind-sway bounds. Filter shadow comparisons and skip redundant shadow and contact-shade reads. Terrain, simulation and save formats carry forward from 1.3.0.
+- Cull chunks against all six clip planes with wind-sway bounds. Filter shadows at close zoom, stabilize the shadow grid during camera movement, and skip redundant shadow and contact-shade reads. Terrain, simulation and save formats carry forward from 1.3.0.
 - Includes the steep-terrain camera and mobile interaction changes in #45 and #46.
 
 ## 1.2.0 (2026-11-16)
