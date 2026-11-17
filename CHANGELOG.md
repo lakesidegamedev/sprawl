@@ -2,11 +2,11 @@
 
 ## Unreleased
 
+- Phones and tablets keep Build, Budget, Map and News within one tap, with other tools under More. The shorter dock leaves more room for the town and sheets stay above it. Budget stacks department controls vertically on small screens.
+
 - Goals and town updates sit in separate columns so alerts no longer cover them. Open Taxes when needed to keep more of the map visible.
-
 - Town hall placement works only on visible crossroads markers. Tapping elsewhere leaves the town unstarted.
-- Compact screens show construction confirmations, and map gestures respect game dialogs.
-
+- Compact screens show construction confirmations, and map input stays behind panels and dialogs.
 - Fix the camera on steep maps so the view follows the terrain while moving, lifts over ridges that block the town, and lowers again over open ground.
 - On compact screens, choose a site and review its cost or placement problem before committing to a service building.
 - Budget and Build now show the same committed capacity as the growth warning. A warning shows the funding shortfall and opens Bonds when the town cannot afford the fix.

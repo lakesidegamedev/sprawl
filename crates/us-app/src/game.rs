@@ -347,6 +347,10 @@ impl State {
         }
     }
 
+    pub fn pointer_pixels(&self) -> (f32, f32) {
+        self.cursor
+    }
+
     pub fn mouse_button(&mut self, left: bool, down: bool, consumed: bool) {
         let slot = if left {
             &mut self.left
@@ -362,6 +366,7 @@ impl State {
         } else if let Some(p) = slot.take()
             && !p.dragged
             && !p.on_ui
+            && !consumed
             && self.screen == Screen::Game
         {
             if left {
@@ -1170,10 +1175,12 @@ impl State {
                             ui.label(small("Place the town hall".into(), INK));
                         }
                     };
+                    let narrow = ui.available_width() < 340.0;
+                    let tight = ui.available_width() < 256.0;
                     let row2 = |ui: &mut egui::Ui, g: &mut Game| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         let chip = |ui: &mut egui::Ui, g: &mut Game| {
-                            if g.placed {
+                            if g.placed && !narrow {
                                 g.approval_chip(ui, true);
                             }
                         };
@@ -1182,7 +1189,29 @@ impl State {
                             if chrome::menu_button(ui, vec2(48.0, theme::TOUCH)).clicked() {
                                 g.menu_open = true;
                             }
-                            if g.placed {
+                            if g.placed && tight {
+                                let speed = g.speed.max(1);
+                                if chrome::speed_button(
+                                    ui,
+                                    speed,
+                                    g.speed != 0,
+                                    vec2(52.0, theme::TOUCH),
+                                )
+                                .clicked()
+                                {
+                                    g.speed = if g.speed == 0 { 1 } else { g.speed % 3 + 1 };
+                                }
+                                if chrome::speed_button(
+                                    ui,
+                                    0,
+                                    g.speed == 0,
+                                    vec2(theme::TOUCH, theme::TOUCH),
+                                )
+                                .clicked()
+                                {
+                                    g.speed = if g.speed == 0 { 1 } else { 0 };
+                                }
+                            } else if g.placed {
                                 for i in (0..4).rev() {
                                     let on = g.speed == i;
                                     if chrome::speed_button(
@@ -1232,9 +1261,12 @@ impl State {
                             },
                         );
                     } else {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 8.0;
-                            row1(ui, g)
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            row1(ui, g);
+                            if narrow && g.placed {
+                                g.approval_chip(ui, true);
+                            }
                         });
                         row2(ui, g);
                     }
@@ -1491,10 +1523,13 @@ impl State {
             if g.ui.trams.open {
                 g.trams_ui(ctx, screen_w);
             }
+            if compact && g.ui.more_open {
+                g.more_sheet(ctx);
+            }
             if g.placed && !g.sim.is_game_over() {
                 if compact && g.ui.tool.is_some() {
                     g.civic_placement_ui(ctx);
-                } else if compact {
+                } else if compact && g.sel.is_none() {
                     g.growth_banner_ui(ctx);
                     g.goals_ui(ctx);
                 }
@@ -1560,14 +1595,19 @@ impl State {
         } else {
             "WASD pan   Q E rotate   right drag orbit   wheel zoom   0 1 2 3 speed   space pause   P K O B G J V I H R F panels   Y roads   M map view"
         };
-        if !(compact && (g.any_sheet() || g.ui.tool.is_some())) {
+        if !(compact
+            && (g.any_sheet()
+                || g.sel.is_some()
+                || g.ui.tool.is_some()
+                || g.ui.growth.height() > 0.0))
+        {
             egui::Area::new(egui::Id::new("help"))
                 .anchor(
                     Align2::CENTER_BOTTOM,
                     vec2(
                         0.0,
                         if compact {
-                            -(panels::dock_h(ctx) + 4.0)
+                            -(ctx.content_rect().bottom() - panels::dock_top(ctx) + 4.0)
                         } else {
                             -6.0
                         },

@@ -46,6 +46,17 @@ fn dept_color(d: Dept) -> Color32 {
     }
 }
 
+fn budget_service(department: Dept) -> Option<Service> {
+    match department {
+        Dept::Police => Some(Service::Police),
+        Dept::Fire => Some(Service::Fire),
+        Dept::Schools => Some(Service::Schools),
+        Dept::Health => Some(Service::Health),
+        Dept::Parks => Some(Service::Parks),
+        Dept::Roads => None,
+    }
+}
+
 pub(super) fn lab(ui: &mut Ui, text: impl AsRef<str>, size: f32) {
     let size = size.max(12.0);
     ui.label(RichText::new(text.as_ref()).font(ui_font(size)).color(TEXT));
@@ -89,19 +100,9 @@ fn bar(ui: &mut Ui, width: f32, frac: f32, col: Color32) {
 /// Height the bottom bar takes on a phone, so sheets and cards sit above it.
 pub const DOCK_H: f32 = 52.0;
 
-/// Height of the phone dock: one row of eight buttons, or two rows of four on a narrow screen,
-/// so every label can be 11 points or more.
-pub fn dock_h(ctx: &Context) -> f32 {
-    if dock_rows(ctx) == 2 {
-        DOCK_H + 50.0
-    } else {
-        DOCK_H
-    }
-}
-
-/// Rows the phone dock uses at this width.
+/// Use two rows only when large UI scaling leaves no room for five touch targets.
 pub fn dock_rows(ctx: &Context) -> usize {
-    if ctx.content_rect().width() < 900.0 {
+    if ctx.content_rect().width() < 248.0 {
         2
     } else {
         1
@@ -119,7 +120,7 @@ pub(super) fn dock_top(ctx: &Context) -> f32 {
     let screen = ctx.content_rect();
     ctx.data(|d| d.get_temp::<f32>(egui::Id::new("dock_top")))
         .filter(|y| *y > screen.top() && *y <= screen.bottom())
-        .unwrap_or(screen.bottom() - dock_h(ctx))
+        .unwrap_or(screen.bottom() - DOCK_H * dock_rows(ctx) as f32)
 }
 
 /// The icon a window or sheet shows beside its title.
@@ -175,9 +176,10 @@ fn closing(ctx: &Context, id: &str, clicked: bool) -> (f32, bool) {
 /// opens and fades when it closes.
 pub(super) fn sheet(ctx: &Context, title: &str, body: impl FnOnce(&mut Ui)) -> bool {
     let screen = ctx.content_rect();
-    let width = (screen.width() - 12.0).max(240.0);
+    let width = (screen.width() - 12.0).max(160.0);
     let bottom = dock_top(ctx) - 4.0;
-    let total = ((bottom - screen.top()) * 0.6).max(200.0);
+    let available = (bottom - screen.top()).max(0.0);
+    let total = (available * 0.62).max(160.0).min(available);
     let open = theme::opening(ctx, title, 0.2);
     let (fade, done) = closing(ctx, title, false);
     let mut clicked = false;
@@ -206,7 +208,7 @@ pub(super) fn sheet(ctx: &Context, title: &str, body: impl FnOnce(&mut Ui)) -> b
                         });
                     });
                     egui::ScrollArea::both()
-                        .max_height((total - theme::TOUCH - 30.0).max(80.0))
+                        .max_height((total - theme::TOUCH - 30.0).max(32.0))
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
                             ui.set_min_width(width - 40.0);
@@ -444,6 +446,7 @@ pub struct UiState {
     pub build_open: bool,
     pub stats_open: bool,
     pub news_open: bool,
+    pub(super) more_open: bool,
     pub rivals_open: bool,
     pub districts_open: bool,
     pub ordinances_open: bool,
@@ -500,6 +503,7 @@ impl Default for UiState {
             build_open: false,
             stats_open: false,
             news_open: false,
+            more_open: false,
             rivals_open: false,
             districts_open: false,
             ordinances_open: false,
@@ -1166,60 +1170,76 @@ impl Game {
                 Color32::from_rgb(170, 176, 196),
             );
             ui.add_space(4.0);
-            egui::Grid::new("budget-grid")
-                .num_columns(4)
-                .spacing([14.0, 8.0])
-                .show(ui, |ui| {
-                    for h in ["Department", "Funding", "Cost a month", "Coverage"] {
-                        lab_c(ui, h, 10.0, Color32::from_rgb(170, 176, 196));
-                    }
-                    ui.end_row();
-                    for d in Dept::ALL {
-                        let mut pct = self.sim.budget_pct(d);
-                        ui.horizontal(|ui| {
-                            let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-                            ui.painter().rect_filled(r, 3.0, dept_color(d));
-                            lab(ui, d.label(), 12.0);
+            if self.compact {
+                for d in Dept::ALL {
+                    ui.push_id(d.index(), |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            lab_c(ui, d.label(), 14.0, dept_color(d));
+                            lab(
+                                ui,
+                                format!("{}/mo", money(ledger.spending[d.index()])),
+                                12.0,
+                            );
                         });
-                        let r = ui.add(
-                            egui::Slider::new(&mut pct, BUDGET_MIN_PCT..=BUDGET_MAX_PCT)
-                                .custom_formatter(|v, _| format!("{v:.0}%")),
-                        );
-                        if r.changed() {
-                            self.sim.set_budget(d, pct);
+                        self.funding_slider(ui, d);
+                        if let Some(service) = budget_service(d) {
+                            lab(
+                                ui,
+                                format!("{:.0}% coverage", cover[service.index()] * 100.0),
+                                12.0,
+                            );
                         }
-                        lab(ui, money(ledger.spending[d.index()]), 12.0);
-                        match d {
-                            Dept::Roads => {
-                                lab_c(ui, "Upkeep", 11.0, Color32::from_rgb(170, 176, 196))
-                            }
-                            _ => {
-                                let s = match d {
-                                    Dept::Police => Service::Police,
-                                    Dept::Fire => Service::Fire,
-                                    Dept::Schools => Service::Schools,
-                                    Dept::Health => Service::Health,
-                                    _ => Service::Parks,
-                                };
-                                let v = cover[s.index()];
+                        ui.separator();
+                    });
+                }
+                lab(
+                    ui,
+                    format!(
+                        "Water coverage {:.0}%",
+                        cover[Service::Water.index()] * 100.0
+                    ),
+                    12.0,
+                );
+            } else {
+                egui::Grid::new("budget-grid")
+                    .num_columns(4)
+                    .spacing([14.0, 8.0])
+                    .show(ui, |ui| {
+                        for h in ["Department", "Funding", "Cost a month", "Coverage"] {
+                            lab_c(ui, h, 10.0, Color32::from_rgb(170, 176, 196));
+                        }
+                        ui.end_row();
+                        for d in Dept::ALL {
+                            ui.horizontal(|ui| {
+                                let (r, _) =
+                                    ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                                ui.painter().rect_filled(r, 3.0, dept_color(d));
+                                lab(ui, d.label(), 12.0);
+                            });
+                            self.funding_slider(ui, d);
+                            lab(ui, money(ledger.spending[d.index()]), 12.0);
+                            if let Some(service) = budget_service(d) {
+                                let v = cover[service.index()];
                                 ui.horizontal(|ui| {
                                     bar(ui, 60.0, v, dept_color(d));
                                     lab(ui, format!("{:.0}%", v * 100.0), 11.0);
                                 });
+                            } else {
+                                lab_c(ui, "Upkeep", 11.0, crate::theme::MUTED);
                             }
+                            ui.end_row();
                         }
+                        lab(ui, "Water", 12.0);
+                        lab_c(ui, "No budget line", 10.0, Color32::from_rgb(170, 176, 196));
+                        lab(ui, "In upkeep", 12.0);
+                        ui.horizontal(|ui| {
+                            let v = cover[Service::Water.index()];
+                            bar(ui, 60.0, v, TEAL);
+                            lab(ui, format!("{:.0}%", v * 100.0), 11.0);
+                        });
                         ui.end_row();
-                    }
-                    lab(ui, "Water", 12.0);
-                    lab_c(ui, "No budget line", 10.0, Color32::from_rgb(170, 176, 196));
-                    lab(ui, "In upkeep", 12.0);
-                    ui.horizontal(|ui| {
-                        let v = cover[Service::Water.index()];
-                        bar(ui, 60.0, v, TEAL);
-                        lab(ui, format!("{:.0}%", v * 100.0), 11.0);
                     });
-                    ui.end_row();
-                });
+            }
             ui.add_space(2.0);
             ui.separator();
             let spend: i64 = ledger.spending.iter().sum();
@@ -1260,6 +1280,15 @@ impl Game {
         });
         if closed {
             self.ui.budget_open = false;
+        }
+    }
+
+    fn funding_slider(&mut self, ui: &mut Ui, department: Dept) {
+        let mut pct = self.sim.budget_pct(department);
+        let slider = egui::Slider::new(&mut pct, BUDGET_MIN_PCT..=BUDGET_MAX_PCT)
+            .custom_formatter(|value, _| format!("{value:.0}%"));
+        if ui.add(slider).changed() {
+            self.sim.set_budget(department, pct);
         }
     }
 
