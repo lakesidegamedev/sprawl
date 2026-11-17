@@ -8,7 +8,7 @@ use crate::theme::{
 };
 use crate::world::LiveScene;
 use egui::{Align2, Color32, Context, Pos2, RichText, Sense, Stroke, Ui, vec2};
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 use us_gen::{Pt, RoadClass, pt};
 use us_render::{Overlay, OverlayKind, View, project};
 use us_sim::{
@@ -757,7 +757,7 @@ impl Game {
                 "whole" => {
                     let c = self.town.size as f32 * 0.5;
                     self.cam
-                        .look_at(Vec3::new(c, c, 0.0), self.town.size as f32 * 1.5);
+                        .look_at(Vec2::new(c, c), self.town.size as f32 * 1.5);
                 }
                 "rock" | "harbour" => {
                     // the tallest rock of a red rock town, or the harbour cove of a coastal one
@@ -775,7 +775,7 @@ impl Game {
                     };
                     if let Some(p) = at {
                         let d = if k == "rock" { 1100.0 } else { 1200.0 };
-                        self.cam.look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), d);
+                        self.cam.look_at(Vec2::new(p.x as f32, p.y as f32), d);
                     }
                 }
                 "bridge" => {
@@ -788,8 +788,7 @@ impl Game {
                             .find(|&p| land.water_at(p).is_some())
                     });
                     if let Some(p) = found {
-                        self.cam
-                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 420.0);
+                        self.cam.look_at(Vec2::new(p.x as f32, p.y as f32), 420.0);
                     }
                 }
                 "hill" => {
@@ -804,8 +803,7 @@ impl Game {
                         .filter(|(sl, _)| sl.is_finite())
                         .max_by(|a, b| a.0.total_cmp(&b.0));
                     if let Some((_, p)) = best {
-                        self.cam
-                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 420.0);
+                        self.cam.look_at(Vec2::new(p.x as f32, p.y as f32), 420.0);
                     }
                 }
                 "slope" => {
@@ -824,8 +822,7 @@ impl Game {
                         .max_by(|a, b| a.0.total_cmp(&b.0));
                     if let Some((_, p)) = best {
                         self.ui.fixed_ghost = Some(p);
-                        self.cam
-                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 420.0);
+                        self.cam.look_at(Vec2::new(p.x as f32, p.y as f32), 420.0);
                     }
                 }
                 "spot" => {
@@ -841,8 +838,7 @@ impl Game {
                         .nth(n);
                     if let Some(p) = found {
                         self.ui.fixed_ghost = Some(p);
-                        self.cam
-                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 1500.0);
+                        self.cam.look_at(Vec2::new(p.x as f32, p.y as f32), 1500.0);
                     }
                 }
                 "civic" => {
@@ -862,8 +858,7 @@ impl Game {
                             self.sim.step_day();
                         }
                         self.sel = Some(Sel::Lot(i));
-                        self.cam
-                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 1500.0);
+                        self.cam.look_at(Vec2::new(p.x as f32, p.y as f32), 1500.0);
                     }
                 }
                 "sel" | "selsvc" => {
@@ -880,8 +875,7 @@ impl Game {
                     if let Some(i) = found {
                         let p = self.sim.lots()[i].pos;
                         self.sel = Some(Sel::Lot(i + if want_svc { 0 } else { n }));
-                        self.cam
-                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 650.0);
+                        self.cam.look_at(Vec2::new(p.x as f32, p.y as f32), 650.0);
                     }
                 }
                 "year" => self.ui.range = Range::Year,
@@ -900,13 +894,13 @@ impl Game {
                     // the town hall from `n` metres away, for a screenshot
                     let h = self.town.hall;
                     self.cam
-                        .look_at(Vec3::new(h.x as f32, h.y as f32, 0.0), n.max(300) as f32);
+                        .look_at(Vec2::new(h.x as f32, h.y as f32), n.max(300) as f32);
                 }
                 "zoom" => {
                     if let Some(Sel::Lot(i)) = self.sel {
                         let p = self.sim.lots()[i].pos;
                         self.cam
-                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), n as f32);
+                            .look_at(Vec2::new(p.x as f32, p.y as f32), n as f32);
                     }
                 }
                 "upgrade" => {
@@ -928,8 +922,7 @@ impl Game {
                         .find(|l| matches!(l.phase, Phase::Building { .. }) && l.next_level > 0)
                         .map(|l| l.pos);
                     if let Some(p) = found {
-                        self.cam
-                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 220.0);
+                        self.cam.look_at(Vec2::new(p.x as f32, p.y as f32), 220.0);
                     }
                 }
                 "burned" => {
@@ -946,8 +939,7 @@ impl Game {
                         .find(|l| l.fire.is_some())
                         .map(|l| l.pos);
                     if let Some(p) = found {
-                        self.cam
-                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 220.0);
+                        self.cam.look_at(Vec2::new(p.x as f32, p.y as f32), 220.0);
                     }
                 }
                 "works" => {
@@ -959,8 +951,7 @@ impl Game {
                         self.sim.step_day();
                     }
                     if let Some(p) = self.live.works_place(&self.sim) {
-                        self.cam
-                            .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 260.0);
+                        self.cam.look_at(Vec2::new(p.x as f32, p.y as f32), 260.0);
                     }
                 }
                 "districts" | "ordinances" => {
@@ -2468,8 +2459,7 @@ impl Game {
                 });
         });
         if let Some(p) = fly {
-            self.cam
-                .look_at(Vec3::new(p.x as f32, p.y as f32, 0.0), 260.0);
+            self.cam.look_at(Vec2::new(p.x as f32, p.y as f32), 260.0);
         }
         if closed {
             self.ui.news_open = false;
