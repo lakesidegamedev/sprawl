@@ -150,7 +150,7 @@ pub(super) fn dock_button(
         rect.center_bottom() - vec2(0.0, 3.0),
         Align2::CENTER_BOTTOM,
         label,
-        ui_font(10.0),
+        ui_font(11.0),
         col,
     );
     resp

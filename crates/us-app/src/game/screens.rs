@@ -1,7 +1,7 @@
 //! Screens added in preview 4: choosing rules for a new town, saved games, voters and election
 //! night, the end of a game, and the phone layout's bottom bar.
 
-use super::panels::{DOCK_H, MapView};
+use super::panels::MapView;
 use super::{Game, Screen, State, label, money};
 use crate::saves::{self, SaveInfo};
 use crate::theme::{
@@ -13,6 +13,74 @@ use us_sim::{Difficulty, ElectionResult, GameOverReason, Issue, Rules};
 
 const MUTED: Color32 = Color32::from_rgb(170, 176, 196);
 const GOLD: Color32 = ACCENT;
+
+#[derive(Clone, Copy)]
+enum MobilePanel {
+    Build,
+    Budget,
+    Map,
+    News,
+    More,
+    Taxes,
+    Bonds,
+    Graphs,
+    Voters,
+    Rivals,
+    Districts,
+    Ordinances,
+    Trams,
+}
+
+impl MobilePanel {
+    const DOCK: [Self; 5] = [Self::Build, Self::Budget, Self::Map, Self::News, Self::More];
+    const MORE: [Self; 8] = [
+        Self::Taxes,
+        Self::Bonds,
+        Self::Graphs,
+        Self::Voters,
+        Self::Rivals,
+        Self::Districts,
+        Self::Ordinances,
+        Self::Trams,
+    ];
+
+    fn item(self) -> (&'static str, &'static str) {
+        use theme::icon;
+        match self {
+            Self::Build => (icon::HAMMER, "Build"),
+            Self::Budget => (icon::BUDGET, "Budget"),
+            Self::Map => (icon::MAP, "Map"),
+            Self::News => (icon::NEWS, "News"),
+            Self::More => (icon::MENU, "More"),
+            Self::Taxes => (icon::TAXES, "Taxes"),
+            Self::Bonds => (icon::BONDS, "Bonds"),
+            Self::Graphs => (icon::GRAPHS, "Graphs"),
+            Self::Voters => (icon::VOTERS, "Voters"),
+            Self::Rivals => (icon::RIVALS, "Rivals"),
+            Self::Districts => (icon::DISTRICTS, "Districts"),
+            Self::Ordinances => (icon::ORDINANCES, "Ordinances"),
+            Self::Trams => (icon::TRAM, "Trams"),
+        }
+    }
+
+    fn active(self, game: &mut Game) -> &mut bool {
+        match self {
+            Self::Build => &mut game.ui.build_open,
+            Self::Budget => &mut game.ui.budget_open,
+            Self::Map => &mut game.map_open,
+            Self::News => &mut game.ui.news_open,
+            Self::More => &mut game.ui.more_open,
+            Self::Taxes => &mut game.ui.levers_open,
+            Self::Bonds => &mut game.ui.loans_open,
+            Self::Graphs => &mut game.ui.stats_open,
+            Self::Voters => &mut game.voters_open,
+            Self::Rivals => &mut game.ui.rivals_open,
+            Self::Districts => &mut game.ui.districts_open,
+            Self::Ordinances => &mut game.ui.ordinances_open,
+            Self::Trams => &mut game.ui.trams.open,
+        }
+    }
+}
 
 /// How a new town is played.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -506,6 +574,9 @@ impl Game {
         u.trams.open = false;
         u.paint = None;
         u.tool = None;
+        u.civic_site = None;
+        u.goals.open = false;
+        u.more_open = false;
         self.voters_open = false;
         self.map_open = false;
     }
@@ -522,6 +593,8 @@ impl Game {
             || u.districts_open
             || u.ordinances_open
             || u.trams.open
+            || u.goals.open
+            || u.more_open
             || self.voters_open
             || self.map_open
     }
@@ -541,6 +614,8 @@ impl Game {
             self.ui.districts_open,
             self.ui.ordinances_open,
             self.ui.trams.open,
+            self.ui.goals.open,
+            self.ui.more_open,
         ];
         let Some(keep) = order.iter().position(|&b| b) else {
             return;
@@ -571,72 +646,87 @@ impl Game {
             self.ui.districts_open = keep == 9;
             self.ui.ordinances_open = keep == 10;
             self.ui.trams.open = keep == 11;
+            self.ui.goals.open = keep == 12;
+            self.ui.more_open = keep == 13;
             if keep != 9 {
                 self.ui.paint = None;
             }
         }
     }
 
-    /// The phone layout's one bar of panel buttons along the bottom.
+    /// Primary town controls stay on screen while the rest live in a single sheet.
     pub(super) fn dock_ui(&mut self, ui: &mut Ui) {
-        let unread = self.ui.events.len().saturating_sub(self.ui.news_seen);
-        let news = if unread > 0 {
-            format!("News {unread}")
-        } else {
-            "News".to_string()
-        };
-        let items: [(&str, &str, bool); 12] = [
-            (theme::icon::TAXES, "Taxes", self.ui.levers_open),
-            (theme::icon::BUDGET, "Budget", self.ui.budget_open),
-            (theme::icon::BONDS, "Bonds", self.ui.loans_open),
-            (theme::icon::HAMMER, "Build", self.ui.build_open),
-            (theme::icon::GRAPHS, "Graphs", self.ui.stats_open),
-            (theme::icon::NEWS, news.as_str(), self.ui.news_open),
-            (theme::icon::VOTERS, "Voters", self.voters_open),
-            (theme::icon::RIVALS, "Rivals", self.ui.rivals_open),
-            (theme::icon::MAP, "Map", self.map_open),
-            (theme::icon::DISTRICTS, "Districts", self.ui.districts_open),
-            (theme::icon::ORDINANCES, "Rules", self.ui.ordinances_open),
-            (theme::icon::TRAM, "Trams", self.ui.trams.open),
-        ];
-        let rows = super::panels::dock_rows(ui.ctx());
-        let per = items.len().div_ceil(rows);
-        let n = per as f32;
-        let gap = 3.0;
-        let w = ((ui.available_width() - 12.0 - gap * (n - 1.0)) / n).floor();
-        let mut hit: Option<usize> = None;
+        let unread = self.ui.events.len() > self.ui.news_seen;
+        let gap = 4.0;
+        let per_row = MobilePanel::DOCK
+            .len()
+            .div_ceil(super::panels::dock_rows(ui.ctx()));
+        let available = ui.available_width();
         ui.spacing_mut().item_spacing = vec2(gap, gap);
-        for row in items.chunks(per).enumerate() {
+        let mut hit = None;
+        for row in MobilePanel::DOCK.chunks(per_row) {
+            let n = row.len() as f32;
+            let w = ((available - gap * (n - 1.0)) / n).min(124.0).floor();
             ui.horizontal(|ui| {
-                for (j, (glyph, name, on)) in row.1.iter().enumerate() {
-                    let i = row.0 * per + j;
-                    if super::chrome::dock_button(ui, glyph, name, *on, vec2(w, theme::TOUCH))
-                        .clicked()
-                    {
-                        hit = Some(i);
+                let inset = ((available - w * n - gap * (n - 1.0)) * 0.5).max(0.0);
+                if inset > gap {
+                    ui.add_space(inset - gap);
+                }
+                for &panel in row {
+                    let (glyph, label) = panel.item();
+                    let on = *panel.active(self);
+                    let response =
+                        super::chrome::dock_button(ui, glyph, label, on, vec2(w, theme::TOUCH));
+                    if matches!(panel, MobilePanel::News) && unread && !on {
+                        ui.painter().circle_filled(
+                            response.rect.right_top() + vec2(-9.0, 9.0),
+                            3.0,
+                            ACCENT,
+                        );
+                    }
+                    if response.clicked() {
+                        hit = Some(panel);
                     }
                 }
             });
         }
-        if let Some(i) = hit {
-            let was = items[i].2;
+        if let Some(panel) = hit {
+            let was_open = *panel.active(self);
             self.close_sheets();
-            if !was {
-                match i {
-                    0 => self.ui.levers_open = true,
-                    1 => self.ui.budget_open = true,
-                    2 => self.ui.loans_open = true,
-                    3 => self.ui.build_open = true,
-                    4 => self.ui.stats_open = true,
-                    5 => self.ui.news_open = true,
-                    6 => self.voters_open = true,
-                    7 => self.ui.rivals_open = true,
-                    8 => self.map_open = true,
-                    9 => self.ui.districts_open = true,
-                    10 => self.ui.ordinances_open = true,
-                    _ => self.ui.trams.open = true,
-                }
+            *panel.active(self) = !was_open;
+        }
+    }
+
+    pub(super) fn more_sheet(&mut self, ctx: &Context) {
+        let mut next = None;
+        let closed = super::panels::sheet(ctx, "More", |ui| {
+            let columns = if ctx.content_rect().width() >= 360.0 {
+                2
+            } else {
+                1
+            };
+            for row in MobilePanel::MORE.chunks(columns) {
+                ui.horizontal(|ui| {
+                    let gap = ui.spacing().item_spacing.x;
+                    let width =
+                        (ui.available_width() - gap * (columns - 1) as f32) / columns as f32;
+                    for &panel in row {
+                        let (glyph, label) = panel.item();
+                        if super::chrome::dock_button(ui, glyph, label, false, vec2(width, 52.0))
+                            .clicked()
+                        {
+                            next = Some(panel);
+                        }
+                    }
+                });
             }
+        });
+        if closed {
+            self.ui.more_open = false;
+        }
+        if let Some(panel) = next {
+            self.close_sheets();
+            *panel.active(self) = true;
         }
     }
 
@@ -986,7 +1076,6 @@ fn vote_bars(ui: &mut Ui, r: &ElectionResult) {
         LINE,
     );
     p.rect_stroke(rect, 3.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
-    let _ = DOCK_H;
 }
 
 // ----- rival towns -----

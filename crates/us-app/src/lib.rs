@@ -17,7 +17,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
-pub const VERSION_LABEL: &str = "1.2.0";
+pub const VERSION_LABEL: &str = env!("CARGO_PKG_VERSION");
 
 struct Gfx {
     window: Arc<Window>,
@@ -28,6 +28,17 @@ struct Gfx {
     /// egui texture changes (the font atlas among them) not yet uploaded. A frame the surface
     /// skips keeps them here for the next one, so no glyph update is ever lost.
     pending_tex: egui::TexturesDelta,
+}
+
+fn pointer_over_ui(ctx: &egui::Context, pixels: (f32, f32), padding: f32) -> bool {
+    let ppp = ctx.pixels_per_point();
+    let at = egui::pos2(pixels.0 / ppp, pixels.1 / ppp);
+    ctx.layer_id_at(at)
+        .is_some_and(|layer| layer.order != egui::Order::Background)
+        || ctx
+            .interactive_rects_last_pass()
+            .iter()
+            .any(|rect| rect.expand(padding).contains(at))
 }
 
 struct App {
@@ -361,14 +372,16 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let down = state == ElementState::Pressed;
+                // The pointer may have moved since egui last processed its queued events.
+                let on_ui = pointer_over_ui(&gfx.egui_ctx, st.pointer_pixels(), 0.0);
                 match button {
-                    MouseButton::Left => st.mouse_button(true, down, resp.consumed),
-                    MouseButton::Right => st.mouse_button(false, down, resp.consumed),
+                    MouseButton::Left => st.mouse_button(true, down, on_ui),
+                    MouseButton::Right => st.mouse_button(false, down, on_ui),
                     _ => {}
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if !resp.consumed {
+                if !pointer_over_ui(&gfx.egui_ctx, st.pointer_pixels(), 0.0) {
                     let lines = match delta {
                         MouseScrollDelta::LineDelta(_, y) => y,
                         MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
@@ -392,19 +405,13 @@ impl ApplicationHandler for App {
                     TouchPhase::Ended => touch::Phase::Up,
                     TouchPhase::Cancelled => touch::Phase::Cancel,
                 };
-                // Does the finger land on a button or panel? Decided from the last frame's layout.
-                let ppp = gfx.egui_ctx.pixels_per_point();
-                let at = egui::pos2(t.location.x as f32 / ppp, t.location.y as f32 / ppp);
+                // Use the displayed layout because the next frame has yet to process the event.
                 let on_ui = phase == touch::Phase::Down
-                    && (gfx
-                        .egui_ctx
-                        .layer_id_at(at)
-                        .is_some_and(|l| l.order != egui::Order::Background)
-                        || gfx
-                            .egui_ctx
-                            .interactive_rects_last_pass()
-                            .iter()
-                            .any(|r| r.expand(4.0).contains(at)));
+                    && pointer_over_ui(
+                        &gfx.egui_ctx,
+                        (t.location.x as f32, t.location.y as f32),
+                        4.0,
+                    );
                 st.touch(
                     t.id,
                     phase,
@@ -469,5 +476,38 @@ pub fn run() {
              Technical detail: {f}"
         ));
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::pointer_over_ui;
+    use egui::{Align2, Area, Context, Id, Order, RawInput, Rect, pos2, vec2};
+
+    #[test]
+    fn placement_panel_owns_its_button_and_leaves_the_map_interactive() {
+        let ctx = Context::default();
+        let screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(390.0, 844.0)));
+        let mut button = Rect::NOTHING;
+        for _ in 0..3 {
+            let input = RawInput {
+                screen_rect,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                button = Area::new(Id::unique("placement-test"))
+                    .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -60.0))
+                    .order(Order::Middle)
+                    .show(ui.ctx(), |ui| ui.button("Start construction").rect)
+                    .inner;
+            });
+            output.textures_delta.clear();
+        }
+        assert!(pointer_over_ui(
+            &ctx,
+            (button.center().x, button.center().y),
+            0.0
+        ));
+        assert!(!pointer_over_ui(&ctx, (180.0, 360.0), 0.0));
     }
 }

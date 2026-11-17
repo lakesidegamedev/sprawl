@@ -76,6 +76,43 @@ fn a_road_over_the_river_gets_a_deck_and_walls() {
 }
 
 #[test]
+fn a_bent_bridge_has_joined_parapets() {
+    let land = rolling();
+    let bend = pt(300.0, 1000.0);
+    let line = [pt(300.0, 900.0), bend, pt(340.0, 1100.0)];
+    let bed = land.bed(&line);
+    let i = bed.pts.iter().position(|p| p.dist(bend) < 1e-6).unwrap();
+    assert_eq!(bed.weight[i], 1.0);
+    let mut walls = Ground::on(&land);
+    walls.bridge(&line, 6.0);
+    let mut edge = Ground::on(&land);
+    edge.ribbon(&line, 6.25, 0.0, 0.0, [0; 3]);
+
+    // The two sides of the joint sit on the same points as the driveable ribbon,
+    // and belong to both neighbouring wall segments.
+    for v in edge.mesh.vertices.iter().filter(|v| {
+        let distance = pt(v.pos[0] as f64, v.pos[1] as f64).dist(bend);
+        distance > 6.25 && distance < 6.5
+    }) {
+        let joins = walls
+            .mesh
+            .vertices
+            .iter()
+            .filter(|wall| {
+                (v.pos[0] - wall.pos[0]).abs() < 1e-4
+                    && (v.pos[1] - wall.pos[1]).abs() < 1e-4
+                    && (bed.deck[i] + 0.95 - wall.pos[2]).abs() < 1e-4
+            })
+            .count();
+        assert!(joins >= 4, "parapet does not meet at {:?}", v.pos);
+    }
+    assert!(edge.mesh.vertices.iter().any(|v| {
+        let distance = pt(v.pos[0] as f64, v.pos[1] as f64).dist(bend);
+        distance > 6.25 && distance < 6.5
+    }));
+}
+
+#[test]
 fn picking_finds_the_hill_under_the_cursor() {
     let land = rolling();
     let target = Vec3::new(600.0, 600.0, land.height(600.0, 600.0));

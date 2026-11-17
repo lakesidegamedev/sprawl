@@ -136,6 +136,7 @@ struct Game {
     /// The phone layout was on at the last frame.
     compact: bool,
     compact_init: bool,
+    ui_ppp: f32,
 }
 
 struct Demo {
@@ -327,6 +328,9 @@ impl State {
         let Some(g) = self.game.as_mut().filter(|_| self.screen == Screen::Game) else {
             return;
         };
+        if !g.map_input_available() {
+            return;
+        }
         if let Some(p) = self.left.as_mut().filter(|p| !p.on_ui) {
             p.travel += travel;
             if p.travel > 5.0 {
@@ -343,7 +347,11 @@ impl State {
         }
     }
 
-    pub fn mouse_button(&mut self, left: bool, down: bool, consumed: bool) {
+    pub fn pointer_pixels(&self) -> (f32, f32) {
+        self.cursor
+    }
+
+    pub fn mouse_button(&mut self, left: bool, down: bool, on_ui: bool) {
         let slot = if left {
             &mut self.left
         } else {
@@ -352,12 +360,13 @@ impl State {
         if down {
             *slot = Some(Press {
                 dragged: false,
-                on_ui: consumed,
+                on_ui,
                 travel: 0.0,
             });
         } else if let Some(p) = slot.take()
             && !p.dragged
             && !p.on_ui
+            && !on_ui
             && self.screen == Screen::Game
         {
             if left {
@@ -371,7 +380,7 @@ impl State {
 
     pub fn wheel(&mut self, lines: f32) {
         if self.screen == Screen::Game
-            && let Some(g) = self.game.as_mut()
+            && let Some(g) = self.game.as_mut().filter(|g| g.map_input_available())
         {
             g.cam.zoom(lines);
         }
@@ -450,7 +459,9 @@ impl State {
         let click = self.click.take();
         let cycle = self.settings.day_night;
         let Some(g) = self.game.as_mut() else { return };
-        g.cam.keys(dt, pan, rot, fast);
+        if g.map_input_available() {
+            g.cam.keys(dt, pan, rot, fast);
+        }
         g.cam.update(dt, g.live.land());
         if let Some((b, t)) = g.banner.as_mut() {
             *t -= dt;
@@ -459,36 +470,28 @@ impl State {
                 g.banner = None;
             }
         }
-        if let Some(c) = click {
+        if let Some(c) = click.filter(|_| g.map_input_available()) {
             let aspect = w as f32 / h as f32;
             let view = g.cam.camera().view(aspect);
             let ndc = (c.0 / w as f32 * 2.0 - 1.0, 1.0 - c.1 / h as f32 * 2.0);
             if !g.placed {
-                // snap to the crossroads nearest the click on screen
-                let ppp = 1.0;
-                let mut best: Option<(f32, Pt)> = None;
-                for s in &g.sites {
-                    if let Some(p) = project(
-                        &view,
-                        Vec3::new(
-                            s.x as f32,
-                            s.y as f32,
-                            g.live.ground_at(s.x as f32, s.y as f32),
-                        ),
-                    ) {
-                        let sp = to_screen(p, w, h, ppp);
-                        let d = ((sp.x - c.0).powi(2) + (sp.y - c.1).powi(2)).sqrt();
-                        if best.is_none_or(|b| d < b.0) {
-                            best = Some((d, *s));
-                        }
-                    }
-                }
-                if let Some((_, s)) = best {
-                    g.place(s);
+                let cursor = egui::pos2(c.0 / g.ui_ppp, c.1 / g.ui_ppp);
+                let site = g
+                    .hall_markers(&view, w, h, g.ui_ppp)
+                    .map(|(site, pos)| (site, pos.distance(cursor)))
+                    .filter(|&(_, d)| d <= g.hall_hit_radius())
+                    .min_by(|a, b| a.1.total_cmp(&b.1));
+                if let Some((site, _)) = site {
+                    g.place(site);
                 }
             } else if let Some(p) = g.live.scene.pick(&view, ndc) {
                 if g.ui.tool.is_some() {
-                    g.place_tool(pt(p.x as f64, p.y as f64));
+                    let site = pt(p.x as f64, p.y as f64);
+                    if g.compact {
+                        g.ui.civic_site = Some(site);
+                    } else {
+                        g.place_tool(site);
+                    }
                 } else if g.road_active().is_some() {
                     g.road_click(pt(p.x as f64, p.y as f64));
                 } else if g.ui.paint.is_some() {
@@ -1063,6 +1066,10 @@ impl State {
         let compact = theme::is_compact(ctx);
         let g = self.game.as_mut().unwrap();
         g.compact = compact;
+        g.ui_ppp = ppp;
+        if g.placed {
+            g.ui.growth.refresh(&g.sim, ctx.input(|i| i.time));
+        }
         if compact {
             if !g.compact_init {
                 g.compact_init = true;
@@ -1080,36 +1087,26 @@ impl State {
         if !g.placed {
             let cursor = ctx
                 .pointer_hover_pos()
-                .unwrap_or(Pos2::new(-9999.0, -9999.0));
-            let mut nearest: Option<(f32, usize)> = None;
-            let pts: Vec<Option<Pos2>> = g
-                .sites
-                .iter()
-                .map(|s| {
-                    let z = g.live.ground_at(s.x as f32, s.y as f32);
-                    project(&view, Vec3::new(s.x as f32, s.y as f32, z))
-                        .map(|p| to_screen(p, w, h, ppp))
-                })
-                .collect();
-            for (i, p) in pts.iter().enumerate() {
-                if let Some(p) = p {
-                    let d = p.distance(cursor);
-                    if d < 900.0 && nearest.is_none_or(|n| d < n.0) {
-                        nearest = Some((d, i));
-                    }
-                }
-            }
-            for (i, p) in pts.iter().enumerate() {
-                let Some(p) = p else { continue };
-                let hot = nearest.is_some_and(|n| n.1 == i);
+                .filter(|_| !ctx.egui_wants_pointer_input());
+            let markers: Vec<_> = g.hall_markers(&view, w, h, ppp).collect();
+            let nearest = cursor.and_then(|cursor| {
+                markers
+                    .iter()
+                    .map(|&(_, pos)| (pos, pos.distance(cursor)))
+                    .filter(|&(_, distance)| distance <= g.hall_hit_radius())
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(pos, _)| pos)
+            });
+            for &(_, p) in &markers {
+                let hot = nearest == Some(p);
                 let r = if hot { 13.0 } else { 8.0 };
                 painter.rect_filled(
-                    egui::Rect::from_center_size(*p, vec2(r * 2.0 + 4.0, r * 2.0 + 4.0)),
+                    egui::Rect::from_center_size(p, vec2(r * 2.0 + 4.0, r * 2.0 + 4.0)),
                     egui::CornerRadius::ZERO,
                     theme::LINE,
                 );
                 painter.rect_filled(
-                    egui::Rect::from_center_size(*p, vec2(r * 2.0, r * 2.0)),
+                    egui::Rect::from_center_size(p, vec2(r * 2.0, r * 2.0)),
                     egui::CornerRadius::ZERO,
                     if hot { ACCENT } else { INK },
                 );
@@ -1178,10 +1175,12 @@ impl State {
                             ui.label(small("Place the town hall".into(), INK));
                         }
                     };
+                    let narrow = ui.available_width() < 340.0;
+                    let tight = ui.available_width() < 256.0;
                     let row2 = |ui: &mut egui::Ui, g: &mut Game| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         let chip = |ui: &mut egui::Ui, g: &mut Game| {
-                            if g.placed {
+                            if g.placed && !narrow {
                                 g.approval_chip(ui, true);
                             }
                         };
@@ -1190,7 +1189,29 @@ impl State {
                             if chrome::menu_button(ui, vec2(48.0, theme::TOUCH)).clicked() {
                                 g.menu_open = true;
                             }
-                            if g.placed {
+                            if g.placed && tight {
+                                let speed = g.speed.max(1);
+                                if chrome::speed_button(
+                                    ui,
+                                    speed,
+                                    g.speed != 0,
+                                    vec2(52.0, theme::TOUCH),
+                                )
+                                .clicked()
+                                {
+                                    g.speed = if g.speed == 0 { 1 } else { g.speed % 3 + 1 };
+                                }
+                                if chrome::speed_button(
+                                    ui,
+                                    0,
+                                    g.speed == 0,
+                                    vec2(theme::TOUCH, theme::TOUCH),
+                                )
+                                .clicked()
+                                {
+                                    g.speed = if g.speed == 0 { 1 } else { 0 };
+                                }
+                            } else if g.placed {
                                 for i in (0..4).rev() {
                                     let on = g.speed == i;
                                     if chrome::speed_button(
@@ -1240,9 +1261,12 @@ impl State {
                             },
                         );
                     } else {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 8.0;
-                            row1(ui, g)
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            row1(ui, g);
+                            if narrow && g.placed {
+                                g.approval_chip(ui, true);
+                            }
                         });
                         row2(ui, g);
                     }
@@ -1250,7 +1274,6 @@ impl State {
             })
         };
         let top_y = hud.response.rect.bottom() + if compact { 6.0 } else { 12.0 };
-        g.ui.growth.top_y = top_y;
 
         if g.placed && compact {
             let dock = egui::Panel::bottom("dock")
@@ -1277,12 +1300,8 @@ impl State {
         } else {
             g.banner.as_ref().map(|b| b.0.clone())
         };
-        let stacked_banner = if compact && g.placed {
-            banner.clone()
-        } else {
-            None
-        };
-        if let Some(b) = banner.filter(|_| !(compact && g.placed)) {
+        let stacked_banner = banner.as_deref().filter(|_| g.placed);
+        if let Some(b) = banner.as_deref().filter(|_| !g.placed) {
             egui::Area::new(egui::Id::new("banner"))
                 .anchor(Align2::CENTER_TOP, vec2(0.0, top_y))
                 .show(ctx, |ui| {
@@ -1290,7 +1309,7 @@ impl State {
                         if compact {
                             ui.set_max_width(ctx.content_rect().width() - 40.0);
                             ui.add(
-                                egui::Label::new(RichText::new(&b).font(ui_font(14.0)).color(INK)).wrap(),
+                                egui::Label::new(RichText::new(b).font(ui_font(14.0)).color(INK)).wrap(),
                             );
                             if !g.placed {
                                 ui.add(
@@ -1306,7 +1325,7 @@ impl State {
                         }
                         ui.set_max_width(440.0);
                         ui.add(
-                            egui::Label::new(RichText::new(&b).font(ui_font(16.0)).color(INK)).wrap(),
+                            egui::Label::new(RichText::new(b).font(ui_font(16.0)).color(INK)).wrap(),
                         );
                         if !g.placed {
                             label(ui, "The white squares are old crossroads. The one nearest your cursor glows orange. Your main street will run to the highway.", 12.0);
@@ -1343,8 +1362,8 @@ impl State {
             // the First goals card takes the place of the milestone goal while it is showing
             let first_goals = g.sim.goals_visible();
             let mut open_goal_build = None;
-            if compact {
-                // one short stack: the goal on one line, then up to two news toasts
+            if compact && !g.any_sheet() && g.sel.is_none() {
+                // Keep the transient map notices clear of open sheets.
                 let wmax = (ctx.content_rect().width() - 24.0).min(340.0);
                 egui::Area::new(egui::Id::new("goal"))
                     .anchor(Align2::LEFT_TOP, vec2(8.0, top_y))
@@ -1359,7 +1378,7 @@ impl State {
                             goal_text.push('\n');
                             goal_text.push_str(u);
                         }
-                        if let Some(b) = &stacked_banner {
+                        if let Some(b) = stacked_banner {
                             theme::panel()
                                 .inner_margin(egui::Margin::symmetric(8, 4))
                                 .show(ui, |ui| {
@@ -1383,13 +1402,7 @@ impl State {
                                     );
                                 });
                         }
-                        for (text, _, bad) in g.coach.toasts.iter().rev().take(
-                            if ctx.content_rect().width() > 700.0 {
-                                1
-                            } else {
-                                2
-                            },
-                        ) {
+                        for (text, _, bad) in g.coach.toasts.iter().rev().take(1) {
                             theme::panel()
                                 .inner_margin(egui::Margin::symmetric(8, 4))
                                 .show(ui, |ui| {
@@ -1406,12 +1419,16 @@ impl State {
                         }
                     });
             }
+            let left = chrome::RAIL_W + 14.0;
+            let right = g.right_inset();
+            let card_width =
+                ((ctx.content_rect().width() - left - right - 16.0) * 0.5).clamp(140.0, 348.0);
             if !compact {
                 egui::Area::new(egui::Id::new("goal"))
-                    .anchor(Align2::LEFT_TOP, vec2(chrome::RAIL_W + 14.0, top_y))
+                    .anchor(Align2::LEFT_TOP, vec2(left, top_y))
                     .show(ctx, |ui| {
                         theme::panel().show(ui, |ui| {
-                            ui.set_width(320.0);
+                            ui.set_width(card_width - 28.0);
                             if first_goals {
                                 open_goal_build = g.first_goals_card(ui, ctx);
                                 return;
@@ -1449,35 +1466,28 @@ impl State {
             if hide_tip {
                 g.coach.tip_hidden = true;
             }
-            if let Some(k) = open_goal_build {
-                g.open_build_for(k);
+            if let Some(action) = open_goal_build {
+                g.open_goal(action);
             }
-            // event feed
-            let inset = g.right_inset();
-            if !compact && !g.coach.toasts.is_empty() {
-                egui::Area::new(egui::Id::new("toasts"))
-                    .anchor(Align2::RIGHT_TOP, vec2(-inset, top_y))
-                    .interactable(false)
+            if !compact && g.map_input_available() {
+                egui::Area::new(egui::Id::new("town-status"))
+                    .anchor(Align2::RIGHT_TOP, vec2(-right, top_y))
                     .show(ctx, |ui| {
-                        for (text, _, bad) in g.coach.toasts.iter().rev() {
+                        ui.set_max_width(card_width);
+                        g.growth_panel(ui, card_width);
+                        if let Some(banner) = stacked_banner {
                             theme::panel().show(ui, |ui| {
-                                ui.set_width(300.0);
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(text).font(ui_font(12.0)).color(if *bad {
-                                            BAD
-                                        } else {
-                                            TEXT
-                                        }),
-                                    )
-                                    .wrap(),
-                                );
+                                panels::wrapped(ui, banner, 12.0, TEXT);
+                            });
+                        } else if let Some((text, _, bad)) = g.coach.toasts.last() {
+                            theme::panel().show(ui, |ui| {
+                                panels::wrapped(ui, text, 12.0, if *bad { BAD } else { TEXT });
                             });
                         }
                     });
             }
             let screen_w = w as f32 / ppp;
-            if !compact || g.ui.levers_open {
+            if g.ui.levers_open {
                 g.levers_ui(ctx);
             }
             if g.voters_open {
@@ -1513,9 +1523,16 @@ impl State {
             if g.ui.trams.open {
                 g.trams_ui(ctx, screen_w);
             }
+            if compact && g.ui.more_open {
+                g.more_sheet(ctx);
+            }
             if g.placed && !g.sim.is_game_over() {
-                g.growth_banner_ui(ctx);
-                g.goals_ui(ctx);
+                if compact && g.ui.tool.is_some() {
+                    g.civic_placement_ui(ctx);
+                } else if compact && g.sel.is_none() {
+                    g.growth_banner_ui(ctx);
+                    g.goals_ui(ctx);
+                }
             }
             g.legend_ui(ctx);
             // why panel
@@ -1578,14 +1595,19 @@ impl State {
         } else {
             "WASD pan   Q E rotate   right drag orbit   wheel zoom   0 1 2 3 speed   space pause   P K O B G J V I H R F panels   Y roads   M map view"
         };
-        if !(compact && g.any_sheet()) {
+        if !(compact
+            && (g.any_sheet()
+                || g.sel.is_some()
+                || g.ui.tool.is_some()
+                || g.ui.growth.height() > 0.0))
+        {
             egui::Area::new(egui::Id::new("help"))
                 .anchor(
                     Align2::CENTER_BOTTOM,
                     vec2(
                         0.0,
                         if compact {
-                            -(panels::dock_h(ctx) + 4.0)
+                            -(ctx.content_rect().bottom() - panels::dock_top(ctx) + 4.0)
                         } else {
                             -6.0
                         },
@@ -1819,6 +1841,7 @@ impl Game {
             election: None,
             compact: false,
             compact_init: false,
+            ui_ppp: 1.0,
         }
     }
 
@@ -1947,6 +1970,33 @@ impl Game {
                 }
             }
         }
+    }
+
+    fn map_input_available(&self) -> bool {
+        !self.menu_open && self.election.is_none() && !self.sim.is_game_over()
+    }
+
+    fn hall_hit_radius(&self) -> f32 {
+        if self.compact { 24.0 } else { 18.0 }
+    }
+
+    fn hall_markers<'a>(
+        &'a self,
+        view: &'a us_render::View,
+        w: u32,
+        h: u32,
+        ppp: f32,
+    ) -> impl Iterator<Item = (Pt, Pos2)> + 'a {
+        let land = self.live.land();
+        self.sites.iter().copied().filter_map(move |site| {
+            let (x, y) = (site.x as f32, site.y as f32);
+            let p = Vec3::new(x, y, land.height(x, y));
+            let ndc = project(view, p)?;
+            if ndc.0.abs() > 1.0 || ndc.1.abs() > 1.0 || !land.segment_above_ground(p, view.eye) {
+                return None;
+            }
+            Some((site, to_screen(ndc, w, h, ppp)))
+        })
     }
 
     fn place(&mut self, site: Pt) {

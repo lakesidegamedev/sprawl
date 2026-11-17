@@ -46,11 +46,9 @@ impl Goal {
     pub fn hint(self) -> &'static str {
         match self {
             Goal::Settle => "Builders start on their own. Keep taxes fair and give them jobs.",
-            Goal::Water => {
-                "Water caps how big the town can get. Open Build and pick the water tower."
-            }
+            Goal::Water => "Place a water tower by an open road to make room for more growth.",
             Goal::School => "Homes stop growing when the school seats run out.",
-            Goal::Budget => "Open Levers or Budget and move one slider. Watch the monthly net.",
+            Goal::Budget => "Adjust department funding or a tax rate and watch the monthly net.",
             Goal::Grow => "Water, power, schools and clinics each hold growth back when full.",
             Goal::Policy => "Unlocks as the town grows. Open Districts or Ordinances.",
         }

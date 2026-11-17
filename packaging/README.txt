@@ -1,4 +1,4 @@
-URBAN SPRAWL 1.2.0
+URBAN SPRAWL 1.3.0
 
 Start the game by running urban-sprawl (urban-sprawl.exe on Windows).
 

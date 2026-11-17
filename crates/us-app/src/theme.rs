@@ -275,8 +275,7 @@ pub fn set_compact(ctx: &egui::Context, on: bool) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("compact-layout"), on));
 }
 
-/// Narrow or short screens get the phone layout: width under 700 points (a phone in portrait)
-/// or height under 520 (a phone in landscape). `URBAN_SPRAWL_COMPACT=1` or `0` forces it.
+/// iOS and small desktop windows get the touch layout. `URBAN_SPRAWL_COMPACT=1` or `0` forces it.
 pub fn wants_compact(ctx: &egui::Context) -> bool {
     match std::env::var("URBAN_SPRAWL_COMPACT").as_deref() {
         Ok("1") => return true,
@@ -284,7 +283,7 @@ pub fn wants_compact(ctx: &egui::Context) -> bool {
         _ => {}
     }
     let r = ctx.content_rect();
-    r.width() < 700.0 || r.height() < 520.0
+    cfg!(target_os = "ios") || r.width() < 700.0 || r.height() < 520.0
 }
 
 pub fn button(ui: &mut egui::Ui, text: &str) -> egui::Response {

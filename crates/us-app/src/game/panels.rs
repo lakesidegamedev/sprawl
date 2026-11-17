@@ -46,6 +46,17 @@ fn dept_color(d: Dept) -> Color32 {
     }
 }
 
+fn budget_service(department: Dept) -> Option<Service> {
+    match department {
+        Dept::Police => Some(Service::Police),
+        Dept::Fire => Some(Service::Fire),
+        Dept::Schools => Some(Service::Schools),
+        Dept::Health => Some(Service::Health),
+        Dept::Parks => Some(Service::Parks),
+        Dept::Roads => None,
+    }
+}
+
 pub(super) fn lab(ui: &mut Ui, text: impl AsRef<str>, size: f32) {
     let size = size.max(12.0);
     ui.label(RichText::new(text.as_ref()).font(ui_font(size)).color(TEXT));
@@ -89,19 +100,9 @@ fn bar(ui: &mut Ui, width: f32, frac: f32, col: Color32) {
 /// Height the bottom bar takes on a phone, so sheets and cards sit above it.
 pub const DOCK_H: f32 = 52.0;
 
-/// Height of the phone dock: one row of eight buttons, or two rows of four on a narrow screen,
-/// so every label can be 11 points or more.
-pub fn dock_h(ctx: &Context) -> f32 {
-    if dock_rows(ctx) == 2 {
-        DOCK_H + 50.0
-    } else {
-        DOCK_H
-    }
-}
-
-/// Rows the phone dock uses at this width.
+/// Use two rows only when large UI scaling leaves no room for five touch targets.
 pub fn dock_rows(ctx: &Context) -> usize {
-    if ctx.content_rect().width() < 900.0 {
+    if ctx.content_rect().width() < 248.0 {
         2
     } else {
         1
@@ -119,7 +120,7 @@ pub(super) fn dock_top(ctx: &Context) -> f32 {
     let screen = ctx.content_rect();
     ctx.data(|d| d.get_temp::<f32>(egui::Id::new("dock_top")))
         .filter(|y| *y > screen.top() && *y <= screen.bottom())
-        .unwrap_or(screen.bottom() - dock_h(ctx))
+        .unwrap_or(screen.bottom() - DOCK_H * dock_rows(ctx) as f32)
 }
 
 /// The icon a window or sheet shows beside its title.
@@ -175,9 +176,10 @@ fn closing(ctx: &Context, id: &str, clicked: bool) -> (f32, bool) {
 /// opens and fades when it closes.
 pub(super) fn sheet(ctx: &Context, title: &str, body: impl FnOnce(&mut Ui)) -> bool {
     let screen = ctx.content_rect();
-    let width = (screen.width() - 12.0).max(240.0);
+    let width = (screen.width() - 12.0).max(160.0);
     let bottom = dock_top(ctx) - 4.0;
-    let total = ((bottom - screen.top()) * 0.6).max(200.0);
+    let available = (bottom - screen.top()).max(0.0);
+    let total = (available * 0.62).max(160.0).min(available);
     let open = theme::opening(ctx, title, 0.2);
     let (fade, done) = closing(ctx, title, false);
     let mut clicked = false;
@@ -206,7 +208,7 @@ pub(super) fn sheet(ctx: &Context, title: &str, body: impl FnOnce(&mut Ui)) -> b
                         });
                     });
                     egui::ScrollArea::both()
-                        .max_height((total - theme::TOUCH - 30.0).max(80.0))
+                        .max_height((total - theme::TOUCH - 30.0).max(32.0))
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
                             ui.set_min_width(width - 40.0);
@@ -444,6 +446,7 @@ pub struct UiState {
     pub build_open: bool,
     pub stats_open: bool,
     pub news_open: bool,
+    pub(super) more_open: bool,
     pub rivals_open: bool,
     pub districts_open: bool,
     pub ordinances_open: bool,
@@ -463,6 +466,7 @@ pub struct UiState {
     pub dist_stats: Vec<Option<us_sim::DistrictStats>>,
     pub dist_stats_age: f32,
     pub tool: Option<CivicKind>,
+    pub(super) civic_site: Option<Pt>,
     /// The road tool, when chosen (only live while the Build window is open).
     pub road: Option<RoadMode>,
     /// Points of the road being drawn.
@@ -493,12 +497,13 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         UiState {
-            levers_open: true,
+            levers_open: false,
             budget_open: false,
             loans_open: false,
             build_open: false,
             stats_open: false,
             news_open: false,
+            more_open: false,
             rivals_open: false,
             districts_open: false,
             ordinances_open: false,
@@ -512,6 +517,7 @@ impl Default for UiState {
             dist_stats: Vec::new(),
             dist_stats_age: 9.0,
             tool: None,
+            civic_site: None,
             road: None,
             road_pts: Vec::new(),
             fixed_ghost: None,
@@ -715,7 +721,10 @@ impl Game {
                     u.road_pts.clear();
                 }
             }
-            K::Escape if u.tool.is_some() => u.tool = None,
+            K::Escape if u.tool.is_some() => {
+                u.tool = None;
+                u.civic_site = None;
+            }
             _ => return false,
         }
         true
@@ -1029,128 +1038,90 @@ impl Game {
     // ----- taxes -----
 
     pub(super) fn levers_ui(&mut self, ctx: &Context) {
-        if theme::is_compact(ctx) {
-            let mut closed = false;
-            if sheet(ctx, "Taxes", |ui| self.levers_body(ui, ctx, true)) {
-                closed = true;
-            }
-            if closed {
-                self.ui.levers_open = false;
-            }
-            return;
+        let closed = window(
+            ctx,
+            "taxes",
+            "Taxes",
+            320.0,
+            Pos2::new(178.0, 125.0),
+            |ui| {
+                self.levers_body(ui);
+            },
+        );
+        if closed {
+            self.ui.levers_open = false;
         }
-        egui::Area::new(egui::Id::new("tax"))
-            .anchor(
-                Align2::LEFT_BOTTOM,
-                vec2(super::chrome::RAIL_W + 14.0, -34.0),
-            )
-            .show(ctx, |ui| {
-                theme::panel().show(ui, |ui| {
-                    ui.set_width(320.0);
-                    self.levers_body(ui, ctx, false);
-                });
-            });
     }
 
-    fn levers_body(&mut self, ui: &mut Ui, ctx: &Context, sheet: bool) {
-        let open = sheet || self.ui.levers_open;
-        if !sheet {
-            ui.horizontal(|ui| {
-                ui.label(heading("Taxes", 18.0));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if btn(ui, if open { "-" } else { "+" }, false, 12.0).clicked() {
-                        self.ui.levers_open = !open;
-                    }
-                });
-            });
-        }
+    fn levers_body(&mut self, ui: &mut Ui) {
         let ledger = self.ui.ledger;
-        if !open {
-            let net = self.stats.income - self.stats.expense;
-            lab(
-                ui,
-                format!(
-                    "Net {}{} a month",
-                    if net < 0 { "" } else { "+" },
-                    money(net)
-                ),
-                12.0,
-            );
-            return;
-        }
-        let max_h = (ctx.content_rect().height() - 330.0).max(120.0);
-        egui::ScrollArea::vertical()
-            .max_height(max_h)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                for c in Class::ALL {
-                    let rate = self.sim.tax_rates().get(c);
-                    let income = ledger.income.get(c);
-                    let per_point = if rate > 0 {
-                        income * 10 / rate as i64
-                    } else {
-                        self.sim
-                            .history()
-                            .last()
-                            .filter(|s| s.tax_x10.get(c) > 0)
-                            .map_or(0, |s| s.income.get(c) * 10 / s.tax_x10.get(c) as i64)
-                    };
-                    ui.horizontal(|ui| {
-                        let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-                        ui.painter().rect_filled(r, 3.0, class_color(c));
-                        lab(ui, c.label(), 14.0);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let d = self.sim.class_demand(c);
-                            lab_c(
-                                ui,
-                                format!("Demand {:.0}%", d * 100.0),
-                                11.0,
-                                if d < 0.3 {
-                                    BAD
-                                } else if d < 0.55 {
-                                    GOLD
-                                } else {
-                                    GOOD
-                                },
-                            );
-                        });
-                    });
-                    let mut pct = rate as f32 / 10.0;
-                    let r = ui.add(
-                        egui::Slider::new(
-                            &mut pct,
-                            TAX_MIN_X10 as f32 / 10.0..=TAX_MAX_X10 as f32 / 10.0,
-                        )
-                        .step_by(0.5)
-                        .custom_formatter(|v, _| format!("{v:.1}%")),
-                    );
-                    if r.changed() {
-                        self.sim.set_tax_class(c, (pct * 10.0).round() as u32);
-                    }
-                    let (msg, col) = if rate > ABANDON_ABOVE_X10 {
-                        ("Too high: buildings empty out", BAD)
-                    } else if rate >= 100 {
-                        ("High: growth is slow", ORANGE)
-                    } else if rate <= 40 {
-                        ("Low: fast growth, thin income", GOOD)
-                    } else {
-                        ("Balanced", TEXT)
-                    };
-                    ui.horizontal(|ui| {
-                        lab_c(ui, msg, 12.0, col);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            lab(ui, format!("{}/mo", money(income)), 12.0);
-                        });
-                    });
+        for c in Class::ALL {
+            let rate = self.sim.tax_rates().get(c);
+            let income = ledger.income.get(c);
+            let per_point = if rate > 0 {
+                income * 10 / rate as i64
+            } else {
+                self.sim
+                    .history()
+                    .last()
+                    .filter(|s| s.tax_x10.get(c) > 0)
+                    .map_or(0, |s| s.income.get(c) * 10 / s.tax_x10.get(c) as i64)
+            };
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                ui.painter().rect_filled(r, 3.0, class_color(c));
+                lab(ui, c.label(), 14.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let d = self.sim.class_demand(c);
                     lab_c(
                         ui,
-                        format!("Each point is about {} a month", money(per_point)),
-                        12.0,
-                        Color32::from_rgb(170, 176, 196),
+                        format!("Demand {:.0}%", d * 100.0),
+                        11.0,
+                        if d < 0.3 {
+                            BAD
+                        } else if d < 0.55 {
+                            GOLD
+                        } else {
+                            GOOD
+                        },
                     );
-                    ui.add_space(2.0);
-                }
+                });
             });
+            let mut pct = rate as f32 / 10.0;
+            let r = ui.add(
+                egui::Slider::new(
+                    &mut pct,
+                    TAX_MIN_X10 as f32 / 10.0..=TAX_MAX_X10 as f32 / 10.0,
+                )
+                .step_by(0.5)
+                .custom_formatter(|v, _| format!("{v:.1}%")),
+            );
+            if r.changed() {
+                self.sim.set_tax_class(c, (pct * 10.0).round() as u32);
+            }
+            let (msg, col) = if rate > ABANDON_ABOVE_X10 {
+                ("Too high: buildings empty out", BAD)
+            } else if rate >= 100 {
+                ("High: growth is slow", ORANGE)
+            } else if rate <= 40 {
+                ("Low: fast growth, thin income", GOOD)
+            } else {
+                ("Balanced", TEXT)
+            };
+            ui.horizontal(|ui| {
+                lab_c(ui, msg, 12.0, col);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    lab(ui, format!("{}/mo", money(income)), 12.0);
+                });
+            });
+            lab_c(
+                ui,
+                format!("Each point is about {} a month", money(per_point)),
+                12.0,
+                Color32::from_rgb(170, 176, 196),
+            );
+            ui.add_space(2.0);
+        }
         ui.separator();
         let net = self.stats.income - self.stats.expense;
         lab(
@@ -1189,6 +1160,9 @@ impl Game {
         let cover = self.ui.cover;
         let pos = Pos2::new(360.0, 100.0);
         let closed = window(ctx, "budget", "Budget", 560.0, pos, |ui| {
+            super::chrome::section(ui, "Service capacity");
+            self.capacity_rows(ui);
+            ui.separator();
             wrapped(
                 ui,
                 "Funding below 100 percent shortens how far a building reaches and weakens it. Above 100 it reaches further. Road upkeep below 100 lowers land value.",
@@ -1196,60 +1170,76 @@ impl Game {
                 Color32::from_rgb(170, 176, 196),
             );
             ui.add_space(4.0);
-            egui::Grid::new("budget-grid")
-                .num_columns(4)
-                .spacing([14.0, 8.0])
-                .show(ui, |ui| {
-                    for h in ["Department", "Funding", "Cost a month", "Coverage"] {
-                        lab_c(ui, h, 10.0, Color32::from_rgb(170, 176, 196));
-                    }
-                    ui.end_row();
-                    for d in Dept::ALL {
-                        let mut pct = self.sim.budget_pct(d);
-                        ui.horizontal(|ui| {
-                            let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-                            ui.painter().rect_filled(r, 3.0, dept_color(d));
-                            lab(ui, d.label(), 12.0);
+            if self.compact {
+                for d in Dept::ALL {
+                    ui.push_id(d.index(), |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            lab_c(ui, d.label(), 14.0, dept_color(d));
+                            lab(
+                                ui,
+                                format!("{}/mo", money(ledger.spending[d.index()])),
+                                12.0,
+                            );
                         });
-                        let r = ui.add(
-                            egui::Slider::new(&mut pct, BUDGET_MIN_PCT..=BUDGET_MAX_PCT)
-                                .custom_formatter(|v, _| format!("{v:.0}%")),
-                        );
-                        if r.changed() {
-                            self.sim.set_budget(d, pct);
+                        self.funding_slider(ui, d);
+                        if let Some(service) = budget_service(d) {
+                            lab(
+                                ui,
+                                format!("{:.0}% coverage", cover[service.index()] * 100.0),
+                                12.0,
+                            );
                         }
-                        lab(ui, money(ledger.spending[d.index()]), 12.0);
-                        match d {
-                            Dept::Roads => {
-                                lab_c(ui, "Upkeep", 11.0, Color32::from_rgb(170, 176, 196))
-                            }
-                            _ => {
-                                let s = match d {
-                                    Dept::Police => Service::Police,
-                                    Dept::Fire => Service::Fire,
-                                    Dept::Schools => Service::Schools,
-                                    Dept::Health => Service::Health,
-                                    _ => Service::Parks,
-                                };
-                                let v = cover[s.index()];
+                        ui.separator();
+                    });
+                }
+                lab(
+                    ui,
+                    format!(
+                        "Water coverage {:.0}%",
+                        cover[Service::Water.index()] * 100.0
+                    ),
+                    12.0,
+                );
+            } else {
+                egui::Grid::new("budget-grid")
+                    .num_columns(4)
+                    .spacing([14.0, 8.0])
+                    .show(ui, |ui| {
+                        for h in ["Department", "Funding", "Cost a month", "Coverage"] {
+                            lab_c(ui, h, 10.0, Color32::from_rgb(170, 176, 196));
+                        }
+                        ui.end_row();
+                        for d in Dept::ALL {
+                            ui.horizontal(|ui| {
+                                let (r, _) =
+                                    ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                                ui.painter().rect_filled(r, 3.0, dept_color(d));
+                                lab(ui, d.label(), 12.0);
+                            });
+                            self.funding_slider(ui, d);
+                            lab(ui, money(ledger.spending[d.index()]), 12.0);
+                            if let Some(service) = budget_service(d) {
+                                let v = cover[service.index()];
                                 ui.horizontal(|ui| {
                                     bar(ui, 60.0, v, dept_color(d));
                                     lab(ui, format!("{:.0}%", v * 100.0), 11.0);
                                 });
+                            } else {
+                                lab_c(ui, "Upkeep", 11.0, crate::theme::MUTED);
                             }
+                            ui.end_row();
                         }
+                        lab(ui, "Water", 12.0);
+                        lab_c(ui, "No budget line", 10.0, Color32::from_rgb(170, 176, 196));
+                        lab(ui, "In upkeep", 12.0);
+                        ui.horizontal(|ui| {
+                            let v = cover[Service::Water.index()];
+                            bar(ui, 60.0, v, TEAL);
+                            lab(ui, format!("{:.0}%", v * 100.0), 11.0);
+                        });
                         ui.end_row();
-                    }
-                    lab(ui, "Water", 12.0);
-                    lab_c(ui, "No budget line", 10.0, Color32::from_rgb(170, 176, 196));
-                    lab(ui, "In upkeep", 12.0);
-                    ui.horizontal(|ui| {
-                        let v = cover[Service::Water.index()];
-                        bar(ui, 60.0, v, TEAL);
-                        lab(ui, format!("{:.0}%", v * 100.0), 11.0);
                     });
-                    ui.end_row();
-                });
+            }
             ui.add_space(2.0);
             ui.separator();
             let spend: i64 = ledger.spending.iter().sum();
@@ -1290,6 +1280,15 @@ impl Game {
         });
         if closed {
             self.ui.budget_open = false;
+        }
+    }
+
+    fn funding_slider(&mut self, ui: &mut Ui, department: Dept) {
+        let mut pct = self.sim.budget_pct(department);
+        let slider = egui::Slider::new(&mut pct, BUDGET_MIN_PCT..=BUDGET_MAX_PCT)
+            .custom_formatter(|value, _| format!("{value:.0}%"));
+        if ui.add(slider).changed() {
+            self.sim.set_budget(department, pct);
         }
     }
 
@@ -1439,12 +1438,17 @@ impl Game {
     // ----- building tools -----
 
     pub(super) fn build_ui(&mut self, ctx: &Context, screen_w: f32) {
-        let mut closed = false;
+        let mut picked = None;
+        let compact = theme::is_compact(ctx);
         let pos = Pos2::new((screen_w - 340.0).max(10.0), 110.0);
-        let c = window(ctx, "build", "Build", 320.0, pos, |ui| {
+        let closed = window(ctx, "build", "Build", 320.0, pos, |ui| {
             wrapped(
                 ui,
-                "Pick a building, then click empty land next to a road the town already has. Esc to stop. A full supply holds growth back.",
+                if compact {
+                    "Pick a building, then choose a site next to an open road."
+                } else {
+                    "Pick a building, then click empty land next to an open road. Press Esc to stop."
+                },
                 11.0,
                 Color32::from_rgb(170, 176, 196),
             );
@@ -1467,26 +1471,7 @@ impl Game {
             self.road_panel(ui);
             ui.add_space(6.0);
             lab(ui, "Buildings", 12.0);
-            // what the town can carry: when one is full, growth that needs it stops
-            for st in self.sim.capacities() {
-                let full = st.is_full();
-                lab_c(
-                    ui,
-                    format!(
-                        "{}: {} of {}{}",
-                        st.capacity.label(),
-                        st.demand,
-                        st.supply,
-                        if full { ", full" } else { "" }
-                    ),
-                    11.0,
-                    if full {
-                        ORANGE
-                    } else {
-                        Color32::from_rgb(170, 176, 196)
-                    },
-                );
-            }
+            self.capacity_rows(ui);
             ui.add_space(4.0);
             for k in CivicKind::ALL {
                 let on = self.ui.tool == Some(k);
@@ -1530,9 +1515,11 @@ impl Game {
                         .min_size(vec2(150.0, 26.0)),
                     );
                     if b.clicked() {
-                        self.ui.tool = if on { None } else { Some(k) };
-                        self.ui.road = None;
-                        self.ui.road_pts.clear();
+                        if on {
+                            self.ui.tool = None;
+                        } else {
+                            picked = Some(k);
+                        }
                     }
                     lab_c(ui, money(k.cost()), 12.0, if can { GOLD } else { BAD });
                 });
@@ -1569,9 +1556,90 @@ impl Game {
                 }
             }
         });
-        closed |= c;
         if closed {
             self.ui.build_open = false;
+            self.ui.tool = None;
+        } else if let Some(kind) = picked {
+            self.open_build_for(kind);
+        }
+    }
+
+    fn capacity_rows(&self, ui: &mut Ui) {
+        let Some(capacities) = self.ui.growth.capacities else {
+            return;
+        };
+        for st in capacities {
+            let stopped = self.ui.growth.stalls.contains(&st.capacity);
+            lab_c(
+                ui,
+                format!(
+                    "{}: {} of {} committed{}",
+                    st.capacity.label(),
+                    charts::group(st.demand),
+                    charts::group(st.supply),
+                    if stopped {
+                        "  •  growth paused"
+                    } else if st.is_full() {
+                        "  •  full"
+                    } else {
+                        ""
+                    }
+                ),
+                12.0,
+                if stopped { ORANGE } else { TEXT },
+            );
+        }
+    }
+
+    /// The compact placement controls leave the map free while the player picks a site.
+    pub(super) fn civic_placement_ui(&mut self, ctx: &Context) {
+        let Some(kind) = self.ui.tool else { return };
+        if self.any_sheet() || self.menu_open || self.election.is_some() {
+            return;
+        }
+        let screen = ctx.content_rect();
+        let up = screen.bottom() - dock_top(ctx) + 8.0;
+        let site = self.ui.civic_site;
+        let verdict = site.map(|site| self.sim.check_civic(kind, site));
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Area::new(egui::Id::new("civic-placement"))
+            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -up))
+            .order(egui::Order::Middle)
+            .show(ctx, |ui| {
+                theme::panel().show(ui, |ui| {
+                    ui.set_max_width(screen.width() - 36.0);
+                    lab(
+                        ui,
+                        format!("{}  {}", kind.label(), money(kind.cost())),
+                        14.0,
+                    );
+                    let (message, colour) = match verdict.as_ref() {
+                        Some(Ok(())) => ("Site ready".into(), GOOD),
+                        Some(Err(error)) => (error.text(), BAD),
+                        None => ("Choose a site next to an open road".into(), TEXT),
+                    };
+                    wrapped(ui, message, 12.0, colour);
+                    ui.horizontal_wrapped(|ui| {
+                        confirm = ui
+                            .add_enabled(
+                                matches!(verdict, Some(Ok(()))),
+                                egui::Button::new("Start construction")
+                                    .min_size(vec2(0.0, theme::TOUCH)),
+                            )
+                            .clicked();
+                        cancel = ui
+                            .add(egui::Button::new("Cancel").min_size(vec2(0.0, theme::TOUCH)))
+                            .clicked();
+                    });
+                });
+            });
+        if confirm && let Some(site) = site {
+            self.place_tool(site);
+            self.ui.civic_site = None;
+            self.ui.tool = None;
+        } else if cancel {
+            self.ui.civic_site = None;
             self.ui.tool = None;
         }
     }
@@ -1891,9 +1959,13 @@ impl Game {
         let Some(kind) = self.ui.tool else { return };
         let ppp = ctx.pixels_per_point();
         let hover = ctx.pointer_hover_pos();
-        let p = if let Some(p) = self.ui.fixed_ghost {
+        let pinned = self.ui.fixed_ghost.or(self.ui.civic_site);
+        let p = if let Some(p) = pinned {
             p
         } else {
+            if self.compact {
+                return;
+            }
             let Some(pos) = hover else { return };
             if ctx.egui_wants_pointer_input() {
                 return;
@@ -1908,7 +1980,7 @@ impl Game {
             pt(g.x as f64, g.y as f64)
         };
         let pos = match (
-            self.ui.fixed_ghost,
+            pinned,
             project(
                 view,
                 Vec3::new(
@@ -1940,12 +2012,20 @@ impl Game {
                 painter.add(egui::Shape::closed_line(ring, Stroke::new(2.0, GOLD)));
             }
         }
+        if self.compact && self.ui.fixed_ghost.is_none() {
+            return;
+        }
         let text = match verdict {
             Ok(()) => format!("{}  {}", kind.label(), money(kind.cost())).to_string(),
             Err(e) => e.text().to_string(),
         };
-        let at = pos + vec2(18.0, 18.0);
-        let galley = painter.layout_no_wrap(text, ui_font(11.0), INK);
+        let galley = painter.layout(text, ui_font(12.0), INK, 220.0);
+        let bounds = ctx.content_rect();
+        let pad = vec2(8.0, 6.0);
+        let at = (pos + vec2(18.0, 18.0)).clamp(
+            bounds.min + pad,
+            (bounds.max - galley.size() - pad).max(bounds.min + pad),
+        );
         let r = egui::Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 3.0));
         painter.rect_filled(r, 3.0, PANEL_DARK);
         painter.rect_stroke(r, 3.0, Stroke::new(1.5, col), egui::StrokeKind::Inside);

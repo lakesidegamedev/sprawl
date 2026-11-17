@@ -120,6 +120,32 @@ pub fn triangulate(ring: &[Pt]) -> (Vec<Pt>, Vec<[usize; 3]>) {
     (pts, tris)
 }
 
+/// Left normal and miter scale shared by the road surface and the walls underneath it.
+fn ribbon_join(points: &[Pt], i: usize, closed: bool) -> (f64, f64, f64) {
+    let dir = |a: Pt, b: Pt| {
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let len = dx.hypot(dy).max(1e-12);
+        (dx / len, dy / len)
+    };
+    let n = points.len();
+    let p = points[i];
+    let prev = (i > 0 || closed).then(|| dir(points[(i + n - 1) % n], p));
+    let next = (i + 1 < n || closed).then(|| dir(p, points[(i + 1) % n]));
+    let base = prev.or(next).unwrap_or((1.0, 0.0));
+    let d = match (prev, next) {
+        (Some(a), Some(b)) => (a.0 + b.0, a.1 + b.1),
+        _ => base,
+    };
+    let len = d.0.hypot(d.1);
+    let (nx, ny) = if len < 1e-6 {
+        (-base.1, base.0)
+    } else {
+        (-d.1 / len, d.0 / len)
+    };
+    let miter = ((-base.1) * nx + base.0 * ny).clamp(0.5, 1.0).recip();
+    (nx, ny, miter)
+}
+
 /// Which side of a line a point is on: x / step, y / step or (x - y) / step.
 fn lattice_f(family: usize, p: Pt, step: f64) -> f64 {
     match family {
@@ -450,54 +476,17 @@ impl Ground {
             p.pop();
         }
         let n = p.len();
-        let seg_dir = |i: usize, j: usize| {
-            let (a, b) = (p[i], p[j]);
-            let (dx, dy) = (b.x - a.x, b.y - a.y);
-            let l = dx.hypot(dy).max(1e-12);
-            (dx / l, dy / l)
-        };
         let mut left: Vec<[f32; 2]> = Vec::with_capacity(n);
         let mut right: Vec<[f32; 2]> = Vec::with_capacity(n);
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..n {
-            let prev = if i > 0 {
-                Some(seg_dir(i - 1, i))
-            } else if closed {
-                Some(seg_dir(n - 1, 0))
-            } else {
-                None
-            };
-            let next = if i + 1 < n {
-                Some(seg_dir(i, i + 1))
-            } else if closed {
-                Some(seg_dir(n - 1, 0))
-            } else {
-                None
-            };
-            let d = match (prev, next) {
-                (Some(a), Some(b)) => (a.0 + b.0, a.1 + b.1),
-                (Some(a), None) => a,
-                (None, Some(b)) => b,
-                (None, None) => (1.0, 0.0),
-            };
-            let l = d.0.hypot(d.1);
-            let nrm = if l < 1e-6 {
-                // a hairpin: fall back to the incoming edge's normal
-                let a = prev.or(next).unwrap_or((1.0, 0.0));
-                (-a.1, a.0)
-            } else {
-                (-d.1 / l, d.0 / l)
-            };
-            // widen at a bend so the edges keep their width, within a limit
-            let base = prev.or(next).unwrap_or((1.0, 0.0));
-            let cosw = ((-base.1) * nrm.0 + base.0 * nrm.1).clamp(0.5, 1.0);
-            let w = half as f64 / cosw;
+        for (i, point) in p.iter().enumerate() {
+            let (nx, ny, miter) = ribbon_join(&p, i, closed);
+            let w = f64::from(half) * miter;
             let (cx, cy) = (
-                p[i].x + nrm.0 * offset as f64,
-                p[i].y + nrm.1 * offset as f64,
+                point.x + nx * f64::from(offset),
+                point.y + ny * f64::from(offset),
             );
-            left.push([(cx + nrm.0 * w) as f32, (cy + nrm.1 * w) as f32]);
-            right.push([(cx - nrm.0 * w) as f32, (cy - nrm.1 * w) as f32]);
+            left.push([(cx + nx * w) as f32, (cy + ny * w) as f32]);
+            right.push([(cx - nx * w) as f32, (cy - ny * w) as f32]);
         }
         let place = |g: &mut Ground, i: usize, v: &[f32; 2]| -> u32 {
             match (&bed, &g.land) {
@@ -564,6 +553,11 @@ impl Ground {
             return;
         }
         let edge = half + 0.5;
+        let closed = n > 2 && bed.pts[0].dist(bed.pts[n - 1]) < 1e-6;
+        let points = &bed.pts[..n - usize::from(closed)];
+        let joins: Vec<_> = (0..points.len())
+            .map(|i| ribbon_join(points, i, closed))
+            .collect();
         let mut since_pier = 1000.0f32;
         for i in 0..n - 1 {
             if bed.weight[i] <= 0.0 && bed.weight[i + 1] <= 0.0 {
@@ -581,7 +575,9 @@ impl Ground {
             for side in [-1.0f32, 1.0] {
                 let corner = |k: usize, off: f32| -> (f32, f32) {
                     let p = bed.pts[k];
-                    (p.x as f32 + nx * off * side, p.y as f32 + ny * off * side)
+                    let (nx, ny, miter) = joins[k % joins.len()];
+                    let width = f64::from(off * side) * miter;
+                    ((p.x + nx * width) as f32, (p.y + ny * width) as f32)
                 };
                 let (ax, ay) = corner(i, edge);
                 let (bx, by) = corner(i + 1, edge);
@@ -639,6 +635,38 @@ impl Ground {
                         CONCRETE_DARK,
                         id,
                     );
+                    for (end, terminal, sign, outer, inner, z) in [
+                        (
+                            i,
+                            i == 0 || bed.weight[i - 1] <= 0.999,
+                            -1.0,
+                            (px, py),
+                            (ix, iy),
+                            za,
+                        ),
+                        (
+                            i + 1,
+                            i + 2 == n || bed.weight[i + 2] <= 0.999,
+                            1.0,
+                            (qx, qy),
+                            (jx, jy),
+                            zb,
+                        ),
+                    ] {
+                        if terminal && (!closed || (end > 0 && end < n - 1)) {
+                            self.face(
+                                [
+                                    [outer.0, outer.1, z],
+                                    [inner.0, inner.1, z],
+                                    [inner.0, inner.1, z + h],
+                                    [outer.0, outer.1, z + h],
+                                ],
+                                [dx as f32 * sign, dy as f32 * sign, 0.0],
+                                CONCRETE,
+                                id,
+                            );
+                        }
+                    }
                 }
             }
             if deck {
