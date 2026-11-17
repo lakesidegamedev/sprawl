@@ -136,6 +136,7 @@ struct Game {
     /// The phone layout was on at the last frame.
     compact: bool,
     compact_init: bool,
+    ui_ppp: f32,
 }
 
 struct Demo {
@@ -327,6 +328,9 @@ impl State {
         let Some(g) = self.game.as_mut().filter(|_| self.screen == Screen::Game) else {
             return;
         };
+        if !g.map_input_available() {
+            return;
+        }
         if let Some(p) = self.left.as_mut().filter(|p| !p.on_ui) {
             p.travel += travel;
             if p.travel > 5.0 {
@@ -371,7 +375,7 @@ impl State {
 
     pub fn wheel(&mut self, lines: f32) {
         if self.screen == Screen::Game
-            && let Some(g) = self.game.as_mut()
+            && let Some(g) = self.game.as_mut().filter(|g| g.map_input_available())
         {
             g.cam.zoom(lines);
         }
@@ -450,7 +454,9 @@ impl State {
         let click = self.click.take();
         let cycle = self.settings.day_night;
         let Some(g) = self.game.as_mut() else { return };
-        g.cam.keys(dt, pan, rot, fast);
+        if g.map_input_available() {
+            g.cam.keys(dt, pan, rot, fast);
+        }
         g.cam.update(dt, g.live.land());
         if let Some((b, t)) = g.banner.as_mut() {
             *t -= dt;
@@ -459,34 +465,19 @@ impl State {
                 g.banner = None;
             }
         }
-        if let Some(c) =
-            click.filter(|_| !g.menu_open && g.election.is_none() && !g.sim.is_game_over())
-        {
+        if let Some(c) = click.filter(|_| g.map_input_available()) {
             let aspect = w as f32 / h as f32;
             let view = g.cam.camera().view(aspect);
             let ndc = (c.0 / w as f32 * 2.0 - 1.0, 1.0 - c.1 / h as f32 * 2.0);
             if !g.placed {
-                // snap to the crossroads nearest the click on screen
-                let ppp = 1.0;
-                let mut best: Option<(f32, Pt)> = None;
-                for s in &g.sites {
-                    if let Some(p) = project(
-                        &view,
-                        Vec3::new(
-                            s.x as f32,
-                            s.y as f32,
-                            g.live.ground_at(s.x as f32, s.y as f32),
-                        ),
-                    ) {
-                        let sp = to_screen(p, w, h, ppp);
-                        let d = ((sp.x - c.0).powi(2) + (sp.y - c.1).powi(2)).sqrt();
-                        if best.is_none_or(|b| d < b.0) {
-                            best = Some((d, *s));
-                        }
-                    }
-                }
-                if let Some((_, s)) = best {
-                    g.place(s);
+                let cursor = egui::pos2(c.0 / g.ui_ppp, c.1 / g.ui_ppp);
+                let site = g
+                    .hall_markers(&view, w, h, g.ui_ppp)
+                    .map(|(site, pos)| (site, pos.distance(cursor)))
+                    .filter(|&(_, d)| d <= g.hall_hit_radius())
+                    .min_by(|a, b| a.1.total_cmp(&b.1));
+                if let Some((site, _)) = site {
+                    g.place(site);
                 }
             } else if let Some(p) = g.live.scene.pick(&view, ndc) {
                 if g.ui.tool.is_some() {
@@ -1070,6 +1061,10 @@ impl State {
         let compact = theme::is_compact(ctx);
         let g = self.game.as_mut().unwrap();
         g.compact = compact;
+        g.ui_ppp = ppp;
+        if g.placed {
+            g.ui.growth.refresh(&g.sim, ctx.input(|i| i.time));
+        }
         if compact {
             if !g.compact_init {
                 g.compact_init = true;
@@ -1087,36 +1082,26 @@ impl State {
         if !g.placed {
             let cursor = ctx
                 .pointer_hover_pos()
-                .unwrap_or(Pos2::new(-9999.0, -9999.0));
-            let mut nearest: Option<(f32, usize)> = None;
-            let pts: Vec<Option<Pos2>> = g
-                .sites
-                .iter()
-                .map(|s| {
-                    let z = g.live.ground_at(s.x as f32, s.y as f32);
-                    project(&view, Vec3::new(s.x as f32, s.y as f32, z))
-                        .map(|p| to_screen(p, w, h, ppp))
-                })
-                .collect();
-            for (i, p) in pts.iter().enumerate() {
-                if let Some(p) = p {
-                    let d = p.distance(cursor);
-                    if d < 900.0 && nearest.is_none_or(|n| d < n.0) {
-                        nearest = Some((d, i));
-                    }
-                }
-            }
-            for (i, p) in pts.iter().enumerate() {
-                let Some(p) = p else { continue };
-                let hot = nearest.is_some_and(|n| n.1 == i);
+                .filter(|_| !ctx.egui_wants_pointer_input());
+            let markers: Vec<_> = g.hall_markers(&view, w, h, ppp).collect();
+            let nearest = cursor.and_then(|cursor| {
+                markers
+                    .iter()
+                    .map(|&(_, pos)| (pos, pos.distance(cursor)))
+                    .filter(|&(_, distance)| distance <= g.hall_hit_radius())
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(pos, _)| pos)
+            });
+            for &(_, p) in &markers {
+                let hot = nearest == Some(p);
                 let r = if hot { 13.0 } else { 8.0 };
                 painter.rect_filled(
-                    egui::Rect::from_center_size(*p, vec2(r * 2.0 + 4.0, r * 2.0 + 4.0)),
+                    egui::Rect::from_center_size(p, vec2(r * 2.0 + 4.0, r * 2.0 + 4.0)),
                     egui::CornerRadius::ZERO,
                     theme::LINE,
                 );
                 painter.rect_filled(
-                    egui::Rect::from_center_size(*p, vec2(r * 2.0, r * 2.0)),
+                    egui::Rect::from_center_size(p, vec2(r * 2.0, r * 2.0)),
                     egui::CornerRadius::ZERO,
                     if hot { ACCENT } else { INK },
                 );
@@ -1461,12 +1446,18 @@ impl State {
             }
             // event feed
             let inset = g.right_inset();
-            if !compact && !g.coach.toasts.is_empty() {
+            if !g.coach.toasts.is_empty() && (!compact || (!g.any_sheet() && g.ui.tool.is_none())) {
+                let (anchor, offset) = if compact {
+                    (Align2::CENTER_TOP, vec2(0.0, top_y))
+                } else {
+                    (Align2::RIGHT_TOP, vec2(-inset, top_y))
+                };
                 egui::Area::new(egui::Id::new("toasts"))
-                    .anchor(Align2::RIGHT_TOP, vec2(-inset, top_y))
+                    .anchor(anchor, offset)
                     .interactable(false)
                     .show(ctx, |ui| {
-                        for (text, _, bad) in g.coach.toasts.iter().rev() {
+                        let count = if compact { 1 } else { 4 };
+                        for (text, _, bad) in g.coach.toasts.iter().rev().take(count) {
                             theme::panel().show(ui, |ui| {
                                 ui.set_width(300.0);
                                 ui.add(
@@ -1830,6 +1821,7 @@ impl Game {
             election: None,
             compact: false,
             compact_init: false,
+            ui_ppp: 1.0,
         }
     }
 
@@ -1958,6 +1950,33 @@ impl Game {
                 }
             }
         }
+    }
+
+    fn map_input_available(&self) -> bool {
+        !self.menu_open && self.election.is_none() && !self.sim.is_game_over()
+    }
+
+    fn hall_hit_radius(&self) -> f32 {
+        if self.compact { 24.0 } else { 18.0 }
+    }
+
+    fn hall_markers<'a>(
+        &'a self,
+        view: &'a us_render::View,
+        w: u32,
+        h: u32,
+        ppp: f32,
+    ) -> impl Iterator<Item = (Pt, Pos2)> + 'a {
+        let land = self.live.land();
+        self.sites.iter().copied().filter_map(move |site| {
+            let (x, y) = (site.x as f32, site.y as f32);
+            let p = Vec3::new(x, y, land.height(x, y));
+            let ndc = project(view, p)?;
+            if ndc.0.abs() > 1.0 || ndc.1.abs() > 1.0 || !land.segment_above_ground(p, view.eye) {
+                return None;
+            }
+            Some((site, to_screen(ndc, w, h, ppp)))
+        })
     }
 
     fn place(&mut self, site: Pt) {

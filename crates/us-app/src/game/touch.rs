@@ -74,7 +74,8 @@ impl State {
     /// One touch event in window pixels. `on_ui` says the finger landed on the interface (only
     /// meaningful for `Phase::Down`).
     pub fn touch(&mut self, id: u64, phase: Phase, x: f32, y: f32, on_ui: bool, height_px: u32) {
-        let in_game = self.screen == Screen::Game && self.game.is_some();
+        let in_game = self.screen == Screen::Game
+            && self.game.as_ref().is_some_and(|g| g.map_input_available());
         match phase {
             Phase::Down => {
                 self.touches.fingers.retain(|f| f.id != id);
@@ -152,7 +153,9 @@ impl State {
 
     /// Once a frame: a finger resting on the town for long enough explains what is under it.
     pub fn touch_tick(&mut self) {
-        if self.screen != Screen::Game || self.game.is_none() {
+        if self.screen != Screen::Game
+            || !self.game.as_ref().is_some_and(|g| g.map_input_available())
+        {
             return;
         }
         let mut hit = None;

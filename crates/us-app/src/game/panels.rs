@@ -1574,9 +1574,11 @@ impl Game {
     }
 
     fn capacity_rows(&self, ui: &mut Ui) {
-        let blocked = self.sim.growth_stalls();
-        for st in self.sim.committed_capacities() {
-            let stopped = blocked.contains(&st.capacity);
+        let Some(capacities) = self.ui.growth.capacities else {
+            return;
+        };
+        for st in capacities {
+            let stopped = self.ui.growth.stalls.contains(&st.capacity);
             lab_c(
                 ui,
                 format!(

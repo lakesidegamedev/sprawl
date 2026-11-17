@@ -6,12 +6,14 @@ use super::Game;
 use super::panels::{dock_top, lab_c};
 use crate::theme::{self, ACCENT, BAD, INK, MUTED, TEXT, ui_font};
 use egui::{Align2, Context, RichText, Stroke, vec2};
-use us_sim::GrowthAlert;
+use us_sim::{Capacity, CapacityStatus, GrowthAlert, Sim};
 
 /// What the banner remembers between frames: the sim is asked twice a second, not every frame.
 #[derive(Default)]
 pub struct GrowthUi {
     alerts: Vec<GrowthAlert>,
+    pub(super) capacities: Option<[CapacityStatus; 4]>,
+    pub(super) stalls: Vec<Capacity>,
     asked: f64,
     banner_height: f32,
     /// Where the top bar ends, set by the game each frame.
@@ -19,6 +21,15 @@ pub struct GrowthUi {
 }
 
 impl GrowthUi {
+    pub(super) fn refresh(&mut self, sim: &Sim, now: f64) {
+        if self.capacities.is_none() || now - self.asked > REFRESH_S || now < self.asked {
+            self.alerts = sim.growth_alerts();
+            self.capacities = Some(sim.committed_capacities());
+            self.stalls = sim.growth_stalls();
+            self.asked = now;
+        }
+    }
+
     /// Height of the last banner drawn above the phone dock.
     pub fn height(&self) -> f32 {
         self.banner_height
@@ -36,11 +47,6 @@ impl Game {
         self.ui.growth.banner_height = 0.0;
         if self.menu_open || self.election.is_some() || (self.compact && self.any_sheet()) {
             return;
-        }
-        let now = ctx.input(|i| i.time);
-        if now - self.ui.growth.asked > REFRESH_S || now < self.ui.growth.asked {
-            self.ui.growth.alerts = self.sim.growth_alerts();
-            self.ui.growth.asked = now;
         }
         let alerts = &self.ui.growth.alerts;
         if alerts.is_empty() {
