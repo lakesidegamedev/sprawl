@@ -2,17 +2,30 @@
 
 ## Unreleased
 
-- Phones and tablets keep Build, Budget, Map and News within one tap, with other tools under More. The shorter dock leaves more room for the town and sheets stay above it. Budget stacks department controls vertically on small screens.
+- 1.3.1 is the performance and rendering update for TestFlight. See the version notes below.
 
+## 1.3.1 (2026-11-17)
+
+<!-- Release coverage starts after v1.2.0 (386b2cb). Includes the 1.3.0 candidate (2995c92). -->
+
+### For players
+
+- Smoother shadow outlines while panning and zooming. The renderer skips town geometry entirely outside the camera and shadow views, and uses less graphics memory for outlines on supported devices.
+- Phones and tablets keep Build, Budget, Map and News within one tap, with other tools under More. The shorter dock leaves more room for the town and sheets stay above it. Budget stacks department controls vertically on small screens.
 - Goals and town updates sit in separate columns so alerts no longer cover them. Open Taxes when needed to keep more of the map visible.
 - Town hall placement works only on visible crossroads markers. Tapping elsewhere leaves the town unstarted.
-- Compact screens show construction confirmations, and map input stays behind panels and dialogs.
 - Fix the camera on steep maps so the view follows the terrain while moving, lifts over ridges that block the town, and lowers again over open ground.
-- On compact screens, choose a site and review its cost or placement problem before committing to a service building.
+- On compact screens, choose a site and review its cost or placement problem before committing to a service building. Panels keep touch input from reaching the map behind them.
 - Budget and Build now show the same committed capacity as the growth warning. A warning shows the funding shortfall and opens Bonds when the town cannot afford the fix.
 - First-year goals open the Budget and Ordinances panels directly.
 - Bridge sides and parapets follow bends in the road without leaving gaps.
 - Water ripples blend between close and distant views, and stronger winds brighten the crests.
+
+### For developers
+
+- Use a two-channel outline attachment where the adapter supports it at the selected sample count. Keep full-precision distance and face IDs and retain the wider attachment as a fallback.
+- Cull chunks against all six clip planes with wind-sway bounds. Filter shadow comparisons and skip redundant shadow and contact-shade reads. Terrain, simulation and save formats carry forward from 1.3.0.
+- Includes the steep-terrain camera and mobile interaction changes in #45 and #46.
 
 ## 1.2.0 (2026-11-16)
 

@@ -106,7 +106,7 @@ fn vs_shadow(v: VIn) -> @builtin(position) vec4<f32> {
     return g.light_vp * vec4<f32>(sway(v.pos, v.color.rgb * 255.0), 1.0);
 }
 
-// 1 when the sun reaches the point, 0 when a caster is in front of it.
+// Fraction of the comparison footprint that the sun reaches.
 fn lit(world: vec3<f32>, n: vec3<f32>) -> f32 {
     let p = world + n * g.sun.w * 1.5;
     let c = g.light_vp * vec4<f32>(p, 1.0);
@@ -751,8 +751,8 @@ fn fs_main(v: VOut) -> FOut {
             k = 0.66;
         }
     }
-    if (l > 0.02 && lit(v.world, n) < 0.5) {
-        k = min(k, g.shade.x);
+    if (l > 0.02 && k > g.shade.x) {
+        k = mix(g.shade.x, k, lit(v.world, n));
     }
     col = col * k;
     if (k < 0.97 && !emissive && g.look.z < 0.5) {
@@ -822,25 +822,20 @@ fn ink_at(p: vec2<i32>, s: i32) -> bool {
 
 // Contact shade: ground within about a metre of something standing on it (a wall, a trunk, a
 // fence) gets one darker, cooler step. Looks at four neighbours of the first sample only.
-fn contact(p: vec2<i32>, px: f32) -> f32 {
-    let a = aux_at(p, 0);
+fn contact(p: vec2<i32>, px: f32, a: vec2<f32>) -> f32 {
     if (u32(a.y) != 0u) {
         return 1.0;
     }
     let r = i32(clamp(0.9 / max(px, 0.02), 1.0, 4.0));
     var offs = array<vec2<i32>, 4>(vec2<i32>(r, 0), vec2<i32>(-r, 0), vec2<i32>(0, r), vec2<i32>(0, -r));
-    var hits = 0;
     let tol = 0.004 * a.x + 0.3;
     for (var i = 0; i < 4; i = i + 1) {
         let b = aux_at(p + offs[i], 0);
         let idb = u32(b.y);
         // a real object (not ground, not flat paint) that is close to the ground point in depth
         if (idb != 0u && idb != EXEMPT && abs(b.x - a.x) < 2.5 + tol) {
-            hits = hits + 1;
+            return 0.88;
         }
-    }
-    if (hits >= 1) {
-        return 0.88;
     }
     return 1.0;
 }
@@ -851,11 +846,12 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
     var acc = vec3<f32>(0.0);
     // ink thins out as a pixel covers more of the world: a one pixel line from about half a
     // metre a pixel, none from a metre and a half (whole-town views keep their roof colours)
-    let px = g.screen.z * aux_at(p, 0).x;
+    let centre = aux_at(p, 0);
+    let px = g.screen.z * centre.x;
     let inked = px < 1.5;
     var ao = 1.0;
     if (inked) {
-        ao = contact(p, px);
+        ao = contact(p, px, centre);
     }
     for (var s = 0; s < SAMPLE_COUNT; s = s + 1) {
         var ink = false;

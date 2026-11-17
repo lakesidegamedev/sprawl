@@ -11,9 +11,9 @@ use wgpu::util::DeviceExt;
 
 const SHADER: &str = include_str!("shader.wgsl");
 const COLOUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-// distance (as f32 bits) and face id, in an integer format: every back end can draw to it,
-// OpenGL ES included (it cannot draw to Rgba32Float without an extension)
-const AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
+// The outline pass needs only two channels: distance (as f32 bits) and face ID.
+const COMPACT_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Uint;
+const WIDE_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
 // the bits of 1.0e9_f32, the far distance that an empty pixel holds
 const AUX_FAR_BITS: f64 = 1_315_859_240.0;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -247,6 +247,7 @@ pub struct Renderer {
     info: AdapterSummary,
     /// Samples per pixel in the scene pass (4, or 1 when the adapter cannot).
     msaa: u32,
+    aux_format: wgpu::TextureFormat,
     layout0: wgpu::BindGroupLayout,
     layout1: wgpu::BindGroupLayout,
     module: wgpu::ShaderModule,
@@ -299,10 +300,24 @@ fn pick_samples(adapter: &wgpu::Adapter) -> u32 {
         .get_downlevel_capabilities()
         .flags
         .contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING);
-    if shading && ok(COLOUR_FORMAT) && ok(AUX_FORMAT) && ok(DEPTH_FORMAT) {
+    if shading
+        && ok(COLOUR_FORMAT)
+        && (ok(COMPACT_AUX_FORMAT) || ok(WIDE_AUX_FORMAT))
+        && ok(DEPTH_FORMAT)
+    {
         4
     } else {
         1
+    }
+}
+
+fn aux_format(adapter: &wgpu::Adapter, samples: u32) -> wgpu::TextureFormat {
+    let features = adapter.get_texture_format_features(COMPACT_AUX_FORMAT);
+    let usages = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+    if features.allowed_usages.contains(usages) && features.flags.sample_count_supported(samples) {
+        COMPACT_AUX_FORMAT
+    } else {
+        WIDE_AUX_FORMAT
     }
 }
 
@@ -468,6 +483,7 @@ impl Renderer {
             Err(e) => return Err(NoAdapter(e.to_string())),
         };
 
+        let aux_format = aux_format(&adapter, msaa);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scene"),
             source: wgpu::ShaderSource::Wgsl(shader_source(msaa).into()),
@@ -598,7 +614,7 @@ impl Renderer {
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
                     Some(wgpu::ColorTargetState {
-                        format: AUX_FORMAT,
+                        format: aux_format,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
@@ -664,7 +680,7 @@ impl Renderer {
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
                     Some(wgpu::ColorTargetState {
-                        format: AUX_FORMAT,
+                        format: aux_format,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
@@ -674,8 +690,8 @@ impl Renderer {
             cache: None,
         });
         let compare = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
@@ -706,6 +722,7 @@ impl Renderer {
             queue,
             info,
             msaa,
+            aux_format,
             layout0,
             layout1,
             module,
@@ -934,7 +951,7 @@ impl Renderer {
         let make = |label: &str, format, usage| make_n(label, format, usage, 1);
         let rt = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let colour = make_n("colour", COLOUR_FORMAT, rt, msaa).create_view(&Default::default());
-        let aux = make_n("aux", AUX_FORMAT, rt, msaa).create_view(&Default::default());
+        let aux = make_n("aux", self.aux_format, rt, msaa).create_view(&Default::default());
         let depth = make_n(
             "depth",
             DEPTH_FORMAT,
@@ -1370,10 +1387,14 @@ impl Renderer {
             // best is the NDC length of 16 m (frame height is 2)
             best / 32.0 < LOD_FAR_SHARE
         };
+        let camera_volume = ClipVolume::new(view.view_proj);
+        let light_volume = ClipVolume::new(light_vp);
+        // Include the largest leaf displacement from sway() in both passes.
+        let sway = Vec3::new(wl.wind[0].abs(), wl.wind[1].abs(), 0.0) * 0.0675;
         let visible_main: Vec<(&GpuMesh, bool)> = gpu
             .chunks
             .iter()
-            .filter(|c| in_view(&view.view_proj, c.lo, c.hi))
+            .filter(|c| camera_volume.intersects(c.lo - sway, c.hi + sway))
             .map(|c| {
                 let far = is_far(c);
                 (pick(c, far), far)
@@ -1382,7 +1403,7 @@ impl Renderer {
         let visible_light: Vec<&GpuMesh> = gpu
             .chunks
             .iter()
-            .filter(|c| in_view(&light_vp, c.lo, c.hi))
+            .filter(|c| light_volume.intersects(c.lo - sway, c.hi + sway))
             .map(|c| pick(c, is_far(c)))
             .collect();
         stats.chunks_total = gpu.chunks.len();
@@ -1558,34 +1579,24 @@ impl Renderer {
     }
 }
 
-/// False when every corner of the box lies outside the same side of the view volume.
-fn in_view(vp: &Mat4, lo: Vec3, hi: Vec3) -> bool {
-    let mut out = [0u32; 4];
-    for i in 0..8 {
-        let p = Vec3::new(
-            if i & 1 == 0 { lo.x } else { hi.x },
-            if i & 2 == 0 { lo.y } else { hi.y },
-            if i & 4 == 0 { lo.z } else { hi.z },
-        );
-        let c = *vp * p.extend(1.0);
-        if c.w <= 1e-4 {
-            // behind the eye: keep it, the plane tests below are not valid
-            return true;
-        }
-        if c.x < -c.w {
-            out[0] += 1;
-        }
-        if c.x > c.w {
-            out[1] += 1;
-        }
-        if c.y < -c.w {
-            out[2] += 1;
-        }
-        if c.y > c.w {
-            out[3] += 1;
-        }
+/// World-space clip planes. Reject a chunk only when its entire bounds miss one plane.
+struct ClipVolume([Vec4; 6]);
+
+impl ClipVolume {
+    fn new(vp: Mat4) -> Self {
+        let [x, y, z, w] = vp.transpose().to_cols_array_2d().map(Vec4::from_array);
+        // wgpu depth spans 0 to w. Keep near-plane intersections even when some corners
+        // extend behind the eye.
+        Self([w + x, w - x, w + y, w - y, z, w - z])
     }
-    out.iter().all(|&n| n < 8)
+
+    fn intersects(&self, lo: Vec3, hi: Vec3) -> bool {
+        self.0.iter().all(|plane| {
+            let n = plane.truncate();
+            let corner = Vec3::select(n.cmpge(Vec3::ZERO), hi, lo);
+            n.dot(corner) + plane.w >= -0.001
+        })
+    }
 }
 
 /// Orthographic light matrix that covers the ground the camera sees (inside the map) up to
@@ -1638,4 +1649,19 @@ fn light_matrix(scene: &Scene, view: &View, sun: Vec3, size: u32) -> (Mat4, f32,
     let (near, far) = (-hi.z - 120.0, -lo.z + 120.0);
     let proj = Mat4::orthographic_rh(cx - half, cx + half, cy - half, cy + half, near, far);
     (proj * lv, 2.0 * half / size as f32, far - near)
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_chunks_outside_depth_and_keeps_near_plane_intersections() {
+        let projection = Mat4::perspective_rh(45.0_f32.to_radians(), 1.0, 1.0, 20.0);
+        let volume = ClipVolume::new(projection);
+        assert!(!volume.intersects(Vec3::new(-1.0, -1.0, 1.0), Vec3::new(1.0, 1.0, 2.0)));
+        assert!(!volume.intersects(Vec3::new(-1.0, -1.0, -30.0), Vec3::new(1.0, 1.0, -22.0)));
+        assert!(!volume.intersects(Vec3::new(9.0, -1.0, -4.0), Vec3::new(10.0, 1.0, 1.0)));
+        assert!(volume.intersects(Vec3::new(-1.0, -1.0, -2.0), Vec3::new(1.0, 1.0, 1.0)));
+    }
 }
