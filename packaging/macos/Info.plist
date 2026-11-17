@@ -7,8 +7,8 @@
   <key>CFBundleIdentifier</key><string>net.lakesidegames.urbansprawl</string>
   <key>CFBundleExecutable</key><string>urban-sprawl</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.3.0</string>
-  <key>CFBundleVersion</key><string>1.3.0.1</string>
+  <key>CFBundleShortVersionString</key><string>1.3.1</string>
+  <key>CFBundleVersion</key><string>1.3.1.1</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
