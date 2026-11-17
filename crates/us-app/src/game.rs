@@ -1242,7 +1242,6 @@ impl State {
             })
         };
         let top_y = hud.response.rect.bottom() + if compact { 6.0 } else { 12.0 };
-        g.ui.growth.top_y = top_y;
 
         if g.placed && compact {
             let dock = egui::Panel::bottom("dock")
@@ -1269,12 +1268,8 @@ impl State {
         } else {
             g.banner.as_ref().map(|b| b.0.clone())
         };
-        let stacked_banner = if compact && g.placed {
-            banner.clone()
-        } else {
-            None
-        };
-        if let Some(b) = banner.filter(|_| !(compact && g.placed)) {
+        let stacked_banner = banner.as_deref().filter(|_| g.placed);
+        if let Some(b) = banner.as_deref().filter(|_| !g.placed) {
             egui::Area::new(egui::Id::new("banner"))
                 .anchor(Align2::CENTER_TOP, vec2(0.0, top_y))
                 .show(ctx, |ui| {
@@ -1282,7 +1277,7 @@ impl State {
                         if compact {
                             ui.set_max_width(ctx.content_rect().width() - 40.0);
                             ui.add(
-                                egui::Label::new(RichText::new(&b).font(ui_font(14.0)).color(INK)).wrap(),
+                                egui::Label::new(RichText::new(b).font(ui_font(14.0)).color(INK)).wrap(),
                             );
                             if !g.placed {
                                 ui.add(
@@ -1298,7 +1293,7 @@ impl State {
                         }
                         ui.set_max_width(440.0);
                         ui.add(
-                            egui::Label::new(RichText::new(&b).font(ui_font(16.0)).color(INK)).wrap(),
+                            egui::Label::new(RichText::new(b).font(ui_font(16.0)).color(INK)).wrap(),
                         );
                         if !g.placed {
                             label(ui, "The white squares are old crossroads. The one nearest your cursor glows orange. Your main street will run to the highway.", 12.0);
@@ -1351,7 +1346,7 @@ impl State {
                             goal_text.push('\n');
                             goal_text.push_str(u);
                         }
-                        if let Some(b) = &stacked_banner {
+                        if let Some(b) = stacked_banner {
                             theme::panel()
                                 .inner_margin(egui::Margin::symmetric(8, 4))
                                 .show(ui, |ui| {
@@ -1375,13 +1370,7 @@ impl State {
                                     );
                                 });
                         }
-                        for (text, _, bad) in g.coach.toasts.iter().rev().take(
-                            if ctx.content_rect().width() > 700.0 {
-                                1
-                            } else {
-                                2
-                            },
-                        ) {
+                        for (text, _, bad) in g.coach.toasts.iter().rev().take(1) {
                             theme::panel()
                                 .inner_margin(egui::Margin::symmetric(8, 4))
                                 .show(ui, |ui| {
@@ -1398,12 +1387,16 @@ impl State {
                         }
                     });
             }
+            let left = chrome::RAIL_W + 14.0;
+            let right = g.right_inset();
+            let card_width =
+                ((ctx.content_rect().width() - left - right - 16.0) * 0.5).clamp(140.0, 348.0);
             if !compact {
                 egui::Area::new(egui::Id::new("goal"))
-                    .anchor(Align2::LEFT_TOP, vec2(chrome::RAIL_W + 14.0, top_y))
+                    .anchor(Align2::LEFT_TOP, vec2(left, top_y))
                     .show(ctx, |ui| {
                         theme::panel().show(ui, |ui| {
-                            ui.set_width(320.0);
+                            ui.set_width(card_width - 28.0);
                             if first_goals {
                                 open_goal_build = g.first_goals_card(ui, ctx);
                                 return;
@@ -1444,38 +1437,25 @@ impl State {
             if let Some(action) = open_goal_build {
                 g.open_goal(action);
             }
-            // event feed
-            let inset = g.right_inset();
-            if !g.coach.toasts.is_empty() && (!compact || (!g.any_sheet() && g.ui.tool.is_none())) {
-                let (anchor, offset) = if compact {
-                    (Align2::CENTER_TOP, vec2(0.0, top_y))
-                } else {
-                    (Align2::RIGHT_TOP, vec2(-inset, top_y))
-                };
-                egui::Area::new(egui::Id::new("toasts"))
-                    .anchor(anchor, offset)
-                    .interactable(false)
+            if !compact && g.map_input_available() {
+                egui::Area::new(egui::Id::new("town-status"))
+                    .anchor(Align2::RIGHT_TOP, vec2(-right, top_y))
                     .show(ctx, |ui| {
-                        let count = if compact { 1 } else { 4 };
-                        for (text, _, bad) in g.coach.toasts.iter().rev().take(count) {
+                        ui.set_max_width(card_width);
+                        g.growth_panel(ui, card_width);
+                        if let Some(banner) = stacked_banner {
                             theme::panel().show(ui, |ui| {
-                                ui.set_width(300.0);
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(text).font(ui_font(12.0)).color(if *bad {
-                                            BAD
-                                        } else {
-                                            TEXT
-                                        }),
-                                    )
-                                    .wrap(),
-                                );
+                                panels::wrapped(ui, banner, 12.0, TEXT);
+                            });
+                        } else if let Some((text, _, bad)) = g.coach.toasts.last() {
+                            theme::panel().show(ui, |ui| {
+                                panels::wrapped(ui, text, 12.0, if *bad { BAD } else { TEXT });
                             });
                         }
                     });
             }
             let screen_w = w as f32 / ppp;
-            if !compact || g.ui.levers_open {
+            if g.ui.levers_open {
                 g.levers_ui(ctx);
             }
             if g.voters_open {
@@ -1514,7 +1494,7 @@ impl State {
             if g.placed && !g.sim.is_game_over() {
                 if compact && g.ui.tool.is_some() {
                     g.civic_placement_ui(ctx);
-                } else {
+                } else if compact {
                     g.growth_banner_ui(ctx);
                     g.goals_ui(ctx);
                 }

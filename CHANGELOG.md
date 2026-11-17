@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Goals and town updates sit in separate columns so alerts no longer cover them. Open Taxes when needed to keep more of the map visible.
+
 - Town hall placement works only on visible crossroads markers. Tapping elsewhere leaves the town unstarted.
 - Compact screens show construction confirmations, and map gestures respect game dialogs.
 
