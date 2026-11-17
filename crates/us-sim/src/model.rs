@@ -269,13 +269,13 @@ impl CivicKind {
     /// Price in dollars, paid from the treasury when placed.
     pub fn cost(self) -> i64 {
         match self {
-            CivicKind::School => 120_000,
+            CivicKind::School => 95_000,
             CivicKind::Police => 90_000,
             CivicKind::Fire => 100_000,
-            CivicKind::Clinic => 80_000,
+            CivicKind::Clinic => 60_000,
             CivicKind::Park => 30_000,
-            CivicKind::Water => 60_000,
-            CivicKind::Power => 250_000,
+            CivicKind::Water => 45_000,
+            CivicKind::Power => 200_000,
             CivicKind::Library => 140_000,
             CivicKind::HighSchool => 260_000,
             CivicKind::Hospital => 420_000,

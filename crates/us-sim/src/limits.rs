@@ -31,15 +31,15 @@ pub(crate) const WARN_AT: f64 = 0.88;
 
 /// Water a tower carries, in people served (a worker's workplace counts half).
 const WATER_PER_TOWER: i64 = 2000;
-const WATER_FREE: i64 = 900;
+const WATER_FREE: i64 = 1200;
 const POWER_PER_PLANT: i64 = 6000;
-const POWER_FREE: i64 = 1500;
+const POWER_FREE: i64 = 1900;
 const SEATS_PER_SCHOOL: i64 = 450;
-const SEATS_FREE: i64 = 150;
+const SEATS_FREE: i64 = 200;
 /// Share of the people who are pupils.
 const PUPIL_SHARE_PCT: i64 = 18;
 const CLINIC_SERVES: i64 = 2500;
-const HEALTH_FREE: i64 = 700;
+const HEALTH_FREE: i64 = 1100;
 
 impl Sim {
     pub fn difficulty(&self) -> Difficulty {

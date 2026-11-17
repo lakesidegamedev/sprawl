@@ -1445,9 +1445,9 @@ impl Game {
             wrapped(
                 ui,
                 if compact {
-                    "Pick a building, then choose a site next to an open road."
+                    "Pick a building, then tap near an open street to preview its roadside site."
                 } else {
-                    "Pick a building, then click empty land next to an open road. Press Esc to stop."
+                    "Pick a building, then click near an open street. Press Esc to stop."
                 },
                 11.0,
                 Color32::from_rgb(170, 176, 196),
@@ -1617,7 +1617,7 @@ impl Game {
                     let (message, colour) = match verdict.as_ref() {
                         Some(Ok(())) => ("Site ready".into(), GOOD),
                         Some(Err(error)) => (error.text(), BAD),
-                        None => ("Choose a site next to an open road".into(), TEXT),
+                        None => ("Tap near an open street".into(), TEXT),
                     };
                     wrapped(ui, message, 12.0, colour);
                     ui.horizontal_wrapped(|ui| {
@@ -1977,7 +1977,7 @@ impl Game {
             let Some(g) = self.live.scene.pick(view, ndc) else {
                 return;
             };
-            pt(g.x as f64, g.y as f64)
+            self.sim.snap_civic_site(kind, pt(g.x as f64, g.y as f64))
         };
         let pos = match (
             pinned,

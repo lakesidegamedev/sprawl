@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Civic buildings snap beside open streets. The placement preview shows where the building will go before you pay.
+- Towns start with more water, power, school seats and clinic capacity. Water towers, power plants, schools and clinics cost less to build.
+
 - 1.3.1 is the performance and rendering update for TestFlight. See the version notes below.
 
 ## 1.3.1 (2026-11-17)
