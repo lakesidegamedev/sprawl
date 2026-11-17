@@ -485,8 +485,8 @@ impl State {
                     g.place(site);
                 }
             } else if let Some(p) = g.live.scene.pick(&view, ndc) {
-                if g.ui.tool.is_some() {
-                    let site = pt(p.x as f64, p.y as f64);
+                if let Some(kind) = g.ui.tool {
+                    let site = g.sim.snap_civic_site(kind, pt(p.x as f64, p.y as f64));
                     if g.compact {
                         g.ui.civic_site = Some(site);
                     } else {
