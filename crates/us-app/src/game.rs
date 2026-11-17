@@ -1362,8 +1362,8 @@ impl State {
             // the First goals card takes the place of the milestone goal while it is showing
             let first_goals = g.sim.goals_visible();
             let mut open_goal_build = None;
-            if compact {
-                // one short stack: the goal on one line, then up to two news toasts
+            if compact && !g.any_sheet() && g.sel.is_none() {
+                // Keep the transient map notices clear of open sheets.
                 let wmax = (ctx.content_rect().width() - 24.0).min(340.0);
                 egui::Area::new(egui::Id::new("goal"))
                     .anchor(Align2::LEFT_TOP, vec2(8.0, top_y))
