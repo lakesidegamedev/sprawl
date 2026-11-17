@@ -41,39 +41,6 @@ fn pointer_over_ui(ctx: &egui::Context, pixels: (f32, f32), padding: f32) -> boo
             .any(|rect| rect.expand(padding).contains(at))
 }
 
-#[cfg(test)]
-mod input_tests {
-    use super::pointer_over_ui;
-    use egui::{Align2, Area, Context, Id, Order, RawInput, Rect, pos2, vec2};
-
-    #[test]
-    fn placement_panel_owns_its_button_and_leaves_the_map_interactive() {
-        let ctx = Context::default();
-        let screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(390.0, 844.0)));
-        let mut button = Rect::NOTHING;
-        for _ in 0..3 {
-            let input = RawInput {
-                screen_rect,
-                ..Default::default()
-            };
-            let mut output = ctx.run_ui(input, |ui| {
-                button = Area::new(Id::unique("placement-test"))
-                    .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -60.0))
-                    .order(Order::Middle)
-                    .show(ui.ctx(), |ui| ui.button("Start construction").rect)
-                    .inner;
-            });
-            output.textures_delta.clear();
-        }
-        assert!(pointer_over_ui(
-            &ctx,
-            (button.center().x, button.center().y),
-            0.0
-        ));
-        assert!(!pointer_over_ui(&ctx, (180.0, 360.0), 0.0));
-    }
-}
-
 struct App {
     gfx: Option<Gfx>,
     /// The window outlives the graphics: when the app goes to the background the graphics are
@@ -509,5 +476,38 @@ pub fn run() {
              Technical detail: {f}"
         ));
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::pointer_over_ui;
+    use egui::{Align2, Area, Context, Id, Order, RawInput, Rect, pos2, vec2};
+
+    #[test]
+    fn placement_panel_owns_its_button_and_leaves_the_map_interactive() {
+        let ctx = Context::default();
+        let screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(390.0, 844.0)));
+        let mut button = Rect::NOTHING;
+        for _ in 0..3 {
+            let input = RawInput {
+                screen_rect,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                button = Area::new(Id::unique("placement-test"))
+                    .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -60.0))
+                    .order(Order::Middle)
+                    .show(ui.ctx(), |ui| ui.button("Start construction").rect)
+                    .inner;
+            });
+            output.textures_delta.clear();
+        }
+        assert!(pointer_over_ui(
+            &ctx,
+            (button.center().x, button.center().y),
+            0.0
+        ));
+        assert!(!pointer_over_ui(&ctx, (180.0, 360.0), 0.0));
     }
 }
