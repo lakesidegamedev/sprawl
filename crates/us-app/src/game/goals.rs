@@ -6,7 +6,7 @@ use super::Game;
 use super::panels::{dock_top, lab, lab_c, window, wrapped};
 use crate::theme::{self, ACCENT, GOOD, INK, MUTED, TEXT, ui_font};
 use egui::{Align2, Context, RichText, Stroke, Ui, vec2};
-use us_sim::GoalView;
+use us_sim::{CivicKind, Goal, GoalView};
 
 /// What the card remembers between frames.
 #[derive(Default)]
@@ -19,9 +19,37 @@ pub struct GoalsUi {
 
 const REFRESH_S: f64 = 0.5;
 
+#[derive(Clone, Copy)]
+pub(super) enum GoalAction {
+    Build(CivicKind),
+    Budget,
+    Ordinances,
+}
+
+fn goal_button(ui: &mut Ui, goal: Goal, touch: bool) -> Option<GoalAction> {
+    let (action, label) = match goal {
+        Goal::Budget => (GoalAction::Budget, "Open Budget".into()),
+        Goal::Policy => (GoalAction::Ordinances, "Open Ordinances".into()),
+        goal => {
+            let kind = goal.civic()?;
+            (
+                GoalAction::Build(kind),
+                format!("Place {}", kind.label().to_lowercase()),
+            )
+        }
+    };
+    ui.add(
+        egui::Button::new(RichText::new(label).font(ui_font(12.0)).color(theme::LINE))
+            .fill(ACCENT)
+            .min_size(vec2(0.0, if touch { theme::TOUCH } else { 24.0 })),
+    )
+    .clicked()
+    .then_some(action)
+}
+
 /// The desktop card is short so it never crowds a panel: one dot per goal, then only the next
 /// goal in full.
-fn next_goal(ui: &mut Ui, goals: &[GoalView]) -> Option<us_sim::CivicKind> {
+fn next_goal(ui: &mut Ui, goals: &[GoalView]) -> Option<GoalAction> {
     ui.horizontal(|ui| {
         for g in goals {
             let (r, _) = ui.allocate_exact_size(vec2(12.0, 12.0), egui::Sense::hover());
@@ -40,20 +68,10 @@ fn next_goal(ui: &mut Ui, goals: &[GoalView]) -> Option<us_sim::CivicKind> {
     if !g.reward.is_empty() {
         lab_c(ui, format!("Reward: {}", g.reward), 11.0, ACCENT);
     }
-    let kind = g.goal.civic()?;
-    let b = ui.add(
-        egui::Button::new(
-            RichText::new(format!("Open Build: {}", kind.label().to_lowercase()))
-                .font(ui_font(12.0))
-                .color(theme::LINE),
-        )
-        .fill(ACCENT)
-        .min_size(vec2(0.0, 24.0)),
-    );
-    b.clicked().then_some(kind)
+    goal_button(ui, g.goal, false)
 }
 
-fn rows(ui: &mut Ui, goals: &[GoalView], touch: bool) -> Option<us_sim::CivicKind> {
+fn rows(ui: &mut Ui, goals: &[GoalView], touch: bool) -> Option<GoalAction> {
     let mut build = None;
     // the first goal not done is spelled out; the rest are one line each
     let next = goals.iter().position(|g| !g.done);
@@ -78,20 +96,7 @@ fn rows(ui: &mut Ui, goals: &[GoalView], touch: bool) -> Option<us_sim::CivicKin
                 if !g.reward.is_empty() {
                     lab_c(ui, format!("Reward: {}", g.reward), 11.0, ACCENT);
                 }
-                if let Some(kind) = g.goal.civic() {
-                    let b = ui.add(
-                        egui::Button::new(
-                            RichText::new(format!("Open Build: {}", kind.label().to_lowercase()))
-                                .font(ui_font(12.0))
-                                .color(theme::LINE),
-                        )
-                        .fill(ACCENT)
-                        .min_size(vec2(0.0, if touch { theme::TOUCH } else { 24.0 })),
-                    );
-                    if b.clicked() {
-                        build = Some(kind);
-                    }
-                }
+                build = goal_button(ui, g.goal, touch);
             });
         }
     }
@@ -99,6 +104,17 @@ fn rows(ui: &mut Ui, goals: &[GoalView], touch: bool) -> Option<us_sim::CivicKin
 }
 
 impl Game {
+    pub(super) fn open_goal(&mut self, action: GoalAction) {
+        if self.compact {
+            self.close_sheets();
+        }
+        match action {
+            GoalAction::Build(kind) => self.open_build_for(kind),
+            GoalAction::Budget => self.ui.budget_open = true,
+            GoalAction::Ordinances => self.ui.ordinances_open = true,
+        }
+    }
+
     pub(super) fn refresh_goals(&mut self, ctx: &Context) {
         let now = ctx.input(|i| i.time);
         if now - self.ui.goals.asked > REFRESH_S || now < self.ui.goals.asked {
@@ -109,11 +125,7 @@ impl Game {
 
     /// The First goals card, drawn inside the top-left goal slot on a desktop in place of the
     /// milestone goal. Returns whether to hide it and a building to open in Build.
-    pub(super) fn first_goals_card(
-        &mut self,
-        ui: &mut Ui,
-        ctx: &Context,
-    ) -> Option<us_sim::CivicKind> {
+    pub(super) fn first_goals_card(&mut self, ui: &mut Ui, ctx: &Context) -> Option<GoalAction> {
         self.refresh_goals(ctx);
         let goals = self.ui.goals.goals.clone();
         let done = goals.iter().filter(|g| g.done).count();
@@ -167,7 +179,9 @@ impl Game {
                     tap = b.clicked();
                 });
             if tap {
-                self.ui.goals.open = !self.ui.goals.open;
+                let was_open = self.ui.goals.open;
+                self.close_sheets();
+                self.ui.goals.open = !was_open;
             }
             if self.ui.goals.open {
                 let closed = window(
@@ -193,8 +207,8 @@ impl Game {
             self.sim.dismiss_goals();
             self.ui.goals.open = false;
         }
-        if let Some(k) = build {
-            self.open_build_for(k);
+        if let Some(action) = build {
+            self.open_goal(action);
         }
     }
 }

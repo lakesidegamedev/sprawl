@@ -169,7 +169,10 @@ impl State {
         }
         // Nothing to explain until the town hall is down; placing it is a tap.
         if let Some(p) = hit
-            && self.game.as_ref().is_some_and(|g| g.placed)
+            && self
+                .game
+                .as_ref()
+                .is_some_and(|g| g.placed && g.ui.tool.is_none())
         {
             self.click = Some(p);
         }

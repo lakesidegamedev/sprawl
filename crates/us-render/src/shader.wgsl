@@ -341,6 +341,28 @@ fn water_kind(c: vec3<f32>) -> i32 {
     return 0;
 }
 
+fn water_ripples(base: vec3<f32>, w: vec2<f32>, scale: f32, t: f32) -> vec3<f32> {
+    var c = base;
+    // Let wind alter the surface without moving the shoreline itself.
+    let gust = min(length(g.wx.zw), 24.0);
+    let drift = vec2<f32>(0.8, 0.45);
+    let ph = dot(w, drift) * scale + vnoise(w * scale / 3.5 + vec2<f32>(t * 0.05, 0.0)) * 2.2 - t * 1.2;
+    let r = sin(ph);
+    let r2 = sin(ph * 0.5 + 2.0 + vnoise(w * 0.12) * 4.0 + t * 0.4);
+    // crests are short segments of different lengths, staggered from one crest to the next
+    let ci = floor((ph + 1.5708) / 6.2832);
+    let along = w.x * -0.45 + w.y * 0.8;
+    let seg = vnoise(vec2<f32>(along * (0.12 + 0.1 * fract(ci * 0.37)) + ci * 5.7, ci * 1.9 + 3.0));
+    if (r > 0.93 && seg > 0.52) {
+        c = mix(c, vec3<f32>(0.86, 0.95, 1.0), 0.48 + gust * 0.009);
+    } else if (r > 0.75 && r2 > 0.3) {
+        c = c * 1.1 + vec3<f32>(0.02, 0.04, 0.05);
+    } else if (r < -0.9) {
+        c = c * 0.95;
+    }
+    return c;
+}
+
 fn water_colour(kind: i32, w: vec2<f32>, dist: f32, t: f32) -> vec3<f32> {
     let deep = vec3<f32>(52.0, 112.0, 186.0) / 255.0;
     let far_sh = vec3<f32>(66.0, 138.0, 204.0) / 255.0;
@@ -349,21 +371,14 @@ fn water_colour(kind: i32, w: vec2<f32>, dist: f32, t: f32) -> vec3<f32> {
     if (kind == 2) { c = vec3<f32>(76.0, 142.0, 208.0) / 255.0; }
     if (kind == 3) { c = far_sh; }
     if (kind == 4) { c = near_sh; }
-    // ripples: banded crests drifting with the current, wider spaced when far
-    let scale = select(0.3, 1.7, dist < 220.0);
-    let ph = (w.x * 0.8 + w.y * 0.45) * scale + vnoise(w * scale / 3.5 + vec2<f32>(t * 0.05, 0.0)) * 2.2 - t * 1.2;
-    let r = sin(ph);
-    let r2 = sin(ph * 0.5 + 2.0 + vnoise(w * 0.12) * 4.0 + t * 0.4);
-    // crests are short segments of different lengths, staggered from one crest to the next
-    let ci = floor((ph + 1.5708) / 6.2832);
-    let along = w.x * -0.45 + w.y * 0.8;
-    let seg = vnoise(vec2<f32>(along * (0.12 + 0.1 * fract(ci * 0.37)) + ci * 5.7, ci * 1.9 + 3.0));
-    if (r > 0.93 && seg > 0.52) {
-        c = mix(c, vec3<f32>(0.86, 0.95, 1.0), 0.6);
-    } else if (r > 0.75 && r2 > 0.3) {
-        c = c * 1.1 + vec3<f32>(0.02, 0.04, 0.05);
-    } else if (r < -0.9) {
-        c = c * 0.95;
+    // Fade between two world-space patterns so zooming does not replace the entire surface at once.
+    let far_blend = smoothstep(155.0, 300.0, dist);
+    if (far_blend <= 0.0) {
+        c = water_ripples(c, w, 1.7, t);
+    } else if (far_blend >= 1.0) {
+        c = water_ripples(c, w, 0.3, t);
+    } else {
+        c = mix(water_ripples(c, w, 1.7, t), water_ripples(c, w, 0.3, t), far_blend);
     }
     if (kind == 5) {
         // foam: edge moves in and out, broken into dashes

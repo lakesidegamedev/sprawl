@@ -13,20 +13,15 @@ use us_sim::GrowthAlert;
 pub struct GrowthUi {
     alerts: Vec<GrowthAlert>,
     asked: f64,
+    banner_height: f32,
     /// Where the top bar ends, set by the game each frame.
     pub top_y: f32,
 }
 
 impl GrowthUi {
-    /// About how tall the banner is on a phone, so the goals chip can sit above it.
+    /// Height of the last banner drawn above the phone dock.
     pub fn height(&self) -> f32 {
-        if self.alerts.iter().any(|a| a.blocked) {
-            132.0
-        } else if self.alerts.is_empty() {
-            0.0
-        } else {
-            84.0
-        }
+        self.banner_height
     }
 }
 
@@ -38,6 +33,10 @@ impl Game {
     /// phone. It shows the most urgent block with its button; other blocks are one short line
     /// inside it. With nothing blocked, a slim line warns about the capacity nearest to full.
     pub(super) fn growth_banner_ui(&mut self, ctx: &Context) {
+        self.ui.growth.banner_height = 0.0;
+        if self.menu_open || self.election.is_some() || (self.compact && self.any_sheet()) {
+            return;
+        }
         let now = ctx.input(|i| i.time);
         if now - self.ui.growth.asked > REFRESH_S || now < self.ui.growth.asked {
             self.ui.growth.alerts = self.sim.growth_alerts();
@@ -61,6 +60,7 @@ impl Game {
             .collect();
         let blocked = main.blocked;
         let mut open_build = None;
+        let mut open_bonds = false;
         let width = if compact {
             ctx.content_rect().width() - 16.0
         } else {
@@ -74,7 +74,7 @@ impl Game {
             let y = self.ui.growth.top_y + if self.banner.is_some() { 48.0 } else { 0.0 };
             (Align2::CENTER_TOP, vec2(0.0, y))
         };
-        egui::Area::new(egui::Id::new("growth-banner"))
+        let area = egui::Area::new(egui::Id::new("growth-banner"))
             .anchor(anchor.0, anchor.1)
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
@@ -99,7 +99,15 @@ impl Game {
                                 )
                                 .wrap(),
                             );
-                            if !main.under_construction {
+                            if main.under_construction {
+                                if !blocked {
+                                    lab_c(ui, "One is being built.", 11.0, MUTED);
+                                }
+                            } else if !main.can_afford {
+                                if ui.button("Review bonds").clicked() {
+                                    open_bonds = true;
+                                }
+                            } else {
                                 let label = format!(
                                     "Build {} ${}",
                                     main.build.label().to_lowercase(),
@@ -107,22 +115,14 @@ impl Game {
                                 );
                                 let b = ui.add(
                                     egui::Button::new(
-                                        RichText::new(label)
-                                            .font(ui_font(12.0))
-                                            .color(if main.can_afford { theme::LINE } else { INK }),
+                                        RichText::new(label).font(ui_font(12.0)).color(theme::LINE),
                                     )
-                                    .fill(if main.can_afford {
-                                        ACCENT
-                                    } else {
-                                        theme::RAISED
-                                    })
+                                    .fill(ACCENT)
                                     .min_size(vec2(0.0, if compact { theme::TOUCH } else { 22.0 })),
                                 );
                                 if b.clicked() {
                                     open_build = Some(main.build);
                                 }
-                            } else {
-                                lab_c(ui, "One is being built.", 11.0, MUTED);
                             }
                         });
                         let mut extra = Vec::new();
@@ -132,9 +132,13 @@ impl Game {
                                 super::charts::group(main.demand),
                                 super::charts::group(main.supply)
                             ));
-                            if !main.can_afford && !main.under_construction {
-                                extra.push("Not enough money yet: take a bond or wait.".into());
-                            }
+                        }
+                        if !main.can_afford && !main.under_construction {
+                            let short = main.cost.saturating_sub(self.sim.treasury);
+                            extra.push(format!(
+                                "You need ${} more to build it.",
+                                us_sim::dollars(short)
+                            ));
                         }
                         if !also.is_empty() {
                             extra.push(format!(
@@ -152,15 +156,26 @@ impl Game {
                         }
                     });
             });
+        self.ui.growth.banner_height = area.response.rect.height() + 8.0;
         if let Some(kind) = open_build {
             self.open_build_for(kind);
+        } else if open_bonds {
+            if compact {
+                self.close_sheets();
+            }
+            self.ui.loans_open = true;
         }
     }
 
-    /// Open the Build window with this civic building picked, as if the player had chosen it.
+    /// Pick a civic building and make the placement controls available.
     pub(super) fn open_build_for(&mut self, kind: us_sim::CivicKind) {
-        self.ui.build_open = true;
+        if self.compact {
+            self.close_sheets();
+        } else {
+            self.ui.build_open = true;
+        }
         self.ui.tool = Some(kind);
+        self.ui.civic_site = None;
         self.ui.road = None;
         self.ui.road_pts.clear();
         self.ui.paint = None;

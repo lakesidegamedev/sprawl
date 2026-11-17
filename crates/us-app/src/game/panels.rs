@@ -463,6 +463,7 @@ pub struct UiState {
     pub dist_stats: Vec<Option<us_sim::DistrictStats>>,
     pub dist_stats_age: f32,
     pub tool: Option<CivicKind>,
+    pub(super) civic_site: Option<Pt>,
     /// The road tool, when chosen (only live while the Build window is open).
     pub road: Option<RoadMode>,
     /// Points of the road being drawn.
@@ -512,6 +513,7 @@ impl Default for UiState {
             dist_stats: Vec::new(),
             dist_stats_age: 9.0,
             tool: None,
+            civic_site: None,
             road: None,
             road_pts: Vec::new(),
             fixed_ghost: None,
@@ -715,7 +717,10 @@ impl Game {
                     u.road_pts.clear();
                 }
             }
-            K::Escape if u.tool.is_some() => u.tool = None,
+            K::Escape if u.tool.is_some() => {
+                u.tool = None;
+                u.civic_site = None;
+            }
             _ => return false,
         }
         true
@@ -1189,6 +1194,9 @@ impl Game {
         let cover = self.ui.cover;
         let pos = Pos2::new(360.0, 100.0);
         let closed = window(ctx, "budget", "Budget", 560.0, pos, |ui| {
+            super::chrome::section(ui, "Service capacity");
+            self.capacity_rows(ui);
+            ui.separator();
             wrapped(
                 ui,
                 "Funding below 100 percent shortens how far a building reaches and weakens it. Above 100 it reaches further. Road upkeep below 100 lowers land value.",
@@ -1439,12 +1447,17 @@ impl Game {
     // ----- building tools -----
 
     pub(super) fn build_ui(&mut self, ctx: &Context, screen_w: f32) {
-        let mut closed = false;
+        let mut picked = None;
+        let compact = theme::is_compact(ctx);
         let pos = Pos2::new((screen_w - 340.0).max(10.0), 110.0);
-        let c = window(ctx, "build", "Build", 320.0, pos, |ui| {
+        let closed = window(ctx, "build", "Build", 320.0, pos, |ui| {
             wrapped(
                 ui,
-                "Pick a building, then click empty land next to a road the town already has. Esc to stop. A full supply holds growth back.",
+                if compact {
+                    "Pick a building, then choose a site next to an open road."
+                } else {
+                    "Pick a building, then click empty land next to an open road. Press Esc to stop."
+                },
                 11.0,
                 Color32::from_rgb(170, 176, 196),
             );
@@ -1467,26 +1480,7 @@ impl Game {
             self.road_panel(ui);
             ui.add_space(6.0);
             lab(ui, "Buildings", 12.0);
-            // what the town can carry: when one is full, growth that needs it stops
-            for st in self.sim.capacities() {
-                let full = st.is_full();
-                lab_c(
-                    ui,
-                    format!(
-                        "{}: {} of {}{}",
-                        st.capacity.label(),
-                        st.demand,
-                        st.supply,
-                        if full { ", full" } else { "" }
-                    ),
-                    11.0,
-                    if full {
-                        ORANGE
-                    } else {
-                        Color32::from_rgb(170, 176, 196)
-                    },
-                );
-            }
+            self.capacity_rows(ui);
             ui.add_space(4.0);
             for k in CivicKind::ALL {
                 let on = self.ui.tool == Some(k);
@@ -1530,9 +1524,11 @@ impl Game {
                         .min_size(vec2(150.0, 26.0)),
                     );
                     if b.clicked() {
-                        self.ui.tool = if on { None } else { Some(k) };
-                        self.ui.road = None;
-                        self.ui.road_pts.clear();
+                        if on {
+                            self.ui.tool = None;
+                        } else {
+                            picked = Some(k);
+                        }
                     }
                     lab_c(ui, money(k.cost()), 12.0, if can { GOLD } else { BAD });
                 });
@@ -1569,9 +1565,88 @@ impl Game {
                 }
             }
         });
-        closed |= c;
         if closed {
             self.ui.build_open = false;
+            self.ui.tool = None;
+        } else if let Some(kind) = picked {
+            self.open_build_for(kind);
+        }
+    }
+
+    fn capacity_rows(&self, ui: &mut Ui) {
+        let blocked = self.sim.growth_stalls();
+        for st in self.sim.committed_capacities() {
+            let stopped = blocked.contains(&st.capacity);
+            lab_c(
+                ui,
+                format!(
+                    "{}: {} of {} committed{}",
+                    st.capacity.label(),
+                    charts::group(st.demand),
+                    charts::group(st.supply),
+                    if stopped {
+                        "  •  growth paused"
+                    } else if st.is_full() {
+                        "  •  full"
+                    } else {
+                        ""
+                    }
+                ),
+                12.0,
+                if stopped { ORANGE } else { TEXT },
+            );
+        }
+    }
+
+    /// The compact placement controls leave the map free while the player picks a site.
+    pub(super) fn civic_placement_ui(&mut self, ctx: &Context) {
+        let Some(kind) = self.ui.tool else { return };
+        if self.any_sheet() || self.menu_open || self.election.is_some() {
+            return;
+        }
+        let screen = ctx.content_rect();
+        let up = screen.bottom() - dock_top(ctx) + 8.0;
+        let site = self.ui.civic_site;
+        let verdict = site.map(|site| self.sim.check_civic(kind, site));
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Area::new(egui::Id::new("civic-placement"))
+            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -up))
+            .order(egui::Order::Middle)
+            .show(ctx, |ui| {
+                theme::panel().show(ui, |ui| {
+                    ui.set_max_width(screen.width() - 36.0);
+                    lab(
+                        ui,
+                        format!("{}  {}", kind.label(), money(kind.cost())),
+                        14.0,
+                    );
+                    let (message, colour) = match verdict.as_ref() {
+                        Some(Ok(())) => ("Site ready".into(), GOOD),
+                        Some(Err(error)) => (error.text(), BAD),
+                        None => ("Choose a site next to an open road".into(), TEXT),
+                    };
+                    wrapped(ui, message, 12.0, colour);
+                    ui.horizontal_wrapped(|ui| {
+                        confirm = ui
+                            .add_enabled(
+                                matches!(verdict, Some(Ok(()))),
+                                egui::Button::new("Start construction")
+                                    .min_size(vec2(0.0, theme::TOUCH)),
+                            )
+                            .clicked();
+                        cancel = ui
+                            .add(egui::Button::new("Cancel").min_size(vec2(0.0, theme::TOUCH)))
+                            .clicked();
+                    });
+                });
+            });
+        if confirm && let Some(site) = site {
+            self.place_tool(site);
+            self.ui.civic_site = None;
+            self.ui.tool = None;
+        } else if cancel {
+            self.ui.civic_site = None;
             self.ui.tool = None;
         }
     }
@@ -1891,9 +1966,13 @@ impl Game {
         let Some(kind) = self.ui.tool else { return };
         let ppp = ctx.pixels_per_point();
         let hover = ctx.pointer_hover_pos();
-        let p = if let Some(p) = self.ui.fixed_ghost {
+        let pinned = self.ui.fixed_ghost.or(self.ui.civic_site);
+        let p = if let Some(p) = pinned {
             p
         } else {
+            if self.compact {
+                return;
+            }
             let Some(pos) = hover else { return };
             if ctx.egui_wants_pointer_input() {
                 return;
@@ -1908,7 +1987,7 @@ impl Game {
             pt(g.x as f64, g.y as f64)
         };
         let pos = match (
-            self.ui.fixed_ghost,
+            pinned,
             project(
                 view,
                 Vec3::new(
@@ -1940,12 +2019,20 @@ impl Game {
                 painter.add(egui::Shape::closed_line(ring, Stroke::new(2.0, GOLD)));
             }
         }
+        if self.compact && self.ui.fixed_ghost.is_none() {
+            return;
+        }
         let text = match verdict {
             Ok(()) => format!("{}  {}", kind.label(), money(kind.cost())).to_string(),
             Err(e) => e.text().to_string(),
         };
-        let at = pos + vec2(18.0, 18.0);
-        let galley = painter.layout_no_wrap(text, ui_font(11.0), INK);
+        let galley = painter.layout(text, ui_font(12.0), INK, 220.0);
+        let bounds = ctx.content_rect();
+        let pad = vec2(8.0, 6.0);
+        let at = (pos + vec2(18.0, 18.0)).clamp(
+            bounds.min + pad,
+            (bounds.max - galley.size() - pad).max(bounds.min + pad),
+        );
         let r = egui::Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 3.0));
         painter.rect_filled(r, 3.0, PANEL_DARK);
         painter.rect_stroke(r, 3.0, Stroke::new(1.5, col), egui::StrokeKind::Inside);

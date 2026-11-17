@@ -3,6 +3,10 @@
 ## Unreleased
 
 - Fix the camera on steep maps so the view follows the terrain while moving, lifts over ridges that block the town, and lowers again over open ground.
+- On compact screens, choose a site and review its cost or placement problem before committing to a service building.
+- Budget and Build now show the same committed capacity as the growth warning. A warning shows the funding shortfall and opens Bonds when the town cannot afford the fix.
+- First-year goals open the Budget and Ordinances panels directly.
+- Water ripples blend between close and distant views, and stronger winds brighten the crests.
 
 ## 1.2.0 (2026-11-16)
 

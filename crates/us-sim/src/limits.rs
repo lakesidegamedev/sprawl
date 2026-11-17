@@ -121,6 +121,11 @@ impl Sim {
         Capacity::ALL.map(|c| self.capacity(c))
     }
 
+    /// Capacity reserved by buildings that are open or under construction.
+    pub fn committed_capacities(&self) -> [CapacityStatus; 4] {
+        Capacity::ALL.map(|c| self.committed_status(c))
+    }
+
     /// The capacities that are full now and so hold growth back (as of the last monthly check).
     pub fn growth_stalls(&self) -> Vec<Capacity> {
         Capacity::ALL

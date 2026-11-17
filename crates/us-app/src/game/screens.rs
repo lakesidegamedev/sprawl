@@ -506,6 +506,8 @@ impl Game {
         u.trams.open = false;
         u.paint = None;
         u.tool = None;
+        u.civic_site = None;
+        u.goals.open = false;
         self.voters_open = false;
         self.map_open = false;
     }
@@ -522,6 +524,7 @@ impl Game {
             || u.districts_open
             || u.ordinances_open
             || u.trams.open
+            || u.goals.open
             || self.voters_open
             || self.map_open
     }

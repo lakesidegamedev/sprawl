@@ -459,7 +459,9 @@ impl State {
                 g.banner = None;
             }
         }
-        if let Some(c) = click {
+        if let Some(c) =
+            click.filter(|_| !g.menu_open && g.election.is_none() && !g.sim.is_game_over())
+        {
             let aspect = w as f32 / h as f32;
             let view = g.cam.camera().view(aspect);
             let ndc = (c.0 / w as f32 * 2.0 - 1.0, 1.0 - c.1 / h as f32 * 2.0);
@@ -488,7 +490,12 @@ impl State {
                 }
             } else if let Some(p) = g.live.scene.pick(&view, ndc) {
                 if g.ui.tool.is_some() {
-                    g.place_tool(pt(p.x as f64, p.y as f64));
+                    let site = pt(p.x as f64, p.y as f64);
+                    if g.compact {
+                        g.ui.civic_site = Some(site);
+                    } else {
+                        g.place_tool(site);
+                    }
                 } else if g.road_active().is_some() {
                     g.road_click(pt(p.x as f64, p.y as f64));
                 } else if g.ui.paint.is_some() {
@@ -1449,8 +1456,8 @@ impl State {
             if hide_tip {
                 g.coach.tip_hidden = true;
             }
-            if let Some(k) = open_goal_build {
-                g.open_build_for(k);
+            if let Some(action) = open_goal_build {
+                g.open_goal(action);
             }
             // event feed
             let inset = g.right_inset();
@@ -1514,8 +1521,12 @@ impl State {
                 g.trams_ui(ctx, screen_w);
             }
             if g.placed && !g.sim.is_game_over() {
-                g.growth_banner_ui(ctx);
-                g.goals_ui(ctx);
+                if compact && g.ui.tool.is_some() {
+                    g.civic_placement_ui(ctx);
+                } else {
+                    g.growth_banner_ui(ctx);
+                    g.goals_ui(ctx);
+                }
             }
             g.legend_ui(ctx);
             // why panel
@@ -1578,7 +1589,7 @@ impl State {
         } else {
             "WASD pan   Q E rotate   right drag orbit   wheel zoom   0 1 2 3 speed   space pause   P K O B G J V I H R F panels   Y roads   M map view"
         };
-        if !(compact && g.any_sheet()) {
+        if !(compact && (g.any_sheet() || g.ui.tool.is_some())) {
             egui::Area::new(egui::Id::new("help"))
                 .anchor(
                     Align2::CENTER_BOTTOM,
