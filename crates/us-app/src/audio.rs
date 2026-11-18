@@ -106,6 +106,7 @@ pub(crate) struct SoundScene {
     pub traffic: f32,
     pub traffic_pan: f32,
     pub built: Option<usize>,
+    pub thunder: Option<(u64, u32, f32, f32, f32)>,
 }
 
 #[derive(Default)]
@@ -121,6 +122,8 @@ pub(crate) struct Audio {
     music: [Sink; 2],
     air: Sink,
     effects: Sink,
+    thunder: Sink,
+    thunder_key: Option<(u64, u32)>,
     levels: Arc<Levels>,
     fade: [f32; 2],
     previous: Option<usize>,
@@ -142,6 +145,7 @@ impl Audio {
         let music = [Sink::connect_new(mix), Sink::connect_new(mix)];
         let air = Sink::connect_new(mix);
         let effects = Sink::connect_new(mix);
+        let thunder = Sink::connect_new(mix);
         for (player, track) in music.iter().zip([DAY, DUSK]) {
             player.set_volume(0.0);
             player.append(Decoder::new_looped(Cursor::new(track))?);
@@ -154,6 +158,8 @@ impl Audio {
             music,
             air,
             effects,
+            thunder,
+            thunder_key: None,
             levels,
             fade: [0.0; 2],
             previous: None,
@@ -192,6 +198,14 @@ impl Audio {
         }
         self.air.set_volume(prefs.ambience * enabled);
         self.effects.set_volume(prefs.effects * enabled);
+        self.thunder.set_volume(prefs.ambience * enabled);
+        if let Some((scene_id, slot, distance, pan, age)) = scene.thunder
+            && self.thunder_key != Some((scene_id, slot))
+            && prefs.ambience * enabled > 0.0
+        {
+            self.thunder_key = Some((scene_id, slot));
+            self.thunder.append(thunder_sound(slot, distance, pan, age));
+        }
         self.levels.wind.store(scene.wind.to_bits(), Relaxed);
         self.levels.rain.store(scene.rain.to_bits(), Relaxed);
         self.levels.traffic.store(scene.traffic.to_bits(), Relaxed);
@@ -287,6 +301,34 @@ impl Source for TownSound {
     fn total_duration(&self) -> Option<Duration> {
         None
     }
+}
+
+fn thunder_sound(slot: u32, distance: f32, pan: f32, age: f32) -> rodio::buffer::SamplesBuffer {
+    let lead = (distance / 343.0 - age).clamp(0.0, 2.4);
+    let volume = 0.39 / (1.0 + distance / 330.0);
+    let mut seed = slot.wrapping_add(537);
+    let mut bass = 0.0;
+    let mut crack = 0.0;
+    let mut samples = Vec::with_capacity(RATE as usize * 11);
+    for i in 0..(RATE as f32 * (lead + 3.1)) as u32 {
+        let t = i as f32 / RATE as f32 - lead;
+        if t < 0.0 {
+            samples.extend([0.0, 0.0]);
+            continue;
+        }
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let white = seed as f32 * (2.0 / u32::MAX as f32) - 1.0;
+        bass += (white - bass) * 0.010;
+        crack += (white - crack) * 0.097;
+        let attack = (t * 22.0).min(1.0);
+        let tails = (-t * 1.42).exp() * (0.66 + 0.34 * (t * 17.0).sin().powi(2));
+        let sharp = (-t * 10.0).exp() * (1.0 - distance / 700.0).clamp(0.0, 1.0);
+        let rumble = (bass * 2.9 * tails + crack * 0.38 * sharp) * volume * attack;
+        samples.extend([rumble * (0.8 - pan * 0.2), rumble * (0.8 + pan * 0.2)]);
+    }
+    rodio::buffer::SamplesBuffer::new(2, RATE, samples)
 }
 
 fn placed_sound() -> rodio::buffer::SamplesBuffer {

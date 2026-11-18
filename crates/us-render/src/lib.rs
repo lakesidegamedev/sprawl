@@ -33,6 +33,7 @@ pub mod overlay;
 pub mod park;
 pub mod parts;
 pub mod rail;
+mod reflection;
 mod renderer;
 mod rng;
 mod road_traffic;

@@ -2,12 +2,27 @@
 
 ## Unreleased
 
-- Weather fades between rain, snow, clouds and clear skies. Rolling fog collects in low terrain and picks up sunlight. Drifting cloud banks have lit tops, darker undersides and moving shadows on the city. Snow cover melts gradually and seasonal changes spread across the map over nine game weeks.
-- Desktop settings offer detailed surface grain and full-resolution fog and clouds with more volume samples. Grass is less saturated, with meadow and soil variations, and cliffs use textured stone with softer, broken layers. Sea stacks and arches use the same stone treatment, with a more irregular arch profile.
-- New building styles range from manufactured homes and warehouse lofts to 28-story office slabs, stepped glass blocks, Art Deco towers and rare landmark spires. Towers need high land value, coverage and taller neighbors before they can grow.
-- Expand civic buildings in place through three tiers. The service bar shows committed water, power, school and health demand and opens the relevant service.
-- Three shorter setup pages include rendered map previews, play style, difficulty, name and seed. Taller mobile menus make room for their controls.
-- The mayor campaign adds service, expansion and city-growth goals across three chapters.
+## 1.4.1 (2026-11-18)
+
+<!-- Release coverage starts after v1.4.0 (60bd560). Includes the city and renderer overhaul in #60. -->
+
+### For players
+
+- Watch storms roll in. Low clouds build before rain, gusts push heavier rain across parts of town, and streets stay wet while the sky clears. Nearby surfaces and cloud banks light up around a strike, and distant thunder takes longer to arrive. Reduce Motion turns off visible lightning flashes.
+- Ground fog fills hollows and moves between buildings. Sun breaks light up parts of the fog, clouds cast moving shadows, and distant terrain fades naturally. Water, wet roads and glass pick up their surroundings.
+- Detailed desktop graphics reduce shimmer while moving the camera and add reflections, lighting and shadows around small objects. Headlights and lit signs have a soft glow. An optional mild tilt shift softens the far edges while keeping the center of the view sharp.
+- Seasonal changes spread across the map over nine game weeks. Snow melts and accumulates gradually. Meadows have more varied vegetation and soil, and cliff faces, sea stacks and arches have more natural stone and silhouettes.
+- There are 132 seeded building variants, from manufactured homes and warehouse lofts to Art Deco towers, 28-story offices and landmark spires. Tall buildings grow in established neighborhoods with strong services and high land value.
+- Upgrade civic buildings in place through three tiers. The new capacity bar brings up water, power, school or health as demand approaches its limit.
+- Start a town in three short steps with an actual in-game preview for each map. Larger mobile menus give the controls room. The mayor campaign now runs through three chapters, from founding a town to serving a regional city.
+
+### For developers
+
+- Integrate visual winds across frames and vary storm cover and precipitation spatially. Smooth persistent surface wetness separately from active rain, and use the forecast to bring cloud cover in ahead of a storm. Seed lightning position and schedule the matching stereo thunder by distance. Keep visual weather outside the deterministic simulation and save data.
+- Integrate terrain-relative fog and world-space clouds against the scene depth, with directional light and shadow samples in both volumes. Add sky lighting, distance scattering and projected road weathering.
+- Pack material and surface normal data into the existing outline attachment. Trace screen-space reflections against scene depth and blend directional local radiance probes as a fallback. Use depth and surface normals for nearby ambient occlusion and contact shadows.
+- Resolve the world into a floating-point render target with highlight compression and selective bloom before drawing the UI. Detailed mode uses subpixel camera jitter, previous-frame reprojection and depth rejection, with resolution and scene changes invalidating history.
+- Extend civic levels and campaign goal bits through existing save fields. Store custom town names in an optional save trailer. Existing towns keep their geometry and use the new upgrades and growth rules as they play.
 
 ## 1.4.0 (2026-11-18)
 

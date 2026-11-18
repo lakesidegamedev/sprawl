@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use wgpu::util::DeviceExt;
 
 const SHADER: &str = include_str!("shader.wgsl");
+const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const COLOUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 // The outline pass needs only two channels: distance (as f32 bits) and face ID.
 const COMPACT_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Uint;
@@ -40,6 +41,8 @@ pub struct Style {
     pub window_world_scale: f32,
     /// Full-resolution atmospheric effects with finer volume sampling and surface detail.
     pub high_detail: bool,
+    /// Soft focus at the top and bottom of the gameplay camera.
+    pub tilt_shift: bool,
 }
 
 /// A chunk uses its far form when one metre of it spans less than this share of the frame height
@@ -62,6 +65,7 @@ impl Default for Style {
             lod: true,
             window_world_scale: 1.0,
             high_detail: false,
+            tilt_shift: false,
         }
     }
 }
@@ -190,6 +194,7 @@ struct Globals {
     view_proj: [[f32; 4]; 4],
     light_vp: [[f32; 4]; 4],
     inv_view_proj: [[f32; 4]; 4],
+    previous_view_proj: [[f32; 4]; 4],
     /// Eye position in metres, and the camera near plane.
     eye: [f32; 4],
     /// Fog colour and density.
@@ -210,6 +215,9 @@ struct Globals {
     wx: [f32; 4],
     /// Rain, snowfall, and the origin of the active weather cells.
     precipitation: [f32; 4],
+    weather_flow: [f32; 4],
+    lightning: [f32; 4],
+    temporal: [f32; 4],
     /// rock look rows, see `rock::RockLook::rows`
     rock: [[f32; 4]; 8],
 }
@@ -249,7 +257,9 @@ struct Targets {
     edge_group: wgpu::BindGroup,
     fog_stride: u32,
     fog_view: wgpu::TextureView,
-    fog_composite: wgpu::BindGroup,
+    fog_composite: [wgpu::BindGroup; 2],
+    resolved: [wgpu::TextureView; 2],
+    present: [wgpu::BindGroup; 2],
 }
 
 struct Readback {
@@ -281,7 +291,15 @@ pub struct Renderer {
     layout0: wgpu::BindGroupLayout,
     layout1: wgpu::BindGroupLayout,
     module: wgpu::ShaderModule,
-    edge_layout: wgpu::PipelineLayout,
+    present_layout: wgpu::PipelineLayout,
+    present_bind_layout: wgpu::BindGroupLayout,
+    resolve_pipeline: wgpu::RenderPipeline,
+    temporal_frame: u32,
+    adapted_exposure: f32,
+    probe_texture: wgpu::Texture,
+    probe_view: wgpu::TextureView,
+    probe_key: Option<(u64, u64, f32)>,
+    history: Option<(u64, u64, Mat4, f32)>,
     fog_composite_layout: wgpu::BindGroupLayout,
     fog_sampler: wgpu::Sampler,
     local_lights: LightGrid,
@@ -339,7 +357,7 @@ fn pick_samples(adapter: &wgpu::Adapter) -> u32 {
         .flags
         .contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING);
     if shading
-        && ok(COLOUR_FORMAT)
+        && ok(SCENE_FORMAT)
         && (ok(COMPACT_AUX_FORMAT) || ok(WIDE_AUX_FORMAT))
         && ok(DEPTH_FORMAT)
     {
@@ -582,6 +600,15 @@ impl Renderer {
                         multisampled: false,
                     },
                 ),
+                entry(
+                    6,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
             ],
         });
         let tex_unfilterable = wgpu::BindingType::Texture {
@@ -606,19 +633,29 @@ impl Renderer {
             bind_group_layouts: &[Some(&layout0)],
             immediate_size: 0,
         });
+        let single_hdr = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        };
         let fog_composite_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("fog composite"),
-                entries: &[entry(
-                    0,
-                    wgpu::ShaderStages::FRAGMENT,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                )],
+                label: Some("fog and history"),
+                entries: &[
+                    entry(0, wgpu::ShaderStages::FRAGMENT, single_hdr),
+                    entry(1, wgpu::ShaderStages::FRAGMENT, single_hdr),
+                ],
             });
+        let present_bind_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("resolved world"),
+                entries: &[entry(0, wgpu::ShaderStages::FRAGMENT, single_hdr)],
+            });
+        let present_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("present world"),
+            bind_group_layouts: &[Some(&layout0), Some(&present_bind_layout)],
+            immediate_size: 0,
+        });
         let fog_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("fog terrain"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -636,6 +673,8 @@ impl Renderer {
             bind_group_layouts: &[Some(&layout0), Some(&layout1), Some(&fog_composite_layout)],
             immediate_size: 0,
         });
+        let resolve_pipeline =
+            fullscreen_pipeline(&device, &module, &edge_layout, "fs_edge", SCENE_FORMAT);
         let (vbl, _) = vertex_layout();
         let depth_state = |bias: wgpu::DepthBiasState| wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
@@ -694,7 +733,7 @@ impl Renderer {
                     compilation_options: Default::default(),
                     targets: &[
                         Some(wgpu::ColorTargetState {
-                            format: COLOUR_FORMAT,
+                            format: SCENE_FORMAT,
                             blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                             write_mask: wgpu::ColorWrites::ALL,
                         }),
@@ -735,7 +774,7 @@ impl Renderer {
                 compilation_options: Default::default(),
                 targets: &[
                     Some(wgpu::ColorTargetState {
-                        format: COLOUR_FORMAT,
+                        format: SCENE_FORMAT,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
@@ -801,7 +840,7 @@ impl Renderer {
                 compilation_options: Default::default(),
                 targets: &[
                     Some(wgpu::ColorTargetState {
-                        format: COLOUR_FORMAT,
+                        format: SCENE_FORMAT,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
@@ -858,6 +897,17 @@ impl Renderer {
                 view_formats: &[],
             })
             .create_view(&Default::default());
+        let probe_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("local reflection probes"),
+            size: probe_extent(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let probe_view = probe_texture.create_view(&Default::default());
         let mut r = Renderer {
             device,
             queue,
@@ -867,7 +917,15 @@ impl Renderer {
             layout0,
             layout1,
             module,
-            edge_layout,
+            present_layout,
+            present_bind_layout,
+            resolve_pipeline,
+            temporal_frame: 0,
+            adapted_exposure: 1.0,
+            probe_texture,
+            probe_view,
+            probe_key: None,
+            history: None,
             fog_composite_layout,
             fog_sampler,
             local_lights: LightGrid::default(),
@@ -944,8 +1002,8 @@ impl Renderer {
         let p = fullscreen_pipeline(
             &self.device,
             &self.module,
-            &self.edge_layout,
-            "fs_edge",
+            &self.present_layout,
+            "fs_present",
             format,
         );
         self.edge_pipelines.push((format, p));
@@ -1120,6 +1178,7 @@ impl Renderer {
             return;
         }
         self.targets = None;
+        self.history = None;
         let msaa = self.msaa;
         let make_n = |label: &str, format, usage, samples: u32| {
             self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1139,7 +1198,7 @@ impl Renderer {
         };
         let make = |label: &str, format, usage| make_n(label, format, usage, 1);
         let rt = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let colour = make_n("colour", COLOUR_FORMAT, rt, msaa).create_view(&Default::default());
+        let colour = make_n("colour", SCENE_FORMAT, rt, msaa).create_view(&Default::default());
         let aux = make_n("aux", self.aux_format, rt, msaa).create_view(&Default::default());
         let depth = make_n(
             "depth",
@@ -1200,13 +1259,54 @@ impl Renderer {
                 view_formats: &[],
             })
             .create_view(&Default::default());
-        let fog_composite = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("fog composite"),
-            layout: &self.fog_composite_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&fog_view),
-            }],
+        let resolved = [
+            make("HDR world resolve", SCENE_FORMAT, rt).create_view(&Default::default()),
+            if high_detail {
+                make("temporal history", SCENE_FORMAT, rt).create_view(&Default::default())
+            } else {
+                self.device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("disabled temporal history"),
+                        size: wgpu::Extent3d {
+                            width: 1,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: SCENE_FORMAT,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+            },
+        ];
+        let fog_composite = std::array::from_fn(|i| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fog and previous resolve"),
+                layout: &self.fog_composite_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&fog_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&resolved[1 - i]),
+                    },
+                ],
+            })
+        });
+        let present = std::array::from_fn(|i| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("current world resolve"),
+                layout: &self.present_bind_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&resolved[i]),
+                }],
+            })
         });
         self.targets = Some(Targets {
             w,
@@ -1219,6 +1319,8 @@ impl Renderer {
             fog_stride,
             fog_view,
             fog_composite,
+            resolved,
+            present,
         });
     }
 
@@ -1430,7 +1532,39 @@ impl Renderer {
         stats: &mut FrameStats,
     ) {
         let aspect = present[0] as f32 / present[1] as f32;
-        let view = camera.view(aspect);
+        let mut view = camera.view(aspect);
+        let map_view = scene.overlay_active();
+        let temporal = style.high_detail && !map_view;
+        let index = if temporal {
+            (self.temporal_frame & 1) as usize
+        } else {
+            0
+        };
+        const JITTER: [[f32; 2]; 8] = [
+            [0.0, -0.167],
+            [-0.25, 0.167],
+            [0.25, -0.389],
+            [-0.375, -0.056],
+            [0.125, 0.278],
+            [-0.125, -0.278],
+            [0.375, 0.056],
+            [-0.438, 0.389],
+        ];
+        let previous = self.history.filter(|(uid, rev, _, time)| {
+            temporal
+                && *uid == scene.uid
+                && *rev == scene.ground_rev
+                && (0.0..0.25).contains(&(scene.time - *time))
+        });
+        if temporal {
+            let [x, y] = JITTER[(self.temporal_frame % 8) as usize];
+            let offset = Vec3::new(2.0 * x / rw as f32, 2.0 * y / rh as f32, 0.0);
+            view.view_proj = Mat4::from_translation(offset) * view.view_proj;
+            view.inv_view_proj = view.view_proj.inverse();
+        }
+        self.history =
+            temporal.then_some((scene.uid, scene.ground_rev, view.view_proj, scene.time));
+        self.temporal_frame = self.temporal_frame.wrapping_add(1);
         use crate::calendar::Season;
         let cal = scene.calendar;
         let sun = cal
@@ -1445,10 +1579,9 @@ impl Renderer {
         let oc = wl.overcast.clamp(0.0, 1.0);
         let dim = [1.0 - 0.28 * oc, 1.0 - 0.24 * oc, 1.0 - 0.14 * oc];
         for k in 0..3 {
-            tone[k] = (tone[k] * dim[k] + 0.7 * wl.flash.clamp(0.0, 1.0)).min(1.7);
+            tone[k] *= dim[k];
         }
         let lit_windows = cal.map_or(0.0, |c| c.lit_windows());
-        let map_view = scene.overlay_active();
         // 0 plain, 1 autumn, 2 spring, 3 summer (winter is the snow flag)
         let season_code = cal.map_or(0.0, |c| match c.season() {
             Season::Autumn => 1.0,
@@ -1530,10 +1663,38 @@ impl Renderer {
                 0.0
             };
         let origin = self.local_lights.origin();
+        // Adapt to the scene's light level without bringing up the night or pulsing on flashes.
+        if style.high_detail && !map_view {
+            let revision = scene.chunks.iter().fold(scene.ground_rev, |key, chunk| {
+                key.rotate_left(9) ^ chunk.rev.wrapping_add(1)
+            });
+            if self.probe_key.is_none_or(|(uid, rev, time)| {
+                uid != scene.uid || (rev != revision && (scene.time - time).abs() >= 4.0)
+            }) {
+                self.queue.write_texture(
+                    self.probe_texture.as_image_copy(),
+                    &crate::reflection::bake(scene),
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(probe_extent().width * 4),
+                        rows_per_image: None,
+                    },
+                    probe_extent(),
+                );
+                self.probe_key = Some((scene.uid, revision, scene.time));
+            }
+        }
+        let target_exposure = 1.0 + oc * 0.052 + lamps * 0.04;
+        if self.surface.is_some() {
+            self.adapted_exposure += (target_exposure - self.adapted_exposure) * 0.035;
+        } else {
+            self.adapted_exposure = target_exposure;
+        }
         let globals = Globals {
             view_proj: view.view_proj.to_cols_array_2d(),
             light_vp: light_vp.to_cols_array_2d(),
             inv_view_proj: view.inv_view_proj.to_cols_array_2d(),
+            previous_view_proj: previous.map_or(view.view_proj, |h| h.2).to_cols_array_2d(),
             eye: view.eye.extend(view.near).to_array(),
             fog: fog_tint.extend(fog_density).to_array(),
             terrain: [
@@ -1567,6 +1728,36 @@ impl Renderer {
             look: [season_code, snow as u8 as f32, map_view as u8 as f32, lamps],
             wx: [snow_cover, wl.wet.clamp(0.0, 1.0), wl.wind[0], wl.wind[1]],
             precipitation: [rain, snowing, field_x, field_y],
+            weather_flow: [
+                wl.drift[0],
+                wl.drift[1],
+                wl.storm.clamp(0.0, 1.0),
+                f32::from(style.tilt_shift),
+            ],
+            lightning: [
+                wl.lightning[0],
+                wl.lightning[1],
+                if map_view { 0.0 } else { wl.lightning[2] },
+                0.0,
+            ],
+            temporal: [
+                if previous.is_some() && wl.lightning[2] < 0.025 {
+                    0.83
+                } else {
+                    0.0
+                },
+                if map_view {
+                    0.0
+                } else {
+                    (lamps + wl.lightning[2]).clamp(0.0, 1.0)
+                },
+                if map_view {
+                    1.0
+                } else {
+                    self.adapted_exposure - wl.lightning[2] * 0.08
+                },
+                if map_view { 0.0 } else { 1.0 },
+            ],
             rock: scene
                 .land
                 .rock()
@@ -1678,6 +1869,10 @@ impl Renderer {
                     binding: 5,
                     resource: wgpu::BindingResource::TextureView(&self.light_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&self.probe_view),
+                },
             ],
         });
         // the shadow pass writes the shadow map, so it binds a stand-in for reading
@@ -1702,6 +1897,10 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: wgpu::BindingResource::TextureView(&self.light_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&self.probe_view),
                 },
             ],
         });
@@ -1941,7 +2140,30 @@ impl Renderer {
         }
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("edge"),
+                label: Some("HDR world resolve"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &tg.resolved[index],
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.resolve_pipeline);
+            pass.set_bind_group(0, Some(&group0), &[]);
+            pass.set_bind_group(1, Some(&tg.edge_group), &[]);
+            pass.set_bind_group(2, Some(&tg.fog_composite[index]), &[]);
+            pass.draw(0..3, 0..1);
+        }
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("tone map and present world"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: final_view,
                     depth_slice: None,
@@ -1958,8 +2180,7 @@ impl Renderer {
             });
             pass.set_pipeline(&self.edge_pipelines[edge_i].1);
             pass.set_bind_group(0, Some(&group0), &[]);
-            pass.set_bind_group(1, Some(&tg.edge_group), &[]);
-            pass.set_bind_group(2, Some(&tg.fog_composite), &[]);
+            pass.set_bind_group(1, Some(&tg.present[index]), &[]);
             pass.draw(0..3, 0..1);
         }
     }
@@ -1975,6 +2196,14 @@ fn world_render_size(width: u32, height: u32, scale: f32) -> (u32, u32) {
         (width as f32 * scale).round().max(1.0) as u32,
         (height as f32 * scale).round().max(1.0) as u32,
     )
+}
+
+fn probe_extent() -> wgpu::Extent3d {
+    wgpu::Extent3d {
+        width: crate::reflection::GRID * crate::reflection::DIRECTIONS,
+        height: crate::reflection::GRID,
+        depth_or_array_layers: 1,
+    }
 }
 
 fn light_extent() -> wgpu::Extent3d {

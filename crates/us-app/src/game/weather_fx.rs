@@ -18,23 +18,41 @@ fn unit(i: u32, salt: u32) -> f32 {
 }
 
 impl Game {
-    /// Lightning: now and then a double flash during a storm. Zero otherwise.
-    pub(super) fn lightning_flash(&self) -> f32 {
-        if !self.sim.storm() {
-            return 0.0;
+    pub(super) fn storm_cue(&self, storm: f32) -> Option<(u32, [f32; 2], f32)> {
+        if storm < 0.28 {
+            return None;
         }
-        let t = self.live.scene.time * 0.5;
-        let slot = t.floor() as u32;
-        if unit(slot, 91) > 0.4 {
-            return 0.0;
+        let time = self.live.scene.time / 7.0;
+        let slot = time.floor() as u32;
+        if unit(slot, 91) > 0.59 {
+            return None;
         }
-        let f = t - t.floor();
-        let a = (1.0 - f * 9.0).max(0.0);
-        let b = (1.0 - (f - 0.2).abs() * 14.0).max(0.0);
-        a.max(b) * 0.8
+        let elapsed = (time.fract() - 0.14 - unit(slot, 35) * 0.65) * 7.0;
+        if !(0.0..1.3).contains(&elapsed) {
+            return None;
+        }
+        let hall = self.sim.town().hall;
+        let [x, y] = self.sim.lightning_strikes().first().map_or_else(
+            || {
+                [
+                    hall.x as f32 + (unit(slot, 11) - 0.5) * 850.0,
+                    hall.y as f32 + (unit(slot, 67) - 0.5) * 850.0,
+                ]
+            },
+            |&i| {
+                let pos = self.sim.lots()[i].pos;
+                [pos.x as f32, pos.y as f32]
+            },
+        );
+        Some((slot, [x, y], elapsed))
     }
 
-    pub(super) fn weather_look(&self, visual_hour: f32, dt: f32) -> WeatherLook {
+    pub(super) fn weather_look(
+        &self,
+        visual_hour: f32,
+        dt: f32,
+        reduce_motion: bool,
+    ) -> WeatherLook {
         let sim = &self.sim;
         let w = sim.wind();
         let mut flood: Vec<[f32; 3]> = Vec::new();
@@ -68,19 +86,50 @@ impl Game {
                 target
             }
         };
+        let storm = blend(previous.storm, f32::from(sim.storm()), 4.0);
+        let wind = [
+            blend(previous.wind[0], w.x as f32, 3.0),
+            blend(previous.wind[1], w.y as f32, 3.0),
+        ];
+        let gust =
+            (self.live.scene.time * 0.44).sin() * 0.21 + (self.live.scene.time * 1.23).sin() * 0.10;
+        let gust_wind = wind.map(|speed| speed * (1.0 + storm * gust));
+        let drift =
+            std::array::from_fn(|i| previous.drift[i] + gust_wind[i] * dt.clamp(0.0, 0.1) * 0.43);
+        let lead = if sim.weather_tomorrow().sky == us_sim::Sky::Storm {
+            ((visual_hour - 14.0) / 10.0).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let lightning = if reduce_motion {
+            [0.0; 3]
+        } else {
+            self.storm_cue(storm)
+                .map_or([0.0; 3], |(_, [x, y], elapsed)| {
+                    let flash = (-elapsed * 10.0).exp() * (elapsed / 0.045).min(1.0);
+                    [x, y, flash * storm]
+                })
+        };
         WeatherLook {
             active: true,
             snow: blend(previous.snow, sim.snow_cover(), 4.0),
-            wet: blend(previous.wet, sim.ground_wet(), 2.4),
-            rain: blend(previous.rain, sim.rain(), 1.9),
-            snowfall: blend(previous.snowfall, sim.snowfall(), 1.9),
-            overcast: blend(previous.overcast, sim.overcast(), 3.5),
-            ground_fog: blend(previous.ground_fog, self.ground_fog(visual_hour), 3.0),
-            flash: self.lightning_flash(),
-            wind: [
-                blend(previous.wind[0], w.x as f32, 3.0),
-                blend(previous.wind[1], w.y as f32, 3.0),
-            ],
+            wet: blend(
+                previous.wet,
+                sim.ground_wet(),
+                if sim.rain() > 0.1 { 2.8 } else { 11.0 },
+            ),
+            rain: blend(previous.rain, sim.rain(), 2.3),
+            snowfall: blend(previous.snowfall, sim.snowfall(), 2.5),
+            overcast: blend(previous.overcast, sim.overcast().max(lead * 0.54), 4.5),
+            ground_fog: blend(
+                previous.ground_fog,
+                self.ground_fog(visual_hour) + storm * 0.14,
+                3.0,
+            ),
+            storm,
+            lightning,
+            drift,
+            wind,
             flood,
         }
     }

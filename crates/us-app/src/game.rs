@@ -41,6 +41,7 @@ pub struct Settings {
     pub high_shadows: bool,
     pub balanced_world_resolution: bool,
     pub detailed_graphics: bool,
+    pub tilt_shift: bool,
     pub(crate) audio: crate::audio::Preferences,
     /// Day and night cycle (true) or always day (false).
     pub day_night: bool,
@@ -271,6 +272,7 @@ impl State {
                 high_shadows: true,
                 balanced_world_resolution: false,
                 detailed_graphics: false,
+                tilt_shift: false,
                 audio: crate::audio::Preferences::load(),
                 day_night: true,
                 reduce_motion: std::env::var("URBAN_SPRAWL_REDUCE_MOTION").is_ok_and(|v| v == "1"),
@@ -448,6 +450,7 @@ impl State {
             2048
         };
         self.style.high_detail = self.settings.detailed_graphics;
+        self.style.tilt_shift = self.settings.tilt_shift;
         self.style.window_world_scale = if self.settings.detailed_graphics {
             1.0
         } else if self.settings.balanced_world_resolution {
@@ -568,7 +571,7 @@ impl State {
         }
         let Some(g) = self.game.as_mut() else { return };
         g.refresh_stats();
-        g.light_tick(dt, cycle);
+        g.light_tick(dt, cycle, self.settings.reduce_motion);
         g.ui_tick(dt);
         if g.placed && !g.menu_open {
             g.coach_tick(dt);
@@ -613,12 +616,25 @@ impl State {
                 }
             }
         }
-        let weather = game.sim.weather();
+        let weather = &game.live.scene.weather;
+        let thunder = game.storm_cue(weather.storm).map(|(slot, point, elapsed)| {
+            let delta = glam::Vec2::from_array(point) - focus;
+            let distance = delta.length();
+            (
+                game.live.scene.uid,
+                slot,
+                distance,
+                delta.dot(right) / distance.max(1.0),
+                elapsed,
+            )
+        });
         let night = game.live.scene.calendar.map_or(0.0, |c| c.darkness());
         crate::audio::SoundScene {
             night,
-            wind: (weather.wind_speed() / 16.0).clamp(0.0, 1.0) * 0.7 + 0.1,
-            rain: game.sim.rain(),
+            wind: (glam::Vec2::from_array(weather.wind).length() / 16.0).clamp(0.0, 1.0) * 0.7
+                + 0.1,
+            rain: weather.rain,
+            thunder,
             traffic: traffic * (1.0 - night * 0.58) * fade,
             traffic_pan: (pan / weight.max(0.01)).clamp(-1.0, 1.0),
             built: Some(game.stats.built),
@@ -1027,6 +1043,7 @@ impl State {
                     "Detailed atmosphere and surfaces",
                 );
             }
+            ui.checkbox(&mut self.settings.tilt_shift, "Mild tilt shift");
             label(ui, "Day and night", 14.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(
@@ -1991,7 +2008,7 @@ impl Game {
 
     /// Calm visual day: one full day and night every few real minutes at 1x, scaled by game
     /// speed and frozen when paused. Seasons follow the game date.
-    fn light_tick(&mut self, dt: f32, cycle: bool) {
+    fn light_tick(&mut self, dt: f32, cycle: bool, reduce_motion: bool) {
         if self.placed && !self.menu_open && !self.hour_frozen {
             self.hour = (self.hour + dt * SPEEDS[self.speed] as f32 * 24.0 / LIGHT_DAY_SECONDS)
                 .rem_euclid(24.0);
@@ -2007,7 +2024,7 @@ impl Game {
             .scene
             .set_calendar(Some(Calendar::from_date(d.month, d.day, hour)));
         self.live.set_emergency(&self.sim, hour);
-        let look = self.weather_look(hour, dt);
+        let look = self.weather_look(hour, dt, reduce_motion);
         self.live.scene.set_weather(look);
     }
 
