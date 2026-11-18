@@ -8,6 +8,7 @@ struct Globals {
     fog: vec4<f32>,     // rgb atmospheric light, w mist density
     terrain: vec4<f32>, // elevation base and range, inverse map size and texture size
     local_lights: vec4<f32>, // world tile origin, streetlight and headlight strength
+    resolve: vec4<f32>, // xy native to world pixel conversion
     sun: vec4<f32>,    // xyz toward the sun, w shadow texel size in metres
     ink: vec4<f32>,    // rgb ink colour, a ink width in pixels (1 or 2)
     shade: vec4<f32>,  // x multiplier for a shadowed face, y shadow depth bias, z seasonal blend, w overcast
@@ -1202,7 +1203,8 @@ fn contact(p: vec2<i32>, px: f32, a: vec2<f32>) -> f32 {
 
 @fragment
 fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
-    let p = vec2<i32>(i32(e.clip.x), i32(e.clip.y));
+    let pixel = e.clip.xy * g.resolve.xy;
+    let p = min(vec2<i32>(pixel), vec2<i32>(g.screen.xy) - vec2<i32>(1));
     var acc = vec3<f32>(0.0);
     // ink thins out as a pixel covers more of the world: a one pixel line from about half a
     // metre a pixel, none from a metre and a half (whole-town views keep their roof colours)
@@ -1230,7 +1232,7 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
     }
     var col = acc / f32(SAMPLE_COUNT);
     if (g.fog.w > 0.005) {
-        col = mix(col, g.fog.rgb, fog_at(e.clip.xy, centre.x));
+        col = mix(col, g.fog.rgb, fog_at(vec2<f32>(p) + 0.5, centre.x));
     }
     return vec4<f32>(col, 1.0);
 }

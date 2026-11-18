@@ -39,6 +39,7 @@ pub struct Settings {
     pub fullscreen: bool,
     pub ui_scale: f32,
     pub high_shadows: bool,
+    pub balanced_world_resolution: bool,
     pub(crate) audio: crate::audio::Preferences,
     /// Day and night cycle (true) or always day (false).
     pub day_night: bool,
@@ -263,6 +264,7 @@ impl State {
                 fullscreen: false,
                 ui_scale: 1.0,
                 high_shadows: true,
+                balanced_world_resolution: false,
                 audio: crate::audio::Preferences::load(),
                 day_night: true,
                 reduce_motion: std::env::var("URBAN_SPRAWL_REDUCE_MOTION").is_ok_and(|v| v == "1"),
@@ -433,6 +435,11 @@ impl State {
             4096
         } else {
             2048
+        };
+        self.style.window_world_scale = if self.settings.balanced_world_resolution {
+            0.8
+        } else {
+            1.0
         };
         self.autopilot();
         if self.screen == Screen::Load && self.saves.is_empty() && self.smoke.is_some() {
@@ -969,6 +976,19 @@ impl State {
                     RichText::new("Fast").font(ui_font(16.0)),
                 );
             });
+            label(ui, "World resolution", 14.0);
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut self.settings.balanced_world_resolution,
+                    false,
+                    "Native",
+                );
+                ui.selectable_value(
+                    &mut self.settings.balanced_world_resolution,
+                    true,
+                    "Balanced",
+                );
+            });
             label(ui, "Day and night", 14.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(
@@ -996,6 +1016,16 @@ impl State {
                 );
             });
             ui.add_space(8.0);
+            if cfg!(target_os = "ios") || theme::is_compact(ctx) {
+                ui.collapsing("Map controls", |ui| {
+                    label(ui, "Drag to pan, pinch to zoom, and twist to rotate.", 13.0);
+                    label(
+                        ui,
+                        "Drag two fingers together to tilt. Tap to select or hold to inspect.",
+                        13.0,
+                    );
+                });
+            }
             label(ui, "Audio", 14.0);
             let prefs = &mut self.settings.audio;
             let mut commit = ui.checkbox(&mut prefs.muted, "Mute").changed();
@@ -1667,12 +1697,13 @@ impl State {
         } else {
             "WASD pan   Q E rotate   right drag orbit   wheel zoom   0 1 2 3 speed   space pause   P K O B G J V I H R F panels   Y roads   M map view"
         };
-        if !(compact
-            && (g.any_sheet()
-                || g.sel.is_some()
-                || g.ui.tool.is_some()
-                || g.ui.growth.height() > 0.0))
-        {
+        let show_help = !compact
+            || (!g.placed
+                && !g.any_sheet()
+                && g.sel.is_none()
+                && g.ui.tool.is_none()
+                && g.ui.growth.height() <= 0.0);
+        if show_help {
             egui::Area::new(egui::Id::new("help"))
                 .anchor(
                     Align2::CENTER_BOTTOM,
