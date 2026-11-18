@@ -250,7 +250,7 @@ fn cloud_noise(p: vec3<f32>) -> f32 {
     return mix(plane, upper, t.z);
 }
 
-fn cloud_density(point: vec3<f32>, detail: bool) -> f32 {
+fn cloud_density(point: vec3<f32>, detail: u32) -> f32 {
     let layer = (point.z - cloud_base()) / cloud_thickness();
     if (layer <= 0.0 || layer >= 1.0) {
         return 0.0;
@@ -266,12 +266,16 @@ fn cloud_density(point: vec3<f32>, detail: bool) -> f32 {
             * smoothstep(0.65, 1.0, g.weather_flow.z);
     }
     var shape = field;
-    if (detail && field > threshold - 0.10 && field < threshold + 0.27) {
+    if (detail > 0u && field > threshold - 0.10 && field < threshold + 0.27) {
         let xyz = point - vec3<f32>(g.screen.w * vec2<f32>(2.1, 0.86) + g.weather_flow.xy, 0.0);
-        let cells = cloud_noise(xyz * vec3<f32>(0.036, 0.036, 0.054));
-        let wisps = cloud_noise(xyz * vec3<f32>(0.093, 0.093, 0.15) + vec3<f32>(3.7, 2.4, -1.1));
+        let warped = vec3<f32>(xyz.xy + xyz.z * vec2<f32>(0.33, -0.21), xyz.z);
+        let cells = cloud_noise(warped * vec3<f32>(0.034, 0.038, 0.055));
         let edge = 1.0 - smoothstep(threshold + 0.04, threshold + 0.27, field);
-        shape += ((cells - 0.5) * 0.24 + (wisps - 0.5) * 0.18) * edge;
+        shape += (cells - 0.5) * 0.23 * edge;
+        if (detail > 1u) {
+            let wisps = cloud_noise(warped * vec3<f32>(0.093, 0.093, 0.15) + vec3<f32>(3.7, 2.4, -1.1));
+            shape += (wisps - 0.5) * 0.18 * edge;
+        }
     }
     let deck = smoothstep(0.0, 0.24, layer) * (1.0 - smoothstep(0.56, 1.0, layer));
     let mass = smoothstep(threshold - 0.035, threshold + 0.19, shape);
@@ -1322,7 +1326,7 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>) ->
     let step_size = max(select(15.0, 6.8, detailed), span / f32(budget));
     // Offset neighboring rays within each interval so they do not reveal the same layers.
     let lattice = vec2<i32>(floor(pixel / g.resolve.z));
-    let phase = 0.5 + (hash2(lattice) - 0.5) * select(0.66, 0.40, detailed);
+    let phase = hash2(lattice);
     var transmission = 1.0;
     var sunlight = 0.0;
     let day = smoothstep(0.03, 0.37, g.sun.z);
@@ -1335,10 +1339,11 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>) ->
         if (interval_length <= 0.0) {
             break;
         }
-        let distance = interval_start + interval_length * phase;
+        let jitter = fract(phase + f32(i) * 0.618034) - 0.5;
+        let distance = interval_start + interval_length * (0.5 + jitter * select(0.72, 0.45, detailed));
         let point = eye + dir * distance;
         let open_near_camera = smoothstep(12.0, 100.0, distance);
-        let density = cloud_density(point, detailed) * open_near_camera;
+        let density = cloud_density(point, select(1u, 2u, detailed)) * open_near_camera;
         if (density < 0.004) {
             continue;
         }
@@ -1351,10 +1356,10 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>) ->
             // Sample settled cloud density toward the sun. Use the broad field here
             // so fine edge detail does not introduce flicker in the lighting.
             let toward_light = g.sun.xyz * sun_step;
-            var blockers = cloud_density(point + toward_light * 0.5, false);
+            var blockers = cloud_density(point + toward_light * 0.5, 0u);
             if (detailed) {
-                blockers += cloud_density(point + toward_light * 1.5, false);
-                blockers += cloud_density(point + toward_light * 2.5, false);
+                blockers += cloud_density(point + toward_light * 1.5, 0u);
+                blockers += cloud_density(point + toward_light * 2.5, 0u);
             } else {
                 blockers *= 2.1;
             }
