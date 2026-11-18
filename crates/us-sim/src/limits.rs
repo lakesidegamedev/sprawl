@@ -91,8 +91,12 @@ impl Sim {
             if !l.exempt && l.civic.is_none() {
                 if built {
                     load += Self::lot_demand(l.kind, l.level, c);
-                } else if construction && matches!(l.phase, Phase::Building { .. }) {
-                    load += Self::lot_demand(l.kind, l.level.max(l.next_level), c);
+                } else if construction {
+                    if matches!(l.phase, Phase::Building { .. }) {
+                        load += Self::lot_demand(l.kind, l.level.max(l.next_level), c);
+                    } else if l.fire.is_some() && matches!(l.phase, Phase::Empty { .. }) {
+                        load += Self::lot_demand(l.kind, 1, c);
+                    }
                 }
             }
             if !built {
@@ -178,12 +182,17 @@ impl Sim {
     /// Arrivals per month at the pace of this point in game time and the chosen difficulty.
     fn arrival_cap(&self) -> f64 {
         let years = self.month_index as f64 / 12.0;
+        let settlers_bonus = if self.rules.difficulty == Difficulty::Hard {
+            2.0
+        } else {
+            SETTLERS_ARRIVALS
+        };
         BASE_PEOPLE_PER_MONTH
             * libm::pow(1.0 + POOL_GROWTH_PER_YEAR, years)
             * self.rules.difficulty.arrival_pct() as f64
             / 100.0
             * self.arrival_bonus()
-            * (1.0 + SETTLERS_ARRIVALS * self.settlers())
+            * (1.0 + settlers_bonus * self.settlers())
     }
 
     /// Dollars paid so far for new streets and utility connections, before the taxes they bring.

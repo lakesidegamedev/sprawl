@@ -603,7 +603,7 @@ impl State {
     pub(super) fn start_loaded(&mut self, sim: Sim, path: Option<std::path::PathBuf>) {
         let t = sim.town();
         let (preset, seed) = (t.preset, t.seed);
-        let town = Arc::new(generate(preset, seed));
+        let town = Arc::new(t.clone());
         let mut sim = sim;
         let mut live = LiveScene::new(town.clone(), &sim, true);
         live.sync(&mut sim, 1.0e9);

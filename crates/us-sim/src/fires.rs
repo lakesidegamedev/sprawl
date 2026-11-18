@@ -452,19 +452,12 @@ impl Sim {
         }
         self.fx.rigs.retain(|r| r.end_s() >= day_start);
 
-        // Lots burned out return when there is room for them alongside other construction.
-        let mut rebuild_room = None;
+        // Lots burned out have their replacement capacity reserved.
         for i in 0..self.lots.len() {
             if let Some(start) = self.lots[i].fire
                 && day - start >= FIRE_DAYS
                 && !self.fx.blazes.iter().any(|b| b.lot as usize == i)
             {
-                let kind = self.lots[i].kind;
-                let room = rebuild_room.get_or_insert_with(|| self.start_room());
-                if !Sim::fits_room(room, kind, 1) {
-                    continue;
-                }
-                Sim::use_room(room, kind, 1);
                 let days = 60 + (roll(self.seed ^ 0xf1e, i as u64, day as u64) * 40.0) as i32;
                 let l = &mut self.lots[i];
                 l.fire = None;

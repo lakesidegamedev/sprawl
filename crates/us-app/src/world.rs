@@ -639,6 +639,9 @@ impl LiveScene {
                 });
             }
         }
+        let (build_prog, build_step) = (0..sim.road_runs().len())
+            .map(|i| Self::road_draw_state(sim, i))
+            .unzip();
         let mut ls = LiveScene {
             scene,
             scape,
@@ -667,8 +670,8 @@ impl LiveScene {
             road_dirty: Vec::new(),
             roads_ver: sim.roads_version(),
             run_work: vec![RunWork::default(); sim.road_runs().len()],
-            build_prog: vec![None; sim.road_runs().len()],
-            build_step: vec![0; sim.road_runs().len()],
+            build_prog,
+            build_step,
             prev_runs: sim
                 .road_runs()
                 .iter()
@@ -699,6 +702,12 @@ impl LiveScene {
             ls.mark(c);
         }
         ls.rebuild_roads(sim, None);
+        for addition in 0..ls.town.additions.len() {
+            // A save usually has already consumed the notification that this area opened.
+            if sim.is_revealed(addition) {
+                ls.add_ground_chunk(sim, addition);
+            }
+        }
         ls.refresh_open(sim);
         ls.ensure_geometry(sim);
         ls
@@ -978,6 +987,17 @@ impl LiveScene {
             })
             .collect();
         self.scene.set_road_traffic(&roads);
+    }
+
+    fn road_draw_state(sim: &Sim, i: usize) -> (Option<f32>, u8) {
+        if !sim.road_visible(i) {
+            return (None, 0);
+        }
+        let progress = sim
+            .road_build_state(i)
+            .map(|state| state.progress.min(0.999));
+        let step = progress.map_or(1, |p| 2 + (p * WORKS_STEPS as f32) as u8);
+        (progress, step)
     }
 
     /// Roadworks progress 0 to 1 of a road run, `None` when no work is going on.
@@ -1282,13 +1302,12 @@ impl LiveScene {
         let same_len = self.build_step.len() == runs.len();
         let mut changed: Vec<Group> = Vec::new();
         let mut steps = Vec::with_capacity(runs.len());
-        self.build_prog = (0..runs.len())
-            .map(|i| sim.road_build_state(i).map(|b| b.progress.min(0.999)))
-            .collect();
-        for (i, p) in self.build_prog.iter().enumerate() {
-            let step = p.map_or(0, |p| 1 + (p * WORKS_STEPS as f32) as u8);
+        self.build_prog.resize(runs.len(), None);
+        for (i, run) in runs.iter().enumerate() {
+            let (progress, step) = Self::road_draw_state(sim, i);
+            self.build_prog[i] = progress;
             if !same_len || self.build_step[i] != step {
-                changed.push(runs[i].addition);
+                changed.push(run.addition);
             }
             steps.push(step);
         }
@@ -1384,6 +1403,10 @@ impl LiveScene {
     }
 
     fn add_ground_chunk(&mut self, sim: &Sim, addition: usize) {
+        // Opening notifications may still be waiting when a scene is built from a save.
+        if self.road_chunk.contains_key(&Some(addition)) {
+            return;
+        }
         let town = self.town.clone();
         let a = &town.additions[addition];
         let mesh = zone_ground_on(&self.land, &town, addition);
@@ -1744,6 +1767,42 @@ mod tests {
     use super::*;
     use us_gen::{Preset, generate};
     use us_sim::{CivicKind, Phase, hall_sites};
+
+    #[test]
+    fn reopening_a_save_restores_neighbourhood_road_meshes() {
+        let town = Arc::new(generate(Preset::Crossroads, 1));
+        let hall = hall_sites(&town)[0];
+        let mut sim = Sim::new(&town, hall, 1);
+        for _ in 0..430 {
+            sim.step_day();
+        }
+        let mut live = LiveScene::new(town.clone(), &sim, true);
+        live.sync(&mut sim, 1.0e9);
+        let expected: Vec<_> = live
+            .road_chunk
+            .iter()
+            .filter_map(|(group, &chunk)| {
+                let addition = (*group)?;
+                let mesh = &live.scene.chunks[chunk].mesh;
+                (mesh.triangles() > 0).then_some((addition, mesh.triangles()))
+            })
+            .collect();
+        assert!(
+            !expected.is_empty(),
+            "the original town has neighbourhood roads"
+        );
+
+        let mut loaded = Sim::load(&sim.save()).expect("reopen the town");
+        let mut restored = LiveScene::new(town, &loaded, true);
+        restored.sync(&mut loaded, 1.0e9);
+        for (addition, triangles) in expected {
+            let chunk = restored
+                .road_chunk
+                .get(&Some(addition))
+                .unwrap_or_else(|| panic!("pavement is missing for neighbourhood {addition}"));
+            assert_eq!(restored.scene.chunks[*chunk].mesh.triangles(), triangles);
+        }
+    }
 
     /// Placing a civic building appends a lot; the scene must follow without panicking.
     #[test]
