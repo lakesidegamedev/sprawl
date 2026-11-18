@@ -1346,26 +1346,29 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>, co
     let detailed = g.resolve.w > 0.5;
     let budget = select(select(26, 38, detailed), 12, coarse);
     let step_size = span / f32(budget);
-    // Shift sample locations once per ray. The adjacent segment shares each
-    // density tap, so smoothing the integration does not double texture reads.
+    // Integrate between staggered taps. Offsetting each interval independently
+    // breaks the repeated contours visible through a long, grazing ray.
     let phase = hash2(vec2<i32>(floor(pixel / g.resolve.z)));
-    let first = start + step_size * mix(0.21, 0.58, phase);
+    var previous_distance = start;
     var previous = 0.0;
     var transmission = 1.0;
     var sunlight = 0.0;
     let day = smoothstep(0.03, 0.37, g.sun.z);
     let forward = pow(max(0.0, dot(dir, g.sun.xyz)), 4.0);
-    for (var i = 0; i < budget; i++) {
-        let distance = first + step_size * f32(i);
+    for (var i = 0; i <= budget; i++) {
+        let jitter = fract(phase + f32(i) * 0.618034);
+        let distance = select(start + step_size * (f32(i) + mix(0.08, 0.92, jitter)), end, i == budget);
+        let interval = distance - previous_distance;
         let point = eye + dir * distance;
         let density = cloud_density(point, !coarse);
         let smooth_density = (previous + density) * 0.5;
-        let light_point = point - dir * step_size * (previous / max(0.001, previous + density));
+        let light_point = point - dir * interval * (previous / max(0.001, previous + density));
         previous = density;
+        previous_distance = distance;
         if (smooth_density < 0.003) {
             continue;
         }
-        let optical_depth = smooth_density * step_size * 0.050 * smoothstep(12.0, 95.0, distance);
+        let optical_depth = smooth_density * interval * 0.050 * smoothstep(12.0, 95.0, distance);
         let scatter = transmission * (1.0 - exp(-optical_depth));
         transmission -= scatter;
         if (g.lightning.z > 0.002) {

@@ -47,7 +47,7 @@ fn capacity_gauge(ui: &mut Ui, label: &str, status: CapacityStatus, width: f32) 
     } else {
         Color32::from_rgb(115, 190, 218)
     };
-    let value = format!("{:.0}%", ratio * 100.0);
+    let value = format!("{:.0}%", (ratio * 100.0).floor());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::Role::Button,
@@ -87,10 +87,10 @@ fn capacity_gauge(ui: &mut Ui, label: &str, status: CapacityStatus, width: f32) 
     }
     paint.circle_filled(point(0.75), 1.2, if ratio >= 0.75 { INK } else { MUTED });
     paint.text(
-        center - vec2(0.0, 5.0),
+        center - vec2(0.0, 4.0),
         Align2::CENTER_CENTER,
         &value,
-        ui_font(if value.len() > 4 || width < 49.0 {
+        ui_font(if value.len() >= 4 || width < 49.0 {
             10.0
         } else {
             12.0
