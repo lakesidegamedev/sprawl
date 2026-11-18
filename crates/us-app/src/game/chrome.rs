@@ -127,6 +127,7 @@ pub(super) fn dock_button(
         0.1,
     );
     let sel = theme::ease_bool(ui.ctx(), (resp.id, "on"), on, 0.15);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     let p = ui.painter();
     p.rect_filled(
         rect,

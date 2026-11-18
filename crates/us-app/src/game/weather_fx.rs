@@ -94,8 +94,7 @@ impl Game {
         let gust =
             (self.live.scene.time * 0.44).sin() * 0.21 + (self.live.scene.time * 1.23).sin() * 0.10;
         let gust_wind = wind.map(|speed| speed * (1.0 + storm * gust));
-        let drift =
-            std::array::from_fn(|i| previous.drift[i] + gust_wind[i] * dt.clamp(0.0, 0.1) * 0.43);
+        let drift = std::array::from_fn(|i| previous.drift[i] + gust_wind[i] * dt * 0.85);
         let lead = if sim.weather_tomorrow().sky == us_sim::Sky::Storm {
             ((visual_hour - 14.0) / 10.0).clamp(0.0, 1.0)
         } else {
@@ -120,12 +119,8 @@ impl Game {
             ),
             rain: blend(previous.rain, sim.rain(), 2.3),
             snowfall: blend(previous.snowfall, sim.snowfall(), 2.5),
-            overcast: blend(previous.overcast, sim.overcast().max(lead * 0.54), 4.5),
-            ground_fog: blend(
-                previous.ground_fog,
-                self.ground_fog(visual_hour) + storm * 0.14,
-                3.0,
-            ),
+            overcast: blend(previous.overcast, sim.overcast().max(lead * 0.54), 8.0),
+            ground_fog: blend(previous.ground_fog, self.ground_fog(visual_hour), 3.0),
             storm,
             lightning,
             drift,

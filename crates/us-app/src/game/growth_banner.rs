@@ -5,7 +5,7 @@
 use super::Game;
 use super::panels::{dock_top, lab_c};
 use crate::theme::{self, ACCENT, BAD, INK, MUTED, TEXT, ui_font};
-use egui::{Align2, Context, RichText, Stroke, Ui, vec2};
+use egui::{Align2, Color32, Context, RichText, Sense, Stroke, Ui, vec2};
 use us_sim::{Capacity, CapacityStatus, GrowthAlert, Sim};
 
 /// What the banner remembers between frames: the sim is asked twice a second, not every frame.
@@ -37,6 +37,79 @@ impl GrowthUi {
 /// Seconds between asks.
 const REFRESH_S: f64 = 0.5;
 
+fn capacity_gauge(ui: &mut Ui, label: &str, status: CapacityStatus, width: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 50.0), Sense::click());
+    let ratio = status.ratio();
+    let colour = if ratio >= 1.0 {
+        BAD
+    } else if ratio >= 0.75 {
+        ACCENT
+    } else {
+        Color32::from_rgb(115, 190, 218)
+    };
+    let value = format!("{:.0}%", ratio * 100.0);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::Role::Button,
+            ui.is_enabled(),
+            format!("{label}, {value} committed"),
+        )
+    });
+
+    let paint = ui.painter();
+    let bg = if response.hovered() || response.has_focus() {
+        theme::RAISED_FILL
+    } else {
+        Color32::from_rgb(22, 37, 52)
+    };
+    paint.rect_filled(rect, 8.0, bg);
+    let center = rect.center_top() + vec2(0.0, 28.0);
+    let radius = 19.0_f32.min((width - 8.0) * 0.5).max(4.0);
+    let point = |part: f32| {
+        let angle = std::f32::consts::PI * (1.0 - part);
+        center + vec2(angle.cos(), -angle.sin()) * radius
+    };
+    let arc = |fraction, stroke| {
+        let points = (0..=24)
+            .map(|i| point(i as f32 / 24.0 * fraction))
+            .collect();
+        egui::Shape::line(points, stroke)
+    };
+    paint.add(arc(1.0, Stroke::new(3.5, theme::EDGE_LIGHT)));
+    let fill = theme::ease(
+        ui.ctx(),
+        (response.id, "capacity"),
+        (ratio as f32).clamp(0.0, 1.0),
+        0.20,
+    );
+    if fill > 0.005 {
+        paint.add(arc(fill, Stroke::new(3.5, colour)));
+    }
+    paint.circle_filled(point(0.75), 1.2, if ratio >= 0.75 { INK } else { MUTED });
+    paint.text(
+        center - vec2(0.0, 5.0),
+        Align2::CENTER_CENTER,
+        &value,
+        ui_font(if value.len() > 4 || width < 49.0 {
+            10.0
+        } else {
+            12.0
+        }),
+        colour,
+    );
+    paint.text(
+        rect.center_bottom() - vec2(0.0, 3.0),
+        Align2::CENTER_BOTTOM,
+        label,
+        ui_font(if width < 58.0 { 10.0 } else { 11.0 }),
+        TEXT,
+    );
+    response.on_hover_text(format!(
+        "{label} · {} of {} committed",
+        status.demand, status.supply
+    ))
+}
+
 impl Game {
     /// Reserved growth counts toward the warning before the new residents arrive.
     pub(super) fn capacity_strip(&mut self, ui: &mut Ui) {
@@ -44,36 +117,18 @@ impl Game {
             return;
         };
         let short = ["Water", "Power", "Schools", "Health"];
+        let gap = 4.0;
+        let available = ui.available_width();
+        let width = ((available - gap * 3.0) / 4.0).min(156.0);
         let mut selected = None;
-        let width = ((ui.available_width() - 12.0) / 4.0).clamp(44.0, 240.0);
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.spacing_mut().item_spacing.x = gap;
+            let inset = ((available - width * 4.0 - gap * 3.0) * 0.5).max(0.0);
+            if inset > gap {
+                ui.add_space(inset - gap);
+            }
             for (index, status) in capacities.into_iter().enumerate() {
-                let ratio = status.ratio();
-                let colour = if ratio >= 1.0 {
-                    BAD
-                } else if ratio >= 0.75 {
-                    ACCENT
-                } else {
-                    MUTED
-                };
-                let text = if self.compact {
-                    format!("{}\n{:.0}%", short[index], ratio * 100.0)
-                } else {
-                    format!("{}  {:.0}%", short[index], ratio * 100.0)
-                };
-                if ui
-                    .add_sized(
-                        [width, 30.0],
-                        egui::Button::new(
-                            RichText::new(text)
-                                .font(ui_font(if self.compact { 10.0 } else { 12.0 }))
-                                .color(colour),
-                        ),
-                    )
-                    .on_hover_text(format!("{} of {} committed", status.demand, status.supply))
-                    .clicked()
-                {
+                if capacity_gauge(ui, short[index], status, width).clicked() {
                     selected = Some(status.capacity.civic());
                 }
             }

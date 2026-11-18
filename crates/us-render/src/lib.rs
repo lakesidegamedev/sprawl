@@ -11,6 +11,7 @@ pub mod architecture;
 mod calendar;
 mod camera;
 pub mod civic;
+mod cloud_noise;
 pub mod cover;
 pub mod decor;
 mod detail;

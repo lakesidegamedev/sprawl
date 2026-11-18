@@ -16,8 +16,9 @@ const COLOUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 // The outline pass needs only two channels: distance (as f32 bits) and face ID.
 const COMPACT_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Uint;
 const WIDE_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
-// the bits of 1.0e9_f32, the far distance that an empty pixel holds
+const FOG_STRIDE: u32 = 2;
 const FOG_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+// The bits of 1.0e9_f32, the far distance that an empty pixel holds.
 const AUX_FAR_BITS: f64 = 1_315_859_240.0;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -39,7 +40,7 @@ pub struct Style {
     pub lod: bool,
     /// Scale of world render targets on window surfaces. The UI stays native.
     pub window_world_scale: f32,
-    /// Full-resolution atmospheric effects with finer volume sampling and surface detail.
+    /// Finer volume sampling, temporal antialiasing and detailed surface lighting.
     pub high_detail: bool,
     /// Soft focus at the top and bottom of the gameplay camera.
     pub tilt_shift: bool,
@@ -230,6 +231,11 @@ struct GpuMesh {
     n_plain: u32,
 }
 
+struct InstanceTemplate {
+    mesh: GpuMesh,
+    radius: f32,
+}
+
 struct GpuChunk {
     rev: u64,
     mesh: GpuMesh,
@@ -255,7 +261,7 @@ struct Targets {
     depth: wgpu::TextureView,
     readback: Option<Readback>,
     edge_group: wgpu::BindGroup,
-    fog_stride: u32,
+    high_detail: bool,
     fog_view: wgpu::TextureView,
     fog_composite: [wgpu::BindGroup; 2],
     resolved: [wgpu::TextureView; 2],
@@ -302,6 +308,8 @@ pub struct Renderer {
     history: Option<(u64, u64, Mat4, f32)>,
     fog_composite_layout: wgpu::BindGroupLayout,
     fog_sampler: wgpu::Sampler,
+    cloud_view: wgpu::TextureView,
+    cloud_sampler: wgpu::Sampler,
     local_lights: LightGrid,
     light_texture: wgpu::Texture,
     light_view: wgpu::TextureView,
@@ -321,7 +329,7 @@ pub struct Renderer {
     inst_pipeline: wgpu::RenderPipeline,
     shadow_inst_pipeline: wgpu::RenderPipeline,
     /// Car, smoke puff and person models, drawn instanced.
-    templates: Vec<GpuMesh>,
+    templates: Vec<InstanceTemplate>,
     /// Per template: instance buffer and how many instances it holds.
     inst_bufs: Vec<Option<(wgpu::Buffer, usize)>>,
     /// Map view mesh: scene uid, overlay rev, mesh.
@@ -609,6 +617,20 @@ impl Renderer {
                         multisampled: false,
                     },
                 ),
+                entry(
+                    7,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                ),
+                entry(
+                    8,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                ),
             ],
         });
         let tex_unfilterable = wgpu::BindingType::Texture {
@@ -649,7 +671,15 @@ impl Renderer {
         let present_bind_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("resolved world"),
-                entries: &[entry(0, wgpu::ShaderStages::FRAGMENT, single_hdr)],
+                entries: &[entry(
+                    0,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                )],
             });
         let present_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("present world"),
@@ -908,6 +938,42 @@ impl Renderer {
             view_formats: &[],
         });
         let probe_view = probe_texture.create_view(&Default::default());
+        let edge = crate::cloud_noise::SIZE;
+        let noise_size = wgpu::Extent3d {
+            width: edge,
+            height: edge,
+            depth_or_array_layers: edge,
+        };
+        let cloud_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("3D cloud density noise"),
+            size: noise_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::Rg8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            cloud_texture.as_image_copy(),
+            &crate::cloud_noise::bake(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(edge * 2),
+                rows_per_image: Some(edge),
+            },
+            noise_size,
+        );
+        let cloud_view = cloud_texture.create_view(&Default::default());
+        let cloud_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("tileable cloud noise"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let mut r = Renderer {
             device,
             queue,
@@ -928,6 +994,8 @@ impl Renderer {
             history: None,
             fog_composite_layout,
             fog_sampler,
+            cloud_view,
+            cloud_sampler,
             local_lights: LightGrid::default(),
             light_texture,
             light_view,
@@ -950,30 +1018,30 @@ impl Renderer {
             inst_bufs: (0..25).map(|_| None).collect(),
             overlay_gpu: None,
         };
-        r.templates = vec![
-            r.upload_mesh(&crate::instances::car_mesh(), "car"),
-            r.upload_mesh(&crate::instances::puff_mesh(), "puff"),
-            r.upload_mesh(&crate::instances::person_mesh(), "person"),
-            r.upload_mesh(&crate::instances::lamp_mesh(), "lamp"),
-            r.upload_mesh(&crate::trains::Vehicle::Loco.mesh(), "locomotive"),
-            r.upload_mesh(&crate::trains::Vehicle::Coach.mesh(), "coach"),
-            r.upload_mesh(&crate::trains::Vehicle::Hopper.mesh(), "hopper"),
-            r.upload_mesh(&crate::trains::Vehicle::Boxcar.mesh(), "box car"),
-            r.upload_mesh(&crate::trains::Vehicle::Tram2.mesh(), "tram"),
-            r.upload_mesh(&crate::trains::Vehicle::Tram3.mesh(), "long tram"),
-            r.upload_mesh(&crate::emergency::RigKind::FireEngine.mesh(), "fire engine"),
-            r.upload_mesh(&crate::emergency::RigKind::PoliceCar.mesh(), "police car"),
-            r.upload_mesh(&crate::emergency::RigKind::Ambulance.mesh(), "ambulance"),
-            r.upload_mesh(&crate::emergency::flame_mesh(), "flame"),
-            r.upload_mesh(&crate::weather::water_tile_mesh(), "flood water"),
-        ];
+        for (mesh, label) in [
+            (crate::instances::car_mesh(), "car"),
+            (crate::instances::puff_mesh(), "puff"),
+            (crate::instances::person_mesh(), "person"),
+            (crate::instances::lamp_mesh(), "lamp"),
+            (crate::trains::Vehicle::Loco.mesh(), "locomotive"),
+            (crate::trains::Vehicle::Coach.mesh(), "coach"),
+            (crate::trains::Vehicle::Hopper.mesh(), "hopper"),
+            (crate::trains::Vehicle::Boxcar.mesh(), "box car"),
+            (crate::trains::Vehicle::Tram2.mesh(), "tram"),
+            (crate::trains::Vehicle::Tram3.mesh(), "long tram"),
+            (crate::emergency::RigKind::FireEngine.mesh(), "fire engine"),
+            (crate::emergency::RigKind::PoliceCar.mesh(), "police car"),
+            (crate::emergency::RigKind::Ambulance.mesh(), "ambulance"),
+            (crate::emergency::flame_mesh(), "flame"),
+            (crate::weather::water_tile_mesh(), "flood water"),
+        ] {
+            r.add_template(&mesh, label);
+        }
         for v in crate::fleet::Vehicle::ALL {
-            let t = r.upload_mesh(&v.mesh(), v.name());
-            r.templates.push(t);
+            r.add_template(&v.mesh(), v.name());
         }
         for p in crate::fleet::Prop::ALL {
-            let t = r.upload_mesh(&p.mesh(), p.name());
-            r.templates.push(t);
+            r.add_template(&p.mesh(), p.name());
         }
         Ok(r)
     }
@@ -1008,6 +1076,19 @@ impl Renderer {
         );
         self.edge_pipelines.push((format, p));
         self.edge_pipelines.len() - 1
+    }
+
+    fn add_template(&mut self, mesh: &Mesh, label: &str) {
+        let radius = mesh
+            .vertices
+            .iter()
+            .map(|v| Vec3::from(v.pos).length_squared())
+            .fold(0.0, f32::max)
+            .sqrt();
+        self.templates.push(InstanceTemplate {
+            mesh: self.upload_mesh(mesh, label),
+            radius,
+        });
     }
 
     fn upload_mesh(&self, m: &Mesh, label: &str) -> GpuMesh {
@@ -1171,9 +1252,9 @@ impl Renderer {
     }
 
     fn ensure_targets(&mut self, w: u32, h: u32, capture: bool, high_detail: bool) {
-        let fog_stride = if high_detail { 1 } else { 2 };
+        let fog_stride = FOG_STRIDE;
         if self.targets.as_ref().is_some_and(|t| {
-            t.w == w && t.h == h && t.fog_stride == fog_stride && t.readback.is_some() == capture
+            t.w == w && t.h == h && t.high_detail == high_detail && t.readback.is_some() == capture
         }) {
             return;
         }
@@ -1316,7 +1397,7 @@ impl Renderer {
             depth,
             readback,
             edge_group,
-            fog_stride,
+            high_detail,
             fog_view,
             fog_composite,
             resolved,
@@ -1640,6 +1721,9 @@ impl Renderer {
             fi.lamps
                 .retain(|l| Vec3::from(l.pos).distance_squared(eye) < LAMP_FAR * LAMP_FAR);
         }
+        let camera_volume = ClipVolume::new(view.view_proj);
+        let light_volume = ClipVolume::new(light_vp);
+        let casts_sun_shadows = sun.z > 0.03 && shadow_tone < 0.985;
         let night_lighting = if map_view {
             0.0
         } else {
@@ -1707,7 +1791,7 @@ impl Renderer {
             resolve: [
                 rw as f32 / present[0] as f32,
                 rh as f32 / present[1] as f32,
-                if style.high_detail { 1.0 } else { 2.0 },
+                FOG_STRIDE as f32,
                 style.high_detail as u8 as f32,
             ],
             sun: [sun.x, sun.y, sun.z, texel],
@@ -1751,11 +1835,7 @@ impl Renderer {
                 } else {
                     (lamps + wl.lightning[2]).clamp(0.0, 1.0)
                 },
-                if map_view {
-                    1.0
-                } else {
-                    self.adapted_exposure - wl.lightning[2] * 0.08
-                },
+                if map_view { 1.0 } else { self.adapted_exposure },
                 if map_view { 0.0 } else { 1.0 },
             ],
             rock: scene
@@ -1779,33 +1859,46 @@ impl Renderer {
             }
             None => self.overlay_gpu = None,
         }
-        let sets: [&[crate::instances::Instance]; 25] = [
-            &fi.cars,
-            &fi.puffs,
-            &fi.people,
-            &fi.lamps,
-            &fi.trains.sets[0],
-            &fi.trains.sets[1],
-            &fi.trains.sets[2],
-            &fi.trains.sets[3],
-            &fi.trains.sets[4],
-            &fi.trains.sets[5],
-            &fi.rigs[0],
-            &fi.rigs[1],
-            &fi.rigs[2],
-            &fi.flames,
-            &fi.water,
-            &fi.fleet[0],
-            &fi.fleet[1],
-            &fi.fleet[2],
-            &fi.fleet[3],
-            &fi.fleet[4],
-            &fi.props[0],
-            &fi.props[1],
-            &fi.props[2],
-            &fi.props[3],
-            &fi.props[4],
+        let [locos, coaches, hoppers, boxcars, trams, long_trams] = &mut fi.trains.sets;
+        let [fire_engines, police, ambulances] = &mut fi.rigs;
+        let [boat0, boat1, boat2, boat3, boat4] = &mut fi.fleet;
+        let [prop0, prop1, prop2, prop3, prop4] = &mut fi.props;
+        let mut sets: [&mut Vec<crate::instances::Instance>; 25] = [
+            &mut fi.cars,
+            &mut fi.puffs,
+            &mut fi.people,
+            &mut fi.lamps,
+            locos,
+            coaches,
+            hoppers,
+            boxcars,
+            trams,
+            long_trams,
+            fire_engines,
+            police,
+            ambulances,
+            &mut fi.flames,
+            &mut fi.water,
+            boat0,
+            boat1,
+            boat2,
+            boat3,
+            boat4,
+            prop0,
+            prop1,
+            prop2,
+            prop3,
+            prop4,
         ];
+        for (set, template) in sets.iter_mut().zip(&self.templates) {
+            let casts = casts_sun_shadows && template.mesh.cast.is_some();
+            set.retain(|inst| {
+                let pos = Vec3::from(inst.pos);
+                let reach = Vec3::splat(template.radius * inst.scale.abs());
+                camera_volume.intersects(pos - reach, pos + reach)
+                    || (casts && light_volume.intersects(pos - reach, pos + reach))
+            });
+        }
         for (k, set) in sets.iter().enumerate() {
             if set.is_empty() {
                 continue;
@@ -1824,7 +1917,7 @@ impl Renderer {
             self.queue.write_buffer(
                 &self.inst_bufs[k].as_ref().unwrap().0,
                 0,
-                bytemuck::cast_slice(set),
+                bytemuck::cast_slice(set.as_slice()),
             );
         }
         let shadow = self.shadow.as_ref().unwrap();
@@ -1845,6 +1938,16 @@ impl Renderer {
             wgpu::BindGroupEntry {
                 binding: 4,
                 resource: wgpu::BindingResource::Sampler(&self.fog_sampler),
+            },
+        ];
+        let cloud_entries = [
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: wgpu::BindingResource::TextureView(&self.cloud_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: wgpu::BindingResource::Sampler(&self.cloud_sampler),
             },
         ];
         let group0 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1873,6 +1976,8 @@ impl Renderer {
                     binding: 6,
                     resource: wgpu::BindingResource::TextureView(&self.probe_view),
                 },
+                cloud_entries[0].clone(),
+                cloud_entries[1].clone(),
             ],
         });
         // the shadow pass writes the shadow map, so it binds a stand-in for reading
@@ -1902,10 +2007,17 @@ impl Renderer {
                     binding: 6,
                     resource: wgpu::BindingResource::TextureView(&self.probe_view),
                 },
+                cloud_entries[0].clone(),
+                cloud_entries[1].clone(),
             ],
         });
         let tg = self.targets.as_ref().unwrap();
         // per chunk: the far form when it is small on screen
+        let lod_share = if style.high_detail {
+            LOD_FAR_SHARE
+        } else {
+            LOD_FAR_SHARE.max(0.9 / rh.max(400) as f32)
+        };
         let is_far = |c: &GpuChunk| -> bool {
             if !style.lod || c.far.is_none() {
                 return false;
@@ -1927,10 +2039,8 @@ impl Renderer {
                 best = best.max((dx * dx + dy * dy).sqrt());
             }
             // best is the NDC length of 16 m (frame height is 2)
-            best / 32.0 < LOD_FAR_SHARE
+            best / 32.0 < lod_share
         };
-        let camera_volume = ClipVolume::new(view.view_proj);
-        let light_volume = ClipVolume::new(light_vp);
         // Include the largest leaf displacement from sway() in both passes.
         let sway = Vec3::new(wl.wind[0].abs(), wl.wind[1].abs(), 0.0) * 0.0675;
         let visible_main: Vec<(&GpuMesh, bool)> = gpu
@@ -1945,14 +2055,14 @@ impl Renderer {
         let visible_light: Vec<&GpuMesh> = gpu
             .chunks
             .iter()
-            .filter(|c| light_volume.intersects(c.lo - sway, c.hi + sway))
+            .filter(|c| casts_sun_shadows && light_volume.intersects(c.lo - sway, c.hi + sway))
             .map(|c| pick(c, is_far(c)))
             .collect();
         stats.chunks_total = gpu.chunks.len();
         stats.chunks_drawn = visible_main.len();
         stats.chunks_far = visible_main.iter().filter(|m| m.1).count();
 
-        {
+        if casts_sun_shadows {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shadow"),
                 color_attachments: &[],
@@ -1980,17 +2090,17 @@ impl Renderer {
             pass.set_pipeline(&self.shadow_inst_pipeline);
             pass.set_bind_group(0, Some(&group0_shadow), &[]);
             for (k, set) in sets.iter().enumerate() {
-                let (Some((ib, _)), Some(ci)) = (&self.inst_bufs[k], &self.templates[k].cast)
+                let (Some((ib, _)), Some(ci)) = (&self.inst_bufs[k], &self.templates[k].mesh.cast)
                 else {
                     continue;
                 };
                 if set.is_empty() {
                     continue;
                 }
-                pass.set_vertex_buffer(0, self.templates[k].vb.slice(..));
+                pass.set_vertex_buffer(0, self.templates[k].mesh.vb.slice(..));
                 pass.set_vertex_buffer(1, ib.slice(..));
                 pass.set_index_buffer(ci.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.templates[k].n_cast, 0, 0..set.len() as u32);
+                pass.draw_indexed(0..self.templates[k].mesh.n_cast, 0, 0..set.len() as u32);
             }
         }
         {
@@ -2096,7 +2206,7 @@ impl Renderer {
                 if set.is_empty() {
                     continue;
                 }
-                let t = &self.templates[k];
+                let t = &self.templates[k].mesh;
                 pass.set_vertex_buffer(0, t.vb.slice(..));
                 pass.set_vertex_buffer(1, ib.slice(..));
                 for (ix, n) in [(&t.plain, t.n_plain), (&t.cast, t.n_cast)] {

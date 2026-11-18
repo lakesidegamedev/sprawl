@@ -123,6 +123,10 @@ pub(super) fn dock_top(ctx: &Context) -> f32 {
         .unwrap_or(screen.bottom() - DOCK_H * dock_rows(ctx) as f32)
 }
 
+pub(super) fn set_hud_bottom(ctx: &Context, y: f32) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("hud_bottom"), y));
+}
+
 /// The icon a window or sheet shows beside its title.
 fn title_icon(title: &str) -> Option<&'static str> {
     Some(match title.to_lowercase().as_str() {
@@ -170,57 +174,73 @@ fn closing(ctx: &Context, id: &str, clicked: bool) -> (f32, bool) {
     (a, done)
 }
 
-/// The phone version of a panel: a sheet over the lower half of the screen, above the bottom
-/// bar, with a large close button. Only one sheet is open at a time. It is placed from the bar's
-/// real position so the bar's buttons always stay visible and tappable. It slides up when it
-/// opens and fades when it closes.
+/// A phone sheet sits between the HUD and dock. Each panel owns its own scroll
+/// position, and the header stays accessible while the body scrolls.
 pub(super) fn sheet(ctx: &Context, title: &str, body: impl FnOnce(&mut Ui)) -> bool {
     let screen = ctx.content_rect();
-    let width = (screen.width() - 12.0).max(160.0);
     let bottom = dock_top(ctx) - 4.0;
-    let available = (bottom - screen.top()).max(0.0);
-    let total = (available - 8.0).max(1.0);
-    let open = theme::opening(ctx, title, 0.2);
-    let (fade, done) = closing(ctx, title, false);
-    let mut clicked = false;
-    egui::Area::new(egui::Id::new("sheet"))
+    let hud = ctx
+        .data(|d| d.get_temp::<f32>(egui::Id::new("hud_bottom")))
+        .unwrap_or(screen.top());
+    let top = (hud + 4.0).min(bottom - 138.0).max(screen.top());
+    let bounds = egui::Rect::from_min_max(
+        egui::pos2(screen.left() + 6.0, top),
+        egui::pos2(screen.right() - 6.0, bottom),
+    );
+    let width = bounds.width().min(640.0);
+    let mut closed = false;
+    egui::Area::new(egui::Id::new(("sheet", title)))
         .pivot(Align2::CENTER_BOTTOM)
-        .fixed_pos(egui::pos2(
-            screen.center().x,
-            bottom + (1.0 - open) * 28.0 + (1.0 - fade) * 16.0,
-        ))
+        .fixed_pos(egui::pos2(bounds.center().x, bottom))
+        .constrain_to(bounds)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
-            ui.set_opacity(fade);
+            ui.set_clip_rect(ui.clip_rect().intersect(bounds));
             theme::panel()
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
-                    ui.set_width(width - 16.0);
+                    let content_width = width - 18.0;
+                    ui.set_width(content_width);
                     ui.horizontal(|ui| {
-                        title_row(ui, title);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let b =
-                                egui::Button::new(theme::icon_text(theme::icon::CLOSE, 20.0, INK))
-                                    .min_size(vec2(theme::TOUCH, theme::TOUCH));
-                            if ui.add(b).clicked() {
-                                clicked = true;
-                            }
-                        });
+                        let title_width =
+                            (content_width - theme::TOUCH - ui.spacing().item_spacing.x).max(10.0);
+                        ui.allocate_ui_with_layout(
+                            vec2(title_width, theme::TOUCH),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.set_width(title_width);
+                                if let Some(icon) = title_icon(title) {
+                                    ui.label(theme::icon_text(icon, 18.0, ACCENT));
+                                }
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(title)
+                                            .font(ui_font(18.0))
+                                            .strong()
+                                            .color(INK),
+                                    )
+                                    .truncate(),
+                                );
+                            },
+                        );
+                        closed = ui
+                            .add_sized(
+                                [theme::TOUCH, theme::TOUCH],
+                                egui::Button::new(theme::icon_text(theme::icon::CLOSE, 20.0, INK)),
+                            )
+                            .on_hover_text("Close")
+                            .clicked();
                     });
-                    egui::ScrollArea::both()
-                        .max_height((total - theme::TOUCH - 27.0).max(32.0))
-                        .min_scrolled_height((total * 0.48).max(1.0))
+                    ui.separator();
+                    let max_height = (bounds.height() - theme::TOUCH - 37.0).max(1.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(max_height)
+                        .min_scrolled_height(max_height.min(150.0))
                         .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            ui.set_min_width(width - 40.0);
-                            body(ui);
-                        });
+                        .show(ui, body);
                 });
         });
-    if clicked {
-        closing(ctx, title, true);
-    }
-    done
+    closed
 }
 
 /// The frame and header every movable window shares. Returns true when closed (after a short
@@ -488,7 +508,6 @@ pub struct UiState {
     /// Seconds since the view was last pushed to the renderer, and which view it showed.
     ov_age: f32,
     ov_view: MapView,
-    clock: f32,
     /// Seconds since the trains were last told what the town offers.
     rail_age: f32,
     cover: [f32; 6],
@@ -536,7 +555,6 @@ impl Default for UiState {
             ledger: LedgerNow::default(),
             ov_age: 9.0,
             ov_view: MapView::Normal,
-            clock: 0.0,
             rail_age: 1.0,
             cover: [0.0; 6],
             cover_age: 9.0,
@@ -587,8 +605,6 @@ impl Game {
         }
         self.ui.ledger = self.sim.ledger_now();
         self.refresh_district_stats(dt);
-        self.ui.clock += dt;
-        self.live.scene.set_time(self.ui.clock);
         self.ui.rail_age += dt;
         if self.ui.rail_age > 1.0 {
             self.ui.rail_age = 0.0;

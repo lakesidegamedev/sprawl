@@ -66,6 +66,69 @@ fn rendering_is_repeatable() {
 }
 
 #[test]
+fn overhead_billows_travel_across_the_map_under_constant_cover() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    const SIZE: usize = 128;
+    let mut ground = Mesh::default();
+    ground.push_poly(
+        &[
+            [0., 0., 0.],
+            [3000., 0., 0.],
+            [3000., 3000., 0.],
+            [0., 3000., 0.],
+        ],
+        [90, 90, 90],
+        true,
+        false,
+        0,
+    );
+    let target = Vec3::new(1500., 1500., 0.);
+    let mut scene = Scene::dynamic(3000., ground, target);
+    let camera = Camera::framing(target, 378., 1.0, 0.0, 90.);
+    let style = Style {
+        sun: [0., 0., -1.],
+        shadow_size: 128,
+        supersample: 1,
+        ..Style::default()
+    };
+    scene.set_weather(WeatherLook {
+        overcast: 0.62,
+        ..WeatherLook::default()
+    });
+    let before = renderer.render_to_rgba(&scene, &camera, &style, SIZE as u32, SIZE as u32);
+    scene.set_time(4.0);
+    let after = renderer.render_to_rgba(&scene, &camera, &style, SIZE as u32, SIZE as u32);
+    let error = |dx: usize, dy: usize| -> u32 {
+        (28..100)
+            .map(|y| {
+                (24..100)
+                    .map(|x| {
+                        let from = before.rgba[(y * SIZE + x) * 4];
+                        let to = after.rgba[((y - dy) * SIZE + x + dx) * 4];
+                        u32::from(from.abs_diff(to))
+                    })
+                    .sum::<u32>()
+            })
+            .sum()
+    };
+    let best = |xs: std::ops::RangeInclusive<usize>| {
+        xs.flat_map(|dx| (0..=8).map(move |dy| error(dx, dy)))
+            .min()
+            .unwrap()
+    };
+    // A cloud must travel east by a visible amount. A whole-screen fade
+    // or barely moving shadow cannot match a translated image better.
+    let static_error = best(0..=5);
+    let moving_error = best(9..=18);
+    assert!(
+        moving_error * 5 < static_error * 3,
+        "translated error {moving_error}, near-static error {static_error}"
+    );
+}
+
+#[test]
 fn fog_moves_over_ground_and_stays_below_high_roofs() {
     let Some(mut renderer) = renderer() else {
         return;

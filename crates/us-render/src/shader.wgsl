@@ -29,6 +29,8 @@ struct Globals {
 @group(0) @binding(2) var shadow_cmp: sampler_comparison;
 @group(0) @binding(5) var lights_tex: texture_2d<f32>;
 @group(0) @binding(6) var reflection_probes: texture_2d<f32>;
+@group(0) @binding(7) var cloud_tex: texture_3d<f32>;
+@group(0) @binding(8) var cloud_sampler: sampler;
 
 struct VIn {
     @location(0) pos: vec3<f32>,
@@ -124,6 +126,9 @@ fn vs_shadow(v: VIn) -> @builtin(position) vec4<f32> {
 
 // Fraction of the comparison footprint that the sun reaches.
 fn lit(world: vec3<f32>, n: vec3<f32>) -> f32 {
+    if (g.sun.z <= 0.03 || g.shade.x >= 0.985) {
+        return 1.0;
+    }
     let p = world + n * g.sun.w * 1.5;
     let c = g.light_vp * vec4<f32>(p, 1.0);
     let uv = vec2<f32>(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
@@ -209,124 +214,81 @@ fn vnoise(p: vec2<f32>) -> f32 {
 }
 
 fn cloud_base() -> f32 {
-    return max(0.0, g.terrain.x) + mix(156.0, 104.0, g.shade.w) - 18.0 * g.weather_flow.z;
+    return max(0.0, g.terrain.x) + 107.0;
 }
 
 fn cloud_thickness() -> f32 {
-    let cumulus = smoothstep(0.22, 0.53, g.shade.w) * (1.0 - smoothstep(0.76, 1.0, g.shade.w));
-    return mix(36.0, 82.0, g.shade.w) + 63.0 * cumulus + 48.0 * g.weather_flow.z;
+    return 174.0;
 }
 
-// The broad weather field stays shared by visible clouds and their ground shadows.
-fn cloud_field(xy: vec2<f32>, height: f32) -> f32 {
-    let drift = g.screen.w * vec2<f32>(2.1, 0.86) + g.weather_flow.xy;
-    let shear = clamp(g.wx.zw, vec2<f32>(-9.0), vec2<f32>(9.0)) * (3.0 + 2.0 * height);
-    let p = xy - drift - shear;
-    let mass = vnoise(p * 0.0048);
-    let billow = vnoise(p * 0.014);
-    return mass * 0.67 + billow * 0.33;
+// Cover opens and closes gaps inside a deck at a fixed elevation. The wind
+// carries the entire form while height-dependent shear pulls the crowns ahead.
+fn cloud_drift() -> vec2<f32> {
+    return g.screen.w * vec2<f32>(7.8, 2.8) + g.weather_flow.xy;
+}
+
+fn cloud_field(xy: vec2<f32>, layer: f32) -> f32 {
+    let shear = clamp(g.wx.zw, vec2<f32>(-9.0), vec2<f32>(9.0)) * (3.0 + 3.0 * layer);
+    let p = xy - cloud_drift() - shear;
+    return vnoise(p * 0.0038) * 0.71 + vnoise(p * 0.0106 + vec2<f32>(8.7, 11.3)) * 0.29;
 }
 
 fn cloud_threshold() -> f32 {
-    return mix(0.82, 0.30, g.shade.w);
+    return mix(0.95, 0.42, g.shade.w);
 }
 
-fn cloud_cell(p: vec3<i32>) -> f32 {
-    let key = bitcast<u32>(p.x) * 73856093u ^ bitcast<u32>(p.y) * 19349663u
-        ^ bitcast<u32>(p.z) * 83492791u;
-    return f32(hash_u(key) & 65535u) / 65535.0;
-}
-
-fn cloud_noise(p: vec3<f32>) -> f32 {
-    let cell = vec3<i32>(floor(p));
-    let f = fract(p);
-    let t = f * f * (3.0 - 2.0 * f);
-    let plane = mix(
-        mix(cloud_cell(cell), cloud_cell(cell + vec3<i32>(1, 0, 0)), t.x),
-        mix(cloud_cell(cell + vec3<i32>(0, 1, 0)), cloud_cell(cell + vec3<i32>(1, 1, 0)), t.x), t.y);
-    let next = cell + vec3<i32>(0, 0, 1);
-    let upper = mix(
-        mix(cloud_cell(next), cloud_cell(next + vec3<i32>(1, 0, 0)), t.x),
-        mix(cloud_cell(next + vec3<i32>(0, 1, 0)), cloud_cell(next + vec3<i32>(1, 1, 0)), t.x), t.y);
-    return mix(plane, upper, t.z);
-}
-
-fn cloud_puffs(xy: vec2<f32>, layer: f32) -> f32 {
-    let p = xy / 152.0;
-    let cell = vec2<i32>(floor(p - 0.5));
-    var puff = 0.0;
-    for (var y = 0; y <= 1; y++) {
-        for (var x = 0; x <= 1; x++) {
-            let id = cell + vec2<i32>(x, y);
-            let variation = hash2(id + vec2<i32>(41, 19));
-            let offset = vec2<f32>(hash2(id), hash2(id + vec2<i32>(5, 29))) - 0.5;
-            let d = p - (vec2<f32>(id) + 0.5 + offset * 0.35);
-            let crown = (layer - (0.46 + variation * 0.18)) * (1.88 + 0.56 * variation);
-            let shoulder = vec3<f32>(d - offset * 0.16, (layer - 0.27) * 2.25);
-            let core = vec3<f32>(d * (1.05 + variation * 0.45), crown);
-            let crown_mass = 1.0 - smoothstep(0.08, 0.72, dot(core, core));
-            let base_mass = 1.0 - smoothstep(0.07, 0.54, dot(shoulder, shoulder));
-            puff += (1.0 - puff) * (crown_mass + (1.0 - crown_mass) * base_mass * 0.48);
-        }
-    }
-    return puff;
-}
-
-fn cloud_density(point: vec3<f32>, detail: u32) -> f32 {
-    let layer = (point.z - cloud_base()) / cloud_thickness();
+fn cloud_density(point: vec3<f32>, detail: bool) -> f32 {
+    let height = point.z - cloud_base();
+    let layer = height / cloud_thickness();
     if (layer <= 0.0 || layer >= 1.0) {
         return 0.0;
     }
+
     let field = cloud_field(point.xy, layer);
-    var threshold = cloud_threshold();
-    if (g.weather_flow.z > 0.02) {
-        let cell = storm_cell(point.xy);
-        let gaps = 1.0 - cell;
-        threshold += gaps * gaps * 0.34 * g.weather_flow.z;
-        // Even the strongest storms have breaks between precipitation cells.
-        threshold += (1.0 - smoothstep(0.40, 0.82, cell)) * 0.16
-            * smoothstep(0.65, 1.0, g.weather_flow.z);
-    }
-    if (field < threshold - 0.16) {
+    // Wider gaps between the local storm cells preserve breaks in a heavy deck.
+    let threshold = cloud_threshold() + (1.0 - field) * (1.0 - field) * 0.21 * g.weather_flow.z;
+    if (field < threshold - 0.17) {
         return 0.0;
     }
-    let xyz = point - vec3<f32>(g.screen.w * vec2<f32>(2.1, 0.86) + g.weather_flow.xy, 0.0);
+
+    let time = g.screen.w;
     let wind = clamp(g.wx.zw, vec2<f32>(-9.0), vec2<f32>(9.0));
-    let billow = cloud_puffs(xyz.xy - wind * (3.0 + 2.0 * layer), layer);
-    let shape = field + (billow - 0.58) * mix(0.52, 0.34, g.weather_flow.z);
-    var erosion = 0.0;
-    if (detail > 0u && shape < threshold + 0.29) {
-        // Rotate the noise axes away from world height so texture features can
-        // cut around the billows without lining up on horizontal planes.
-        let rotated = vec3<f32>(dot(xyz, vec3<f32>(2.0, 2.0, 1.0)),
-            dot(xyz, vec3<f32>(-2.0, 1.0, 2.0)),
-            dot(xyz, vec3<f32>(1.0, -2.0, 2.0))) / 3.0;
-        let edge = 1.0 - smoothstep(threshold + 0.06, threshold + 0.29, shape);
-        erosion = (cloud_noise(rotated * 0.037) - 0.5) * 0.23 * edge;
-        if (detail > 1u) {
-            erosion += (cloud_noise(rotated * 0.090 + vec3<f32>(3.7, 2.4, -1.1)) - 0.5)
-                * 0.095 * edge;
-        }
+    let p = point.xy - cloud_drift() - wind * (3.0 + 4.0 * layer);
+    let billow_pos = vec3<f32>(p + height * vec2<f32>(0.48, -0.34),
+        height - time * 0.84 + 92.0);
+    let billow = textureSampleLevel(cloud_tex, cloud_sampler, billow_pos / 510.0, 0.0).r;
+    let ceiling = mix(0.52, 1.0, smoothstep(0.30, 0.76, billow * 0.63 + field * 0.43));
+    let vertical = smoothstep(0.0, 0.17, layer)
+        * (1.0 - smoothstep(ceiling - 0.32, ceiling, layer));
+    let base = field + (billow - 0.5) * 0.51;
+    var shape = base;
+    if (detail && base < threshold + 0.27) {
+        // Faster flow at this scale continually erodes and replaces the wisps
+        // on a growing billow. Neither octave changes its opacity with time.
+        let fine = billow_pos + time * vec3<f32>(1.9, -0.8, -0.43);
+        let folds = textureSampleLevel(cloud_tex, cloud_sampler, fine / 132.0, 0.0).rg;
+        let edge = 1.0 - smoothstep(threshold + 0.05, threshold + 0.27, base);
+        shape += (folds.x - 0.5) * 0.17 * edge - folds.y * 0.048 * edge;
     }
-    let bottom = smoothstep(0.0, 0.19, layer);
-    let top = 1.0 - smoothstep(0.70, 1.0, layer);
-    let mass = smoothstep(threshold - 0.04, threshold + 0.21, shape + erosion);
-    let coverage = smoothstep(threshold - 0.16, threshold - 0.08, field);
-    return mass * bottom * top * coverage;
+    let mass = smoothstep(threshold - 0.06, threshold + 0.19, shape);
+    // A thin fringe transmits light from town. The denser part of the same
+    // volume still has enough extinction to shade its interior.
+    let extinction = mass * mix(0.21, 1.0, mass);
+    return extinction * vertical * smoothstep(threshold - 0.17, threshold - 0.085, field);
 }
 
 fn cloud_sunlight(world: vec3<f32>) -> f32 {
     if (g.shade.w <= 0.12 || g.sun.z <= 0.035 || g.look.z > 0.5) {
         return 1.0;
     }
-    let level = cloud_base() + cloud_thickness() * 0.46;
+    let level = cloud_base() + cloud_thickness() * 0.43;
     let distance = max(0.0, level - world.z) / max(0.19, g.sun.z);
-    let field = cloud_field(world.xy + g.sun.xy * distance, 0.46);
+    let field = cloud_field(world.xy + g.sun.xy * distance, 0.43);
     let threshold = cloud_threshold();
-    let shadow = smoothstep(threshold - 0.14, threshold + 0.22, field);
-    let below = 1.0 - smoothstep(level - 8.0, level + 28.0, world.z);
+    let shadow = smoothstep(threshold - 0.08, threshold + 0.23, field);
+    let below = 1.0 - smoothstep(level - 10.0, level + 32.0, world.z);
     let cover = smoothstep(0.12, 0.36, g.shade.w);
-    return 1.0 - shadow * below * cover * smoothstep(0.035, 0.21, g.sun.z) * 0.29;
+    return 1.0 - shadow * below * cover * smoothstep(0.035, 0.21, g.sun.z) * 0.18;
 }
 
 // Natural ground (grass, fields, sand, dirt, snow), not roads, pavements, markings or water.
@@ -362,10 +324,9 @@ fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist:
     // broad patches at three scales, in three tone bands
     let big = vnoise(w / 38.0);
     let mid = vnoise(w / 11.0);
-    let small = vnoise(w / 3.6 + vec2<f32>(5.0, 9.0));
-    var n = big * 0.4 + mid * 0.4 + small * 0.2;
-    if (!mid_d) {
-        n = big * 0.6 + mid * 0.4;
+    var n = big * 0.6 + mid * 0.4;
+    if (mid_d) {
+        n += (vnoise(w / 3.6 + vec2<f32>(5.0, 9.0)) - big) * 0.2;
     }
     var k = 1.0;
     if (n > 0.66) {
@@ -392,13 +353,17 @@ fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist:
         let dry_meadow = vec3<f32>(0.52, 0.54, 0.36);
         let seasonal = mix(damp_meadow, dry_meadow, smoothstep(0.19, 0.82, meadow));
         let lush = mix(c, seasonal, select(0.57, 0.43, kind == 4));
-        let clump = vnoise(w * 0.29 + vec2<f32>(2.9, -8.1));
-        let fibre = vnoise(w * vec2<f32>(5.6, 2.8) + vec2<f32>(0.5, 13.0));
         let detail = 1.0 - smoothstep(0.06, 0.32, footprint);
         let tufts = 1.0 - smoothstep(0.15, 0.68, footprint);
+        var grain = 0.0;
+        if (tufts > 0.0) {
+            grain += (vnoise(w * 0.29 + vec2<f32>(2.9, -8.1)) - 0.5) * 0.109 * tufts;
+        }
+        if (detail > 0.0) {
+            grain += (vnoise(w * vec2<f32>(5.6, 2.8) + vec2<f32>(0.5, 13.0)) - 0.5) * 0.23 * detail;
+        }
         let cut = 1.0 + select(0.0, 0.032 * sin((w.x + w.y * 0.22) * 0.64), kind == 4);
-        return lush * cut * (0.94 + 0.09 * meadow + (clump - 0.5) * 0.109 * tufts
-            + (fibre - 0.5) * 0.23 * detail);
+        return lush * cut * (0.94 + 0.09 * meadow + grain);
     }
     if (kind == 2) {
         // crop rows: rows run one way per field colour, a broad band of tone per row
@@ -461,7 +426,7 @@ fn water_kind(c: vec3<f32>) -> i32 {
 // Two wave bands follow the wind in world space. Filter the shorter band as it
 // falls below a pixel so moving water stays steady at town-scale zoom.
 fn storm_cell(xy: vec2<f32>) -> f32 {
-    let p = xy - g.weather_flow.xy * 1.3;
+    let p = xy - cloud_drift();
     let front = vnoise(p * 0.006);
     let squall = vnoise(p * 0.021 + vec2<f32>(17.0, 4.0));
     return smoothstep(0.21, 0.83, front * 0.76 + squall * 0.24);
@@ -472,40 +437,52 @@ fn flash_at(world: vec3<f32>) -> f32 {
     return g.lightning.z / (1.0 + dot(d, d));
 }
 
+// The derivative of the same smoothly interpolated noise used for terrain.
+fn wave_gradient(p: vec2<f32>) -> vec2<f32> {
+    let i = vec2<i32>(floor(p));
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash2(i);
+    let b = hash2(i + vec2<i32>(1, 0));
+    let c = hash2(i + vec2<i32>(0, 1));
+    let d = hash2(i + vec2<i32>(1, 1));
+    return 6.0 * f * (1.0 - f) * vec2<f32>(mix(b - a, d - c, u.y), mix(c - a, d - b, u.x));
+}
+
 fn wave_normal(w: vec2<f32>, px: f32, pond: bool) -> vec3<f32> {
     let velocity = g.wx.zw;
     let gust = min(length(velocity) / 13.0, 1.0);
     let drift = velocity * 0.14 + vec2<f32>(0.88, 0.44);
     let along = normalize(select(drift, vec2<f32>(0.88, 0.44), dot(drift, drift) < 0.001));
-    let across = vec2<f32>(along.x * 0.61 - along.y * 0.79, along.x * 0.79 + along.y * 0.61);
+    let side = vec2<f32>(-along.y, along.x);
     let t = g.screen.w;
-    let long = dot(w, along) * 0.31 - t * (1.5 + gust * 1.3);
-    let short = dot(w, across) * 1.73 - t * (3.1 + gust * 2.1);
-    let breaks = vnoise(w * 0.067 + vec2<f32>(t * 0.035, 0.0));
-    let fine = 1.0 - smoothstep(0.3, 1.35, px);
-    let wind_scale = mix(0.40, 1.0, gust) * select(1.0, 0.57, pond);
-    let slope = along * cos(long + breaks * 2.4) * 0.17
-        + across * cos(short + breaks * 3.7) * (0.01 + 0.095 * fine);
-    return normalize(vec3<f32>(-slope * wind_scale * (0.72 + breaks * 0.62), 1.0));
+    let local = vec2<f32>(dot(w, along), dot(w, side));
+    let swell = wave_gradient((local - vec2<f32>(t * (1.5 + gust * 2.3), t * 0.4))
+        * vec2<f32>(0.105, 0.042));
+    let broad = 1.0 - smoothstep(2.0, 7.5, px);
+    let fine = 1.0 - smoothstep(0.35, 2.0, px);
+    var slope = vec2<f32>(0.18, 0.10) * swell * broad;
+    if (fine > 0.0) {
+        let cross = vec2<f32>(local.x * 0.62 + local.y * 0.38, local.y * 0.73 - local.x * 0.27);
+        let ripples = wave_gradient(cross * 0.65 - vec2<f32>(t * 0.91, t * 0.57));
+        slope += ripples * 0.10 * fine;
+    }
+    let scale = mix(0.44, 1.0, gust) * select(1.0, 0.57, pond);
+    return normalize(vec3<f32>(-(along * slope.x + side * slope.y) * scale, 1.0));
 }
 
-fn sky_radiance(origin: vec3<f32>, ray: vec3<f32>) -> vec3<f32> {
+fn sky_radiance(ray: vec3<f32>) -> vec3<f32> {
     let horizon = 1.0 - clamp(ray.z, 0.0, 1.0);
     let day = smoothstep(-0.1, 0.38, g.sun.z);
     let sunset = (1.0 - smoothstep(0.03, 0.35, g.sun.z)) * day;
     let toward_sun = pow(max(0.0, dot(ray, g.sun.xyz)), 9.0);
     let blue = mix(vec3<f32>(0.29, 0.51, 0.73), vec3<f32>(0.63, 0.75, 0.83), horizon);
-    var sky = mix(vec3<f32>(0.10, 0.16, 0.27), blue, day)
+    // The sky fill responds to humidity and cover without drawing another
+    // projected cloud sheet. Visible clouds come from the world-space volume.
+    let clear = mix(vec3<f32>(0.10, 0.16, 0.27), blue, day)
         + vec3<f32>(0.32, 0.13, 0.04) * sunset * (0.3 + toward_sun);
-    if (g.shade.w > 0.12) {
-        let level = cloud_base() + cloud_thickness() * 0.5;
-        let sample_xy = origin.xy + ray.xy * min(650.0, max(0.0, level - origin.z) / max(0.06, ray.z));
-        let threshold = cloud_threshold();
-        let cover = smoothstep(threshold - 0.10, threshold + 0.23, cloud_field(sample_xy, 0.5));
-        let cloud_light = vec3<f32>(0.39, 0.48, 0.60) + vec3<f32>(0.19) * day;
-        sky = mix(sky, cloud_light, cover * smoothstep(0.12, 0.45, g.shade.w));
-    }
-    return sky;
+    let grey = mix(vec3<f32>(0.11, 0.15, 0.23), vec3<f32>(0.58, 0.66, 0.73), day);
+    return mix(clear, grey, g.shade.w * 0.60);
 }
 
 fn probe_face(origin: vec3<f32>, face: i32) -> vec4<f32> {
@@ -521,7 +498,7 @@ fn probe_face(origin: vec3<f32>, face: i32) -> vec4<f32> {
 }
 
 fn nearby_radiance(origin: vec3<f32>, ray: vec3<f32>) -> vec3<f32> {
-    let sky = sky_radiance(origin, ray);
+    let sky = sky_radiance(ray);
     if (g.resolve.w < 0.5) {
         return sky;
     }
@@ -535,7 +512,7 @@ fn nearby_radiance(origin: vec3<f32>, ray: vec3<f32>) -> vec3<f32> {
     return sky * (1.0 - coverage) + reflected * local_tone;
 }
 
-fn water_colour(kind: i32, world: vec3<f32>, dist: f32, normal: vec3<f32>) -> vec3<f32> {
+fn water_colour(kind: i32, world: vec3<f32>, px: f32, normal: vec3<f32>) -> vec3<f32> {
     let water_depth = max(0.0, world.z - terrain_height(world.xy));
     let shore = kind >= 3;
     let pond = kind == 2;
@@ -555,8 +532,11 @@ fn water_colour(kind: i32, world: vec3<f32>, dist: f32, normal: vec3<f32>) -> ve
     var result = mix(base, sky, fresnel) + vec3<f32>(1.0, 0.86, 0.65) * sparkle;
     if (shore) {
         let t = g.screen.w;
-        let foam = vnoise(world.xy * 0.43 + vec2<f32>(t * 0.22, -t * 0.14));
-        let fine = 1.0 - smoothstep(0.8, 2.0, g.screen.z * dist);
+        let fine = 1.0 - smoothstep(0.5, 2.0, px);
+        var foam = vnoise(world.xy * 0.066 + vec2<f32>(t * 0.11, -t * 0.07));
+        if (fine > 0.0) {
+            foam = mix(foam, vnoise(world.xy * 0.43 + vec2<f32>(t * 0.22, -t * 0.14)), fine);
+        }
         let bank = select((1.0 - smoothstep(0.28, 1.4, water_depth)) * 0.35, 0.88, kind == 5);
         result = mix(result, vec3<f32>(0.79, 0.89, 0.90),
             bank * smoothstep(0.38, 0.72, foam) * (0.60 + 0.40 * fine));
@@ -572,9 +552,12 @@ fn grass_soil(colour: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, px: f32) -
     let dry = smoothstep(0.43, 0.81, meadow_patch * 0.76 + sward * 0.24 + hill * 0.22);
     let bare = dry * (0.24 + 0.34 * hill) * (1.0 - g.wx.x);
     let detail = 1.0 - smoothstep(0.15, 0.65, px);
-    let litter = vnoise(world.xy * 1.35);
+    var litter = 0.0;
+    if (detail > 0.0) {
+        litter = (vnoise(world.xy * 1.35) - 0.5) * detail;
+    }
     let soil = vec3<f32>(0.44, 0.36, 0.26) * (1.0 - g.wx.y * 0.26);
-    let meadow = colour * (0.90 + 0.20 * sward + (litter - 0.5) * detail * 0.15);
+    let meadow = colour * (0.90 + 0.20 * sward + litter * 0.15);
     return mix(meadow, soil, bare);
 }
 
@@ -877,7 +860,9 @@ fn fs_main(v: VOut) -> FOut {
     var l = dot(n, g.sun.xyz);
     // the true normal of the triangle: steep rock is shaded in flat facets, not in the smooth
     // gradients that interpolated vertex normals give on a coarse grid
-    var facet = normalize(cross(dpdx(v.world), dpdy(v.world)));
+    let world_dx = dpdx(v.world);
+    let world_dy = dpdy(v.world);
+    var facet = normalize(cross(world_dx, world_dy));
     if (dot(facet, n) < 0.0) {
         facet = -facet;
     }
@@ -1047,8 +1032,11 @@ fn fs_main(v: VOut) -> FOut {
         col = mix(vec3<f32>(lum), col, 0.12);
     }
     if (wkind > 0) {
-        n = wave_normal(v.world.xy, g.screen.z * v.dist, wkind == 2);
-        col = water_colour(wkind, v.world, v.dist, n);
+        // At a grazing angle a pixel can span much more water than the
+        // camera-relative footprint suggests. Filter both wave scales accordingly.
+        let water_px = max(length(world_dx.xy), length(world_dy.xy));
+        n = wave_normal(v.world.xy, water_px, wkind == 2);
+        col = water_colour(wkind, v.world, water_px, n);
     } else if (gkind > 0) {
         let snowy = min(col.r, min(col.g, col.b)) > 0.88;
         col = ground_detail(col, v.color.rgb, gkind, v.world.xy, v.dist, snowy);
@@ -1084,7 +1072,7 @@ fn fs_main(v: VOut) -> FOut {
     if (l > 0.02 && k > g.shade.x && wkind == 0) {
         k = mix(g.shade.x, k, lit(v.world, n));
     }
-    if (g.resolve.w > 0.5 && g.look.z < 0.5) {
+    if (g.resolve.w > 0.5 && g.look.z < 0.5 && v.dist * g.screen.z < 0.23) {
         let footprint = v.dist * g.screen.z;
         let grain = vnoise(v.world.xy * 6.4 + v.world.z * vec2<f32>(4.9, 8.1));
         let detail = 1.0 - smoothstep(0.06, 0.23, footprint);
@@ -1098,9 +1086,10 @@ fn fs_main(v: VOut) -> FOut {
         col = col * mix(vec3<f32>(1.0), vec3<f32>(0.9, 0.96, 1.08), sh);
     }
     if (!emissive) {
-        col = col * g.tone.rgb * cloud_sunlight(v.world);
+        let sun_visibility = cloud_sunlight(v.world);
+        col *= g.tone.rgb * sun_visibility;
         if (g.resolve.w > 0.5 && g.look.z < 0.5 && wkind == 0) {
-            let sky_fill = sky_radiance(v.world, normalize(n + vec3<f32>(0.0, 0.0, 0.25)));
+            let sky_fill = sky_radiance(normalize(n + vec3<f32>(0.0, 0.0, 0.25)));
             let ambient = 0.12 + 0.17 * max(0.0, 1.0 - l);
             col = mix(col, col * (0.80 + 0.39 * sky_fill), ambient);
         }
@@ -1277,19 +1266,19 @@ fn fs_precipitation(p: Precipitation) -> FOut {
 
 // Trace from the camera toward terrain. Midpoints are stable in world space as
 // the camera moves, and each sample contributes only the light still visible.
-fn low_fog(eye: vec3<f32>, dir: vec3<f32>, limit: f32) -> vec2<f32> {
+fn low_fog(eye: vec3<f32>, dir: vec3<f32>, limit: f32, coarse: bool) -> vec2<f32> {
     let depth = min(limit, mix(104.0, 180.0, g.fog.w));
     let ground = eye + dir * limit;
     let drift = vec2<f32>(1.18, 0.49) * g.screen.w + g.weather_flow.xy * 0.54;
     let wind = clamp(g.wx.zw, vec2<f32>(-9.0), vec2<f32>(9.0));
-    let count = select(9, 26, g.resolve.w > 0.5);
+    let count = select(select(8, 15, g.resolve.w > 0.5), 5, coarse);
     var start = depth;
     var remaining = 1.0;
     var centroid = vec3<f32>(0.0);
     var shafts = 0.0;
     var checked = 0.0;
     let daylight = smoothstep(0.015, 0.29, g.sun.z);
-    for (var i = 0; i < count; i++) {
+    for (var i = 0; i < count && remaining > 0.005; i++) {
         let u = 1.0 - f32(i + 1) / f32(count);
         let end = depth * (0.10 * u + 0.90 * u * u);
         let point = ground - dir * ((start + end) * 0.5);
@@ -1299,16 +1288,17 @@ fn low_fog(eye: vec3<f32>, dir: vec3<f32>, limit: f32) -> vec2<f32> {
             let pool = smoothstep(0.0, 1.0, ground_profile.y);
             let flow = point.xy - drift - wind * (2.0 + 0.19 * above);
             let front = vnoise(flow * 0.0105);
-            let curls = vnoise(flow * 0.034 + vec2<f32>(0.056, -0.072) * above);
-            let wisps = vnoise(flow * 0.086 + vec2<f32>(-0.21, 0.17) * above);
-            let billow = smoothstep(0.32, 0.75, front * 0.55 + curls * 0.30 + wisps * 0.15);
+            let curl_pos = vec3<f32>(flow + above * vec2<f32>(0.36, -0.28),
+                above * 1.45 - g.screen.w * 0.47);
+            let curls = textureSampleLevel(cloud_tex, cloud_sampler, curl_pos / 161.0, 0.0).r;
+            let billow = smoothstep(0.29, 0.69, front * 0.65 + curls * 0.35);
             let ceiling = 4.0 + (7.0 + 31.0 * pool) * billow * g.fog.w;
             let layer = 1.0 - smoothstep(0.9, ceiling, above);
             let density = layer * billow * mix(0.48, 1.15, pool) * g.fog.w * 0.19;
             let scatter = remaining * (1.0 - exp(-density * (start - end)));
             remaining -= scatter;
             centroid += point * scatter;
-            if (g.resolve.w > 0.5 && daylight > 0.01 && (i % 3) == 0 && scatter > 0.003) {
+            if (!coarse && g.resolve.w > 0.5 && daylight > 0.01 && (i % 5) == 0 && scatter > 0.003) {
                 let normal = vec3<f32>(0.0, 0.0, 1.0);
                 shafts += scatter * lit(point, normal) * cloud_sunlight(point);
                 checked += scatter;
@@ -1335,17 +1325,17 @@ fn low_fog(eye: vec3<f32>, dir: vec3<f32>, limit: f32) -> vec2<f32> {
     return vec2<f32>(opacity, opacity * direct);
 }
 
-fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>) -> vec2<f32> {
+fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>, coarse: bool) -> vec2<f32> {
     let base = cloud_base();
     let thickness = cloud_thickness();
     let top = base + thickness;
     var start = 0.0;
-    var end = limit;
+    var end = min(limit, 2550.0);
     if (abs(dir.z) > 0.001) {
         let a = (base - eye.z) / dir.z;
         let b = (top - eye.z) / dir.z;
         start = max(0.0, min(a, b));
-        end = min(limit, max(a, b));
+        end = min(end, max(a, b));
     } else if (eye.z < base || eye.z > top) {
         return vec2<f32>(0.0);
     }
@@ -1354,57 +1344,49 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>) ->
         return vec2<f32>(0.0);
     }
     let detailed = g.resolve.w > 0.5;
-    let budget = select(44, 60, detailed);
+    let budget = select(select(26, 38, detailed), 12, coarse);
     let step_size = span / f32(budget);
-    let detail = select(1u, 2u, detailed);
+    // Shift sample locations once per ray. The adjacent segment shares each
+    // density tap, so smoothing the integration does not double texture reads.
     let phase = hash2(vec2<i32>(floor(pixel / g.resolve.z)));
+    let first = start + step_size * mix(0.21, 0.58, phase);
+    var previous = 0.0;
     var transmission = 1.0;
     var sunlight = 0.0;
     let day = smoothstep(0.03, 0.37, g.sun.z);
     let forward = pow(max(0.0, dot(dir, g.sun.xyz)), 4.0);
     for (var i = 0; i < budget; i++) {
-        let distance = start + step_size * (f32(i) + 0.5);
-        let center = eye + dir * distance;
-        // Stagger the two taps within each interval, keeping their midpoint
-        // fixed. This breaks up marching contours without moving the cloud edge.
-        let jitter = fract(phase + f32(i) * 0.618034);
-        let offset = dir * (step_size * mix(0.16, 0.40, jitter));
-        let near_density = cloud_density(center - offset, detail);
-        let far_density = cloud_density(center + offset, detail);
-        if (near_density + far_density < 0.002) {
+        let distance = first + step_size * f32(i);
+        let point = eye + dir * distance;
+        let density = cloud_density(point, !coarse);
+        let smooth_density = (previous + density) * 0.5;
+        let light_point = point - dir * step_size * (previous / max(0.001, previous + density));
+        previous = density;
+        if (smooth_density < 0.003) {
             continue;
         }
-        let extinction = step_size * 0.024 * smoothstep(12.0, 100.0, distance);
-        let near_scatter = 1.0 - exp(-near_density * extinction);
-        let far_scatter = (1.0 - near_scatter) * (1.0 - exp(-far_density * extinction));
-        // Light the part of the interval that actually scattered light. At a
-        // dense edge it can lie far from the geometric center of the interval.
-        let point = center + offset * ((far_scatter - near_scatter)
-            / max(0.0001, near_scatter + far_scatter));
-        let scatter = transmission * (near_scatter + far_scatter);
+        let optical_depth = smooth_density * step_size * 0.050 * smoothstep(12.0, 95.0, distance);
+        let scatter = transmission * (1.0 - exp(-optical_depth));
         transmission -= scatter;
         if (g.lightning.z > 0.002) {
-            sunlight += scatter * flash_at(point) * 1.9;
+            sunlight += scatter * flash_at(light_point) * 1.9;
         }
         if (day > 0.0) {
-            // Resolve the smooth density gradient near the lit face first.
-            // The longer tap accounts for cloud behind it without putting the
-            // shadow samples on a second regularly spaced lattice.
-            let light_near = cloud_density(point + g.sun.xyz * 9.0, 0u);
-            let light_far = cloud_density(point + g.sun.xyz * 31.0, 0u);
-            let blockers = light_near * 18.0 + light_far * 35.0;
-            let direct = exp(-blockers * 0.105);
-            let bounce = exp(-blockers * 0.025);
-            sunlight += scatter * (direct * (0.82 + forward * 0.20) + bounce * 0.20) * day;
+            // One sample toward the sun combines with the local density to
+            // estimate extinction. The broad fill can reach a shadowed face.
+            let blocker = cloud_density(light_point + g.sun.xyz * 21.0, false);
+            let direct = exp(-(blocker * 3.55 + smooth_density * 0.49));
+            let bounced = 0.13 + 0.19 * exp(-blocker * 0.84);
+            sunlight += scatter * (direct * (0.87 + forward * 0.33) + bounced) * day;
         }
-        if (transmission < 0.002) {
+        if (transmission < 0.004) {
             break;
         }
     }
     return vec2<f32>(1.0 - transmission, sunlight) * smoothstep(0.12, 0.36, g.shade.w);
 }
 
-fn atmosphere(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
+fn atmosphere(pixel: vec2<f32>, depth: f32, coarse: bool) -> vec3<f32> {
     let ray = ray_for_pixel(pixel);
     let ray_length = length(ray);
     let dir = ray / ray_length;
@@ -1412,23 +1394,19 @@ fn atmosphere(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
     let limit = select(4000.0, depth * ray_length, surface);
     var fog = vec2<f32>(0.0);
     if (g.fog.w > 0.005 && surface) {
-        fog = low_fog(g.eye.xyz, dir, limit);
+        fog = low_fog(g.eye.xyz, dir, limit, coarse);
     }
     var cloud = vec2<f32>(0.0);
     // For ground-facing rays, zoom through the deck while leaving low fog in place.
     // Sky rays keep overhead clouds visible when the camera looks towards the horizon.
     let cloud_view = select(1.0, smoothstep(9.0, 34.0, g.eye.w), surface);
     if (g.shade.w > 0.12 && cloud_view > 0.0) {
-        cloud = cloud_volume(g.eye.xyz, dir, limit, pixel);
+        cloud = cloud_volume(g.eye.xyz, dir, limit, pixel, coarse);
         if (surface && g.weather_flow.z > 0.02) {
-            let city_readability = mix(0.63, 0.92, smoothstep(550.0, 1400.0, depth));
-            cloud *= mix(1.0, city_readability, g.weather_flow.z);
-            let peak_storm = smoothstep(0.65, 0.99, g.weather_flow.z) * smoothstep(0.82, 0.99, g.shade.w);
-            // Preserve contrast across the playable map when the camera is above a storm.
-            // Leave distant scenery and sky rays free to show the volume at full opacity.
-            let town_view = 1.0 - smoothstep(130.0, 270.0, g.eye.w);
-            let distant = smoothstep(1550.0, 2800.0, limit);
-            cloud *= 1.0 - 0.40 * peak_storm * town_view * (1.0 - distant);
+            // Preserve contrast across the playable map below heavy clouds.
+            let distant = smoothstep(1350.0, 2600.0, limit);
+            let thick = smoothstep(0.43, 0.91, g.shade.w);
+            cloud *= 1.0 - thick * (0.18 + 0.33 * g.weather_flow.z) * (1.0 - distant);
         }
         cloud *= cloud_view;
     }
@@ -1437,38 +1415,37 @@ fn atmosphere(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
 
 @fragment
 fn fs_fog(e: EOut) -> @location(0) vec4<f32> {
-    let pixel = e.clip.xy * g.resolve.z;
+    let pixel = min(e.clip.xy * g.resolve.z, g.screen.xy - 0.5);
     // Match the ray to the middle of its footprint at standard resolution.
     let depth = aux_at(vec2<i32>(pixel), 0).x;
-    let volume = atmosphere(pixel, depth);
+    let volume = atmosphere(pixel, depth, false);
     return vec4<f32>(volume, min(depth, 65504.0));
 }
 
 fn atmosphere_at(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
-    if (g.resolve.z == 1.0) {
-        return textureLoad(fog_tex, vec2<i32>(pixel), 0).rgb;
-    }
     let uv = pixel / g.resolve.z - 0.5;
-    let base = vec2<i32>(floor(uv + 0.5));
-    let f = uv - vec2<f32>(base);
+    let base = vec2<i32>(floor(uv));
+    let f = fract(uv);
     let bound = vec2<i32>(textureDimensions(fog_tex)) - vec2<i32>(1);
     let comparable_depth = min(depth, 65504.0);
-    let tol = 1.0 + comparable_depth * 0.007;
+    let tol = 1.5 + comparable_depth * 0.012;
     var result = vec3<f32>(0.0);
     var weights = 0.0;
-    for (var y = -1; y <= 1; y++) {
-        for (var x = -1; x <= 1; x++) {
+    for (var y = 0; y <= 1; y++) {
+        for (var x = 0; x <= 1; x++) {
             let offset = vec2<i32>(x, y);
             let tap = textureLoad(fog_tex, clamp(base + offset, vec2<i32>(0), bound), 0);
-            let d = f - vec2<f32>(offset);
-            let spatial = exp2(-dot(d, d) * 1.8);
-            let weight = spatial * (1.0 - smoothstep(tol, 2.0 * tol, abs(tap.a - comparable_depth)));
+            let spatial = 1.0 - abs(f - vec2<f32>(offset));
+            let weight = spatial.x * spatial.y
+                * (1.0 - smoothstep(tol, 2.0 * tol, abs(tap.a - comparable_depth)));
             result += tap.rgb * weight;
             weights += weight;
         }
     }
     if (weights < 0.0001) {
-        return atmosphere(pixel, depth);
+        // Geometry edges without a matching low-resolution depth still need
+        // their own occlusion, but should never run another full-quality march.
+        return atmosphere(pixel, depth, true);
     }
     return result / weights;
 }
@@ -1564,7 +1541,8 @@ fn lightning_bolt(p: vec2<i32>, depth: f32) -> f32 {
 }
 
 fn near_geometry_light(p: vec2<i32>, centre: vec2<f32>) -> f32 {
-    if (centre.x > 1250.0) {
+    let contact = 1.0 - smoothstep(0.75, 1.9, centre.x * g.screen.z);
+    if (contact <= 0.0) {
         return 1.0;
     }
     let point = world_at(p, centre.x);
@@ -1603,11 +1581,11 @@ fn near_geometry_light(p: vec2<i32>, centre: vec2<f32>) -> f32 {
             }
         }
     }
-    return 1.0 - blocked * 0.049 - shade;
+    return 1.0 - (blocked * 0.049 + shade) * contact;
 }
 
-fn temporal_colour(colour: vec3<f32>, p: vec2<i32>, depth: f32) -> vec3<f32> {
-    if (g.temporal.x < 0.01 || depth > 65000.0) {
+fn temporal_colour(colour: vec3<f32>, p: vec2<i32>, depth: f32, volume: f32) -> vec3<f32> {
+    if (g.temporal.x < 0.01 || depth > 65000.0 || volume > 0.7) {
         return colour;
     }
     let world = world_at(p, depth);
@@ -1631,7 +1609,7 @@ fn temporal_colour(colour: vec3<f32>, p: vec2<i32>, depth: f32) -> vec3<f32> {
     }
     let clipped = clamp(previous.rgb, low - 0.020, high + 0.020);
     let change = length(clipped - colour);
-    let weight = g.temporal.x * (1.0 - smoothstep(0.13, 0.55, change));
+    let weight = g.temporal.x * (1.0 - smoothstep(0.13, 0.55, change)) * (1.0 - smoothstep(0.03, 0.7, volume));
     return mix(colour, clipped, weight);
 }
 
@@ -1684,7 +1662,7 @@ fn aerial_perspective(colour: vec3<f32>, p: vec2<i32>, depth: f32) -> vec3<f32> 
     }
     let extinction = 0.00014 + 0.00027 * g.shade.w + 0.00039 * drift;
     let opacity = (1.0 - exp(-max(0.0, depth - 210.0) * extinction)) * 0.68;
-    let sky = sky_radiance(g.eye.xyz, vec3<f32>(ray.xy, abs(ray.z) * 0.3));
+    let sky = sky_radiance(vec3<f32>(ray.xy, abs(ray.z) * 0.3));
     return mix(colour, sky * mix(g.tone.rgb, vec3<f32>(1.0), 0.27), opacity);
 }
 
@@ -1747,9 +1725,12 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
     if (g.look.z < 0.5 && g.weather_flow.w > 0.5) {
         col = tilt_focus(col, p);
     }
+    var volume_opacity = 0.0;
     if (g.look.z < 0.5 && (g.fog.w > 0.005 || g.shade.w > 0.12)) {
         let volume = atmosphere_at(vec2<f32>(p) + 0.5, centre.x);
-        let sun_glow = mix(vec3<f32>(0.53, 0.48, 0.40), vec3<f32>(0.48, 0.51, 0.55), g.shade.w);
+        volume_opacity = max(volume.r, volume.b);
+        let sun_height = smoothstep(0.04, 0.58, g.sun.z);
+        let sun_glow = mix(vec3<f32>(0.64, 0.43, 0.30), vec3<f32>(0.47, 0.51, 0.55), sun_height);
         col = mix(col, g.fog.rgb * 0.82, volume.r);
         let daylight = smoothstep(0.02, 0.37, g.sun.z);
         let ambient = mix(vec3<f32>(0.14, 0.21, 0.32), vec3<f32>(0.47, 0.53, 0.63), daylight)
@@ -1759,7 +1740,7 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
     if (g.lightning.z > 0.035 && g.look.z < 0.5) {
         col += vec3<f32>(0.75, 0.88, 1.0) * lightning_bolt(p, centre.x) * 2.5;
     }
-    return vec4<f32>(temporal_colour(col, p, centre.x), min(65000.0, centre.x));
+    return vec4<f32>(temporal_colour(col, p, centre.x, volume_opacity), min(65000.0, centre.x));
 }
 
 fn bright_pass(p: vec2<i32>) -> vec3<f32> {
@@ -1773,6 +1754,10 @@ fn fs_present(e: EOut) -> @location(0) vec4<f32> {
     let bounds = vec2<i32>(g.screen.xy) - vec2<i32>(1);
     let p = min(vec2<i32>(e.clip.xy * g.resolve.xy), bounds);
     var col = textureLoad(current_frame, p, 0).rgb;
+    if (any(g.resolve.xy < vec2<f32>(1.0))) {
+        let uv = e.clip.xy * g.resolve.xy / g.screen.xy;
+        col = textureSampleLevel(current_frame, terrain_sampler, uv, 0.0).rgb;
+    }
     if (g.temporal.y > 0.010) {
         let glow = array<vec2<i32>, 8>(vec2<i32>(-2, 0), vec2<i32>(2, 0), vec2<i32>(0, -2), vec2<i32>(0, 2),
             vec2<i32>(-4, -3), vec2<i32>(4, -3), vec2<i32>(-4, 3), vec2<i32>(4, 3));
