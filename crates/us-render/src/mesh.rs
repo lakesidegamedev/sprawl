@@ -1,7 +1,8 @@
 //! Vertex and mesh types shared by the CPU builders and the GPU renderer.
 
-use crate::obj::{Rgb, V3, newell};
+use crate::obj::{Finish, Rgb, V3, newell};
 use bytemuck::{Pod, Zeroable};
+use glam::Vec3;
 
 /// Outline id of ground: nothing draws an ink line between ground and ground.
 pub const ID_GROUND: u32 = 0;
@@ -13,7 +14,7 @@ pub const ID_NONE: u32 = 0x00FF_FFFF;
 pub struct Vertex {
     pub pos: [f32; 3],
     pub normal: [f32; 3],
-    /// rgb colour; alpha is 255 for a cel-toned face and 0 for a flat one.
+    /// RGB plus a finish code. Ordinary cel and flat faces use 255 and 0.
     pub color: [u8; 4],
     pub id: u32,
 }
@@ -33,8 +34,34 @@ impl Mesh {
         (self.cast.len() + self.plain.len()) / 3
     }
 
+    /// Exact world-space bounds, including any tower, antenna or crane.
+    pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
+        let first = Vec3::from(self.vertices.first()?.pos);
+        Some(
+            self.vertices
+                .iter()
+                .skip(1)
+                .fold((first, first), |(lo, hi), v| {
+                    let p = Vec3::from(v.pos);
+                    (lo.min(p), hi.max(p))
+                }),
+        )
+    }
+
     /// Add a convex polygon (fan triangulated). Degenerate polygons are dropped.
     pub fn push_poly(&mut self, pts: &[V3], color: Rgb, flat: bool, cast: bool, id: u32) {
+        self.push_finished_poly(pts, color, flat, cast, id, Finish::Plain);
+    }
+
+    pub(crate) fn push_finished_poly(
+        &mut self,
+        pts: &[V3],
+        color: Rgb,
+        flat: bool,
+        cast: bool,
+        id: u32,
+        finish: Finish,
+    ) {
         if pts.len() < 3 {
             return;
         }
@@ -43,7 +70,11 @@ impl Mesh {
             return;
         }
         let base = self.vertices.len() as u32;
-        let alpha = if flat { 0 } else { 255 };
+        let alpha = match (flat, finish) {
+            (true, _) => 0,
+            (false, Finish::Plain) => 255,
+            (false, finish) => finish as u8,
+        };
         for p in pts {
             self.vertices.push(Vertex {
                 pos: *p,

@@ -205,6 +205,12 @@ fn towers_require_a_mature_served_cluster() {
         sim.lots[j as usize].level = 3;
     }
     assert_eq!(sim.lot_cap(i, sim.population()), 5);
+    // A planned office parcel has no generator lot. Its zoning density must
+    // qualify it for the same skyline tier when the neighborhood supports it.
+    sim.rules.city_planning = true;
+    sim.lots[i].src = sim.town.lots.len() + i;
+    assert!(sim.is_planned_lot(i));
+    assert_eq!(sim.lot_cap(i, sim.population()), 5);
     sim.lot_value[i] = 0.62;
     assert_eq!(sim.lot_cap(i, sim.population()), 4);
     for service in [

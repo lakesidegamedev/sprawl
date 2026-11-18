@@ -1,10 +1,10 @@
 //! New neighborhood and skyline models. Every family has twelve seeded plans.
-use crate::obj::{Obj, Rgb};
+use crate::obj::{Finish, Obj, Rgb};
 use crate::parts::{GLASS, GLASS_D};
 use crate::rng::Rng;
 use us_gen::LotKind;
 
-pub const FAMILIES: [&str; 11] = [
+pub const FAMILIES: [&str; 13] = [
     "Single-wide homes",
     "Double-wide homes",
     "Courtyard bungalows",
@@ -16,6 +16,8 @@ pub const FAMILIES: [&str; 11] = [
     "Twin towers",
     "Curved towers",
     "Landmark spires",
+    "Offset atrium towers",
+    "Terraced residential towers",
 ];
 pub const PLANS: usize = 12;
 const CONCRETE: Rgb = [176, 173, 164];
@@ -29,10 +31,12 @@ pub(crate) fn lot(kind: LotKind, level: u8, density: f32, rng: &mut Rng) -> Opti
         LotKind::Row if rng.below(4) == 0 => 3,
         LotKind::Workshop | LotKind::Warehouse if rng.below(4) == 0 => 4,
         LotKind::Office | LotKind::Apartments if level >= 4 && density >= 0.78 => {
-            if level == 5 && density >= 0.985 && kind == LotKind::Office && rng.below(24) == 0 {
+            if level == 5 && density >= 0.97 && kind == LotKind::Office && rng.below(20) == 0 {
                 10
+            } else if kind == LotKind::Office {
+                [5, 6, 7, 9, 11][rng.below(5)]
             } else {
-                5 + rng.below(5)
+                [5, 7, 8, 9, 12][rng.below(5)]
             }
         }
         _ => return None,
@@ -87,6 +91,62 @@ fn floors(obj: &mut Obj, edges: &[[f32; 2]], start: f32, count: usize, storey: f
     }
 }
 
+fn finish_extrusion(
+    obj: &mut Obj,
+    ring: &[[f32; 2]],
+    base: f32,
+    top: f32,
+    wall: Rgb,
+    finish: Finish,
+) {
+    let first = obj.polys.len();
+    obj.extrude(ring, base, top, wall, ROOF);
+    for face in &mut obj.polys[first..first + ring.len()] {
+        face.finish = finish;
+    }
+    obj.polys[first + ring.len()].finish = Finish::Membrane;
+}
+
+/// Give broad exterior faces in the existing low-rise kit a material finish.
+pub(crate) fn finish_low_rise(obj: &mut Obj, kind: LotKind) {
+    let homes = matches!(kind, LotKind::House | LotKind::Row | LotKind::Apartments);
+    let factory = matches!(kind, LotKind::Workshop | LotKind::Warehouse);
+    if !(homes || factory || matches!(kind, LotKind::Shop | LotKind::Office)) {
+        return;
+    }
+    for face in &mut obj.polys {
+        if face.finish != Finish::Plain || face.flat || !face.shadow || face.solid.is_none() {
+            continue;
+        }
+        let n = crate::obj::newell(&face.pts);
+        let first = face.pts[0];
+        let (mut lo, mut hi) = (glam::Vec3::from(first), glam::Vec3::from(first));
+        for p in &face.pts[1..] {
+            lo = lo.min(glam::Vec3::from(*p));
+            hi = hi.max(glam::Vec3::from(*p));
+        }
+        let size = hi - lo;
+        if n[2] > 0.45 && lo.z >= 2.1 && size.x * size.y > 7.0 {
+            face.finish = if factory {
+                Finish::StandingSeam
+            } else if homes && (face.roof || n[2] < 0.96) {
+                Finish::Shingle
+            } else {
+                Finish::Membrane
+            };
+        } else if n[2].abs() < 0.10 && size.z >= 2.3 && size.truncate().length() > 2.7 {
+            let [r, g, b] = face.color;
+            face.finish = if r.saturating_sub(g) > 21 && g.saturating_sub(b) > 5 {
+                Finish::Brick
+            } else if homes && kind == LotKind::House && r.abs_diff(g) < 36 {
+                Finish::Siding
+            } else {
+                Finish::Stone
+            };
+        }
+    }
+}
+
 fn small(family: usize, plan: usize, wall: Rgb) -> Obj {
     let mut obj = Obj::new();
     let w = [5.5, 6.5, 5.9, 8.1, 9.2][family] + (plan % 4) as f32 * 0.66;
@@ -105,8 +165,14 @@ fn small(family: usize, plan: usize, wall: Rgb) -> Obj {
         CONCRETE,
     );
     let ring = rectangle(w, d);
-    obj.extrude(&ring, base, top, wall, ROOF);
+    let finish = match family {
+        0 | 1 => Finish::Siding,
+        3 | 4 => Finish::Brick,
+        _ => Finish::Stone,
+    };
+    finish_extrusion(&mut obj, &ring, base, top, wall, finish);
     floors(&mut obj, &ring, base, count, storey, 3 + plan % 4);
+    let roof_start = obj.polys.len();
     match plan / 4 {
         0 => {
             obj.gable(
@@ -135,6 +201,15 @@ fn small(family: usize, plan: usize, wall: Rgb) -> Obj {
                 top + 0.32,
                 ROOF,
             );
+        }
+    }
+    for face in &mut obj.polys[roof_start..] {
+        if crate::obj::newell(&face.pts)[2] > 0.42 {
+            face.finish = match (family, plan / 4) {
+                (_, 2) => Finish::Membrane,
+                (0 | 1 | 4, _) => Finish::StandingSeam,
+                _ => Finish::Shingle,
+            };
         }
     }
     if family == 2 || family == 3 {
@@ -196,19 +271,53 @@ fn tower(family: usize, plan: usize, level: u8, wall: Rgb) -> Obj {
     let count = if level < 5 {
         9 + plan % 4 + usize::from(family != 5)
     } else {
-        [28, 32, 38, 31, 34, 69][family - 5] + if family == 5 { 0 } else { plan % 4 }
+        [28, 36, 41, 34, 43, 76, 49, 42][family - 5] + if family == 5 { 0 } else { plan % 4 }
     };
-    let podium = rectangle(w + 1.2, d + 1.2);
-    obj.extrude(&podium, 0.0, storey * 2.0, CONCRETE, ROOF);
-    floors(&mut obj, &podium, 0.0, 2, storey, 4);
+    let base_depth = d + 1.15 + 0.30 * (plan % 3) as f32;
+    let podium = rectangle(w + 1.2, base_depth);
+    let street_wall = [CONCRETE, [145, 113, 99], [142, 152, 158]][plan % 3];
+    finish_extrusion(
+        &mut obj,
+        &podium,
+        0.0,
+        storey * 2.0,
+        street_wall,
+        Finish::Loft,
+    );
+    let entry = (plan % 3) as f32 * 1.2 - 1.2;
+    obj.bx(
+        entry - 2.5,
+        -base_depth - 1.2,
+        storey * 0.91,
+        entry + 2.5,
+        -base_depth,
+        storey * 0.98,
+        ROOF,
+    );
+    obj.wall_quad(
+        [entry - 1.2, -base_depth - 0.07],
+        [entry + 1.2, -base_depth - 0.07],
+        0.0,
+        storey * 0.82,
+        GLASS_D,
+    );
+    let facade = match family {
+        5 | 11 => Finish::RibbedGlass,
+        6 | 10 => Finish::Deco,
+        8 | 12 => Finish::Balconies,
+        _ => Finish::CurtainWall,
+    };
     let starts = [2, count * 2 / 3, count * 5 / 6];
     let ends = [count * 2 / 3, count * 5 / 6, count];
     let mut upper = w;
+    let mut crown_x = 0.0;
     for (index, (&from, &to)) in starts.iter().zip(ends.iter()).enumerate() {
         let shrink = match family {
             5 => 1.0,
             6 | 10 => 1.0 - index as f32 * 0.23,
             7 => 1.0 - index as f32 * (0.12 + plan as f32 * 0.005),
+            11 => 1.0 - index as f32 * 0.09,
+            12 => 1.0 - index as f32 * 0.21,
             _ => 1.0 - index as f32 * 0.13,
         };
         upper = w * shrink;
@@ -221,22 +330,27 @@ fn tower(family: usize, plan: usize, level: u8, wall: Rgb) -> Obj {
         let c = bevel(
             half,
             mid,
-            if family == 9 {
+            if matches!(family, 9 | 11) {
                 half.min(mid) * 0.45
             } else {
                 0.8
             },
         );
         let outline: &[[f32; 2]] = if family == 5 || family == 6 { &b } else { &c };
-        one.extrude(outline, z, h, wall, ROOF);
-        floors(
-            &mut one,
-            outline,
-            z,
-            to - from,
-            storey,
-            if family == 5 { 3 } else { 4 + plan % 2 },
-        );
+        finish_extrusion(&mut one, outline, z, h, wall, facade);
+        if family == 12 {
+            // Intermittent real terrace outlines keep the silhouette readable
+            // from a distance. Small balcony rails are part of the facade finish.
+            one.bx(
+                -half - 0.30,
+                -mid - 0.85,
+                h - 0.4,
+                half + 0.30,
+                -mid + 0.20,
+                h,
+                CONCRETE,
+            );
+        }
         if family == 6 || family == 10 {
             for x in [-half * 0.83, 0.0, half * 0.83] {
                 one.bx(
@@ -263,7 +377,12 @@ fn tower(family: usize, plan: usize, level: u8, wall: Rgb) -> Obj {
                 wall,
             );
         } else {
-            obj.add_placed(&one, 0.0, 0.0, 0.0);
+            crown_x = if family == 11 {
+                [0.0, -w * 0.17, w * 0.12][index] * if plan.is_multiple_of(2) { 1.0 } else { -1.0 }
+            } else {
+                0.0
+            };
+            obj.add_placed(&one, crown_x, 0.0, 0.0);
         }
     }
     let top = count as f32 * storey;
@@ -276,7 +395,11 @@ fn tower(family: usize, plan: usize, level: u8, wall: Rgb) -> Obj {
                 0.0,
                 0.0,
                 top + 7.0,
-                top + if family == 10 { 31.0 } else { 11.0 },
+                top + if family == 10 {
+                    39.0 + (plan % 3) as f32 * 4.0
+                } else {
+                    11.0
+                },
                 0.23,
                 CONCRETE,
                 6,
@@ -287,6 +410,19 @@ fn tower(family: usize, plan: usize, level: u8, wall: Rgb) -> Obj {
             for x in [-w * 0.55, w * 0.55] {
                 obj.bx(x - 0.9, -1.0, top, x + 0.9, 1.0, top + 3.2, ROOF);
             }
+        }
+        11 => {
+            let mut lantern = Obj::new();
+            let ring = bevel(upper * 0.64, d * 0.50, 0.65);
+            finish_extrusion(
+                &mut lantern,
+                &ring,
+                top,
+                top + 8.0,
+                wall,
+                Finish::CurtainWall,
+            );
+            obj.add_placed(&lantern, crown_x, 0.0, 0.0);
         }
         _ => {
             obj.bx(
@@ -305,13 +441,16 @@ fn tower(family: usize, plan: usize, level: u8, wall: Rgb) -> Obj {
 
 /// Create one of the measured architecture plans. Level five previews the full skyline form.
 pub fn build(family: usize, plan: usize, level: u8) -> Obj {
-    const WALLS: [Rgb; 6] = [
+    const WALLS: [Rgb; 9] = [
         [208, 199, 177],
         [163, 118, 97],
         [197, 176, 127],
         [119, 145, 158],
         [159, 165, 163],
         [131, 156, 153],
+        [176, 129, 127],
+        [161, 162, 190],
+        [198, 188, 153],
     ];
     let wall = WALLS[(family + plan * 5) % WALLS.len()];
     if family < 5 {

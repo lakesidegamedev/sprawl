@@ -28,6 +28,48 @@ impl Sit<'_> {
 pub type V3 = [f32; 3];
 pub type Rgb = [u8; 3];
 
+/// Architectural finish codes stored in the existing vertex colour alpha.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u8)]
+pub enum Finish {
+    #[default]
+    Plain = 0,
+    Siding = 240,
+    Brick = 241,
+    Stone = 242,
+    CurtainWall = 243,
+    Deco = 244,
+    Balconies = 245,
+    Loft = 246,
+    StandingSeam = 247,
+    Shingle = 248,
+    Membrane = 249,
+    RibbedGlass = 250,
+    DarkFacade = 251,
+}
+
+impl Finish {
+    pub(crate) fn has_facade(self) -> bool {
+        matches!(
+            self,
+            Self::CurtainWall
+                | Self::Deco
+                | Self::Balconies
+                | Self::Loft
+                | Self::RibbedGlass
+                | Self::DarkFacade
+        )
+    }
+
+    pub(crate) fn dark(self) -> Self {
+        if self.has_facade() {
+            Self::DarkFacade
+        } else {
+            self
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Poly {
     pub pts: Vec<V3>,
@@ -42,6 +84,7 @@ pub struct Poly {
     pub solid: Option<u32>,
     /// A sloping roof face.
     pub roof: bool,
+    pub finish: Finish,
 }
 
 /// A convex solid built from several polygons. `centre` lies inside it.
@@ -87,6 +130,7 @@ impl Obj {
             flat,
             solid: None,
             roof: false,
+            finish: Finish::Plain,
         });
         self
     }
@@ -100,6 +144,7 @@ impl Obj {
             flat: false,
             solid: Some(s),
             roof,
+            finish: Finish::Plain,
         });
     }
 
@@ -1011,7 +1056,7 @@ impl Obj {
             } else {
                 p.color
             };
-            mesh.push_poly(&pts, color, false, p.shadow, ID_NONE);
+            mesh.push_finished_poly(&pts, color, false, p.shadow, ID_NONE, p.finish);
         }
     }
 
@@ -1060,7 +1105,7 @@ impl Obj {
             } else {
                 ID_NONE
             };
-            mesh.push_poly(&pts, p.color, p.flat, p.shadow, id);
+            mesh.push_finished_poly(&pts, p.color, p.flat, p.shadow, id, p.finish);
         }
     }
 }

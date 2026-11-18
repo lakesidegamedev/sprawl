@@ -91,7 +91,7 @@ fn walls_and_tops(o: &Obj) -> (Vec<Wall>, Vec<Top>) {
             }
             continue;
         }
-        if n[2].abs() > 0.05 || solid == u32::MAX {
+        if n[2].abs() > 0.05 || solid == u32::MAX || p.finish.has_facade() {
             continue;
         }
         let low: Vec<&V3> = p.pts.iter().filter(|v| v[2] - zlo < 0.01).collect();
