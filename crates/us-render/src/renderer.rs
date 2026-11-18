@@ -2,6 +2,7 @@
 //! same picture. No UI or windowing code lives here.
 
 use crate::camera::{Camera, View};
+use crate::local_light::{self, LightGrid};
 use crate::mesh::{Mesh, VERTEX_BYTES};
 use crate::scene::Scene;
 use bytemuck::{Pod, Zeroable};
@@ -189,6 +190,8 @@ struct Globals {
     fog: [f32; 4],
     /// Terrain texture base height, height range, inverse map size, and inverse texture size.
     terrain: [f32; 4],
+    /// Lower tile coordinate and strength of local night lighting.
+    local_lights: [f32; 4],
     sun: [f32; 4],
     ink: [f32; 4],
     shade: [f32; 4],
@@ -268,6 +271,9 @@ pub struct Renderer {
     edge_layout: wgpu::PipelineLayout,
     fog_composite_layout: wgpu::BindGroupLayout,
     fog_sampler: wgpu::Sampler,
+    local_lights: LightGrid,
+    light_texture: wgpu::Texture,
+    light_view: wgpu::TextureView,
     fog_pipeline: wgpu::RenderPipeline,
     precipitation_pipeline: wgpu::RenderPipeline,
     main_pipeline: wgpu::RenderPipeline,
@@ -554,6 +560,15 @@ impl Renderer {
                     vf,
                     wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 ),
+                entry(
+                    5,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
             ],
         });
         let tex_unfilterable = wgpu::BindingType::Texture {
@@ -797,6 +812,17 @@ impl Renderer {
         };
         let compare = comparison_sampler(wgpu::FilterMode::Nearest);
         let compare_near = comparison_sampler(wgpu::FilterMode::Linear);
+        let light_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("local lights"),
+            size: light_extent(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let light_view = light_texture.create_view(&Default::default());
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
             size: std::mem::size_of::<Globals>() as u64,
@@ -831,6 +857,9 @@ impl Renderer {
             edge_layout,
             fog_composite_layout,
             fog_sampler,
+            local_lights: LightGrid::default(),
+            light_texture,
+            light_view,
             fog_pipeline,
             precipitation_pipeline,
             main_pipeline,
@@ -1419,6 +1448,37 @@ impl Renderer {
         };
         let rain = wl.rain.clamp(0.0, 1.0) * weather_fade;
         let snowing = wl.snowfall.clamp(0.0, 1.0) * weather_fade;
+        // moving things for this frame
+        let mut fi = scene.instances();
+        if style.lod {
+            // lamps farther than this are a few pixels tall: not worth drawing
+            let eye = view.eye;
+            fi.lamps
+                .retain(|l| Vec3::from(l.pos).distance_squared(eye) < LAMP_FAR * LAMP_FAR);
+        }
+        let night_lighting = if map_view {
+            0.0
+        } else {
+            lamps * (1.0 - ((camera.distance - 520.0) / 440.0).clamp(0.0, 1.0))
+        };
+        let night_lighting =
+            if night_lighting > 0.01 && !(fi.lamps.is_empty() && fi.cars.is_empty()) {
+                self.local_lights.build(camera.target, &fi.lamps, &fi.cars);
+                self.queue.write_texture(
+                    self.light_texture.as_image_copy(),
+                    self.local_lights.bytes(),
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(local_light::WIDTH * 16),
+                        rows_per_image: None,
+                    },
+                    light_extent(),
+                );
+                night_lighting
+            } else {
+                0.0
+            };
+        let origin = self.local_lights.origin();
         let globals = Globals {
             view_proj: view.view_proj.to_cols_array_2d(),
             light_vp: light_vp.to_cols_array_2d(),
@@ -1431,6 +1491,7 @@ impl Renderer {
                 land.size().max(1.0).recip(),
                 (land.n() as f32).recip(),
             ],
+            local_lights: [origin[0], origin[1], night_lighting, 0.0],
             sun: [sun.x, sun.y, sun.z, texel],
             ink: [
                 style.ink[0] as f32 / 255.0,
@@ -1469,14 +1530,6 @@ impl Renderer {
                 }
             }
             None => self.overlay_gpu = None,
-        }
-        // moving things for this frame
-        let mut fi = scene.instances();
-        if style.lod {
-            // lamps farther than this are a few pixels tall: not worth drawing
-            let eye = view.eye;
-            fi.lamps
-                .retain(|l| Vec3::from(l.pos).distance_squared(eye) < LAMP_FAR * LAMP_FAR);
         }
         let sets: [&[crate::instances::Instance]; 25] = [
             &fi.cars,
@@ -1564,6 +1617,10 @@ impl Renderer {
                 },
                 terrain_entries[0].clone(),
                 terrain_entries[1].clone(),
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&self.light_view),
+                },
             ],
         });
         // the shadow pass writes the shadow map, so it binds a stand-in for reading
@@ -1585,6 +1642,10 @@ impl Renderer {
                 },
                 terrain_entries[0].clone(),
                 terrain_entries[1].clone(),
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&self.light_view),
+                },
             ],
         });
         let tg = self.targets.as_ref().unwrap();
@@ -1844,6 +1905,14 @@ impl Renderer {
             pass.set_bind_group(2, Some(&tg.fog_composite), &[]);
             pass.draw(0..3, 0..1);
         }
+    }
+}
+
+fn light_extent() -> wgpu::Extent3d {
+    wgpu::Extent3d {
+        width: local_light::WIDTH,
+        height: local_light::HEIGHT,
+        depth_or_array_layers: 1,
     }
 }
 

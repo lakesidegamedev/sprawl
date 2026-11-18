@@ -4,7 +4,7 @@ use glam::Vec3;
 use us_gen::{Preset, generate};
 use us_render::kit::{self, ALL_KINDS};
 use us_render::obj::newell;
-use us_render::{Camera, Mesh, Renderer, Rng, Scene, Style, WeatherLook};
+use us_render::{Calendar, Camera, Mesh, Renderer, Rng, Scene, Style, WeatherLook};
 
 fn renderer() -> Option<Renderer> {
     match Renderer::new() {
@@ -153,6 +153,53 @@ fn world_precipitation_is_occluded_by_a_high_roof() {
             assert_eq!(dry.rgba == wet.rgba, covered, "rain {rain} snow {snowfall}");
         }
     }
+}
+
+#[test]
+fn night_windows_are_stable_when_outline_ids_change() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let target = Vec3::new(100.0, 100.0, 0.0);
+    let camera = Camera::framing(target, 130.0, 1.0, 0.0, 90.0);
+    let style = Style {
+        shadow_size: 128,
+        supersample: 1,
+        ..Style::default()
+    };
+    let mut draw = |start_id: u32, hour| {
+        let mut mesh = Mesh::default();
+        for i in 0..8 {
+            let x = i as f32 * 10.0 + 62.0;
+            let y = 100.0;
+            mesh.push_poly(
+                &[
+                    [x, y, 0.0],
+                    [x + 6.0, y, 0.0],
+                    [x + 6.0, y + 7.0, 0.0],
+                    [x, y + 7.0, 0.0],
+                ],
+                [98, 156, 204],
+                true,
+                false,
+                start_id + i,
+            );
+        }
+        let mut scene = Scene::dynamic(200.0, mesh, target);
+        scene.set_calendar(Some(Calendar::from_date(9, 12, hour)));
+        renderer
+            .render_to_rgba(&scene, &camera, &style, 160, 160)
+            .rgba
+    };
+    let evening = draw(20, 20.5);
+    assert_eq!(evening, draw(5199, 20.5));
+    assert!(
+        evening
+            .chunks_exact(4)
+            .any(|px| px[0] > 170 && px[0] > px[2])
+    );
+    let next = draw(20, 20.51);
+    assert!(evening.iter().zip(next).all(|(a, b)| a.abs_diff(b) < 12));
 }
 
 /// Every solid is watertight apart from its floor: the area-weighted normals sum to straight up.
