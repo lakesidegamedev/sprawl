@@ -148,6 +148,7 @@ impl Game {
                 self.close_sheets();
                 self.sel = Some(super::Sel::Lot(lot));
             } else {
+                self.sel = None;
                 self.open_build_for(kind);
             }
         }
