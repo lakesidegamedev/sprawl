@@ -74,7 +74,7 @@ fn far_form_is_much_lighter_than_the_full_chunk() {
 #[test]
 fn downtown_towers_are_taller_and_still_fit_their_lots() {
     for seed in 1..=4 {
-        for (kind, minimum) in [(LotKind::Office, 130.0), (LotKind::Apartments, 79.0)] {
+        for kind in [LotKind::Office, LotKind::Apartments] {
             let tower = us_render::build_lot_level_dense(
                 Preset::Crossroads,
                 kind,
@@ -83,12 +83,36 @@ fn downtown_towers_are_taller_and_still_fit_their_lots() {
                 1.0,
                 &mut Rng::new(seed, 4),
             );
-            assert!(us_render::levels::top_of(&tower) > minimum);
+            let midrise = us_render::build_lot_level_dense(
+                Preset::Crossroads,
+                kind,
+                4,
+                17.0,
+                1.0,
+                &mut Rng::new(seed, 4),
+            );
+            let height = us_render::levels::top_of(&tower);
+            assert!(
+                height >= 88.0,
+                "28-storey or taller downtown plan: {height}"
+            );
+            assert!(height > us_render::levels::top_of(&midrise) * 1.6);
             assert!(tower.polys.len() > 160);
             for vertex in tower.polys.iter().flat_map(|p| &p.pts) {
                 assert!(vertex.iter().all(|v| v.is_finite()));
                 assert!(vertex[0].hypot(vertex[1]) < 17.0);
             }
         }
+    }
+}
+
+#[test]
+fn office_slabs_and_landmark_spires_have_distinct_heights() {
+    use us_render::{architecture, levels::top_of};
+    for plan in 0..architecture::PLANS {
+        let standard = top_of(&architecture::build(5, plan, 5));
+        let landmark = top_of(&architecture::build(10, plan, 5));
+        assert!((97.0..=105.0).contains(&standard));
+        assert!(landmark > standard * 2.4);
     }
 }

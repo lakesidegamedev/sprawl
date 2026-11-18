@@ -15,12 +15,13 @@ const STONE_TOP: Rgb = [176, 172, 164];
 const STONE_FOOT: Rgb = [112, 100, 92];
 const WOOD: Rgb = [150, 112, 76];
 const WOOD_DARK: Rgb = [104, 76, 54];
+const COAST_ROCK: Rgb = [143, 138, 129];
 const BANDS: [Rgb; 5] = [
-    [152, 124, 98],
-    [180, 150, 112],
-    [122, 102, 86],
-    [194, 166, 126],
-    [142, 116, 94],
+    [140, 134, 122],
+    [169, 159, 143],
+    [133, 130, 121],
+    [176, 171, 156],
+    [152, 146, 136],
 ];
 const HULLS: [Rgb; 6] = [
     [236, 236, 232],
@@ -110,6 +111,8 @@ fn darker(c: Rgb, k: f32) -> Rgb {
 /// tone, each ending in a thin dark ledge, with an irregular outline that tapers, bulges and may
 /// lean. The top is a rounded cap of the cap colour.
 pub fn rock_pillar(o: &mut Obj, p: &Pillar, bands: &[Rgb; 5], foot: Rgb, cap: Rgb) {
+    let surfaces = o.polys.len();
+    let coastal = bands == &BANDS;
     let z0 = p.z0;
     let top = z0 + p.h;
     // talus skirt
@@ -124,7 +127,11 @@ pub fn rock_pillar(o: &mut Obj, p: &Pillar, bands: &[Rgb; 5], foot: Rgb, cap: Rg
     while z < top - 2.0 {
         let step = (p.band * (1.0 + 0.15 * (hash(p.tint as u64 + 31, k) % 7) as f32)).min(top - z);
         let (u0, u1) = ((z - z0) / p.h, (z + step - z0) / p.h);
-        let c = bands[(hash(p.tint as u64, k + 5) % bands.len() as u64) as usize];
+        let c = if coastal {
+            COAST_ROCK
+        } else {
+            bands[(hash(p.tint as u64, k + 5) % bands.len() as u64) as usize]
+        };
         // a stratum, then the dark ledge where it ends. Hard and soft layers weather back by
         // different amounts, so the width changes from one stratum to the next
         let jit = |k: u64| {
@@ -133,8 +140,9 @@ pub fn rock_pillar(o: &mut Obj, p: &Pillar, bands: &[Rgb; 5], foot: Rgb, cap: Rg
         let lo = pillar_ring(p, u0, jit(k));
         let hi = pillar_ring(p, u1, jit(k + 1));
         o.loft(&lo, z, &hi, z + step - 0.7, c, None);
-        let lip = pillar_ring(p, u1, 1.03 * jit(k + 1));
-        o.loft(&hi, z + step - 0.7, &lip, z + step, darker(c, 0.62), None);
+        let lip = pillar_ring(p, u1, 1.008 * jit(k + 1));
+        let seam = if coastal { c } else { darker(c, 0.89) };
+        o.loft(&hi, z + step - 0.7, &lip, z + step, seam, None);
         z += step;
         k += 1;
     }
@@ -144,13 +152,14 @@ pub fn rock_pillar(o: &mut Obj, p: &Pillar, bands: &[Rgb; 5], foot: Rgb, cap: Rg
     let crown = pillar_ring(p, 1.0, 0.62 * jt);
     let dome = (p.r * 0.25).min(p.h * 0.1);
     o.loft(&rim, top - 0.5, &crown, top + dome, cap, Some(cap));
+    for face in &mut o.polys[surfaces..] {
+        face.outline = false;
+    }
 }
 
-/// A natural arch: one banded sweep of rock that rises from the sea as a leg, bends over a rounded
-/// opening and comes down as the other leg, so the span is continuous with both. The section is a
-/// lumpy ellipse that is thick at the feet and thins to the crown, and the strata follow the
-/// sweep with a dark ledge between them.
-fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32, tint: usize, bands: &[Rgb; 5]) {
+/// One eroded span, with an irregular cross section that changes through the opening.
+fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32) {
+    let surfaces = o.polys.len();
     let foot = -3.0f32;
     let c = r * 0.66;
     let zs = foot + (h - foot) * 0.4;
@@ -178,8 +187,7 @@ fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32, tint: usize, bands: &[Rgb;
         cum.push(cum.last().unwrap() + d);
     }
     let total = *cum.last().unwrap();
-    let band = 8.0f32;
-    let n = (total / (band / 3.0)).ceil() as usize;
+    let n = (total / 3.2).ceil() as usize;
     let at = |len: f32| -> ([f32; 2], [f32; 2]) {
         let len = len.clamp(0.0, total);
         let i = cum.partition_point(|&x| x < len).clamp(1, dense.len() - 1);
@@ -192,7 +200,7 @@ fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32, tint: usize, bands: &[Rgb;
         (p, [(b[0] - a[0]) / l, (b[1] - a[1]) / l])
     };
     const SIDES: usize = 14;
-    let ring_at = |len: f32, swell: f32| -> Vec<[f32; 3]> {
+    let ring_at = |len: f32| -> Vec<[f32; 3]> {
         let (p, t) = at(len);
         let u = len / total;
         // 0 at the feet, 1 at the crown
@@ -210,28 +218,24 @@ fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32, tint: usize, bands: &[Rgb;
                     + 0.16 * libm::sinf(2.0 * a + phase + 6.0 * u)
                     + 0.09 * libm::sinf(3.0 * a + 2.0 * phase - 9.0 * u);
                 let (ca, sa) = (libm::cosf(a), libm::sinf(a));
-                let (e1, e2) = (
-                    wx * ca * lump * erode * swell,
-                    th * sa * lump * erode * swell,
-                );
-                [e1, p[0] + nrm[0] * e2, p[1] + nrm[1] * e2]
+                let (e1, e2) = (wx * ca * lump * erode, th * sa * lump * erode);
+                [
+                    e1 + r * 0.11 * libm::sinf(u * 8.0 + phase),
+                    p[0] + nrm[0] * e2,
+                    p[1] + nrm[1] * e2 + h * 0.072 * libm::sinf(u * 7.0 + phase) * mid,
+                ]
             })
             .collect()
     };
-    let mut prev = ring_at(0.0, 1.0);
+    let mut prev = ring_at(0.0);
     for k in 1..=n {
         let len = total * k as f32 / n as f32;
-        // a thin ledge at the end of each stratum, then the next stratum's tone
-        let seg = (len / band) as u64;
-        let ledge = (len % band) < band / 3.0;
-        let base = bands[(hash(tint as u64 + 31, seg) % bands.len() as u64) as usize];
-        let col = if ledge { darker(base, 0.62) } else { base };
-        let col = if (len / total - 0.5).abs() > 0.5 - 0.06 {
+        let col = if (len / total - 0.5).abs() > 0.47 {
             STONE_FOOT
         } else {
-            col
+            COAST_ROCK
         };
-        let cur = ring_at(len, if ledge { 1.04 } else { 1.0 });
+        let cur = ring_at(len);
         // one solid per slice, so each face is turned away from the middle of its own slice
         let m = (prev.len() + cur.len()) as f32;
         let mid = [0, 1, 2].map(|d| prev.iter().chain(cur.iter()).map(|p| p[d]).sum::<f32>() / m);
@@ -250,24 +254,9 @@ fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32, tint: usize, bands: &[Rgb;
         }
         prev = cur;
     }
-    // a little grass on the crown
-    let (cp, _) = at(total * 0.5);
-    let top = cp[1] + crown_th * 0.9;
-    let rim: Vec<[f32; 2]> = (0..10)
-        .map(|k| {
-            let a = std::f32::consts::TAU * k as f32 / 10.0;
-            [wx0 * 0.4 * libm::cosf(a), c * 0.34 * libm::sinf(a)]
-        })
-        .collect();
-    let crown: Vec<[f32; 2]> = rim.iter().map(|p| [p[0] * 0.7, p[1] * 0.7]).collect();
-    o.loft(
-        &rim,
-        top - 1.4,
-        &crown,
-        top + 1.2,
-        [104, 142, 88],
-        Some([104, 142, 88]),
-    );
+    for face in &mut o.polys[surfaces..] {
+        face.outline = false;
+    }
 }
 
 fn boat(size: u8, seed: u64) -> Obj {
@@ -469,7 +458,7 @@ pub fn add(mesh: &mut Mesh, land: &Land, t: &Town) {
             notch: 0.0,
         };
         if s.arch {
-            rock_arch(&mut o, s.r as f32, h, phase, i, &BANDS);
+            rock_arch(&mut o, s.r as f32, h, phase);
         } else {
             let lean = [
                 lean_len * libm::cosf(lean_dir),

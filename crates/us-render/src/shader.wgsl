@@ -393,12 +393,9 @@ fn season_ground(c: vec3<f32>, season: i32) -> vec3<f32> {
 }
 
 // Leaf colour for spring (some trees in blossom) and summer (deeper green).
-fn season_leaf(step: i32, dark: bool, season: i32) -> vec3<f32> {
+fn season_leaf(dark: bool, season: i32) -> vec3<f32> {
     if (season == 2) {
-        if (step == 3) {
-            if (dark) { return vec3<f32>(226.0, 142.0, 176.0) / 255.0; }
-            return vec3<f32>(244.0, 176.0, 198.0) / 255.0;
-        }
+
         if (dark) { return vec3<f32>(92.0, 158.0, 74.0) / 255.0; }
         return vec3<f32>(116.0, 180.0, 86.0) / 255.0;
     }
@@ -657,7 +654,7 @@ fn groundcover_palette(step: i32, season: i32) -> vec3<f32> {
 fn leaf_palette(base: vec3<f32>, step: i32, dark: bool, season: i32) -> vec3<f32> {
     if (season == 1) { return autumn_leaf(step, dark); }
     if (season == 0) { return base; }
-    return season_leaf(step, dark, season);
+    return season_leaf(dark, season);
 }
 
 @fragment
@@ -676,6 +673,7 @@ fn fs_main(v: VOut) -> FOut {
     let keep = a > 0.001 && a < 0.999;
     let ground = v.id == 0u;
     let exempt = v.id == 16777215u;
+    let coastal_rock = !ground && near(col, 143.0, 138.0, 129.0);
     if (v.tint != 0u) {
         if (near(col, 255.0, 0.0, 255.0)) {
             col = vec3<f32>(f32((v.tint >> 16u) & 255u), f32((v.tint >> 8u) & 255u), f32(v.tint & 255u)) / 255.0;
@@ -699,6 +697,10 @@ fn fs_main(v: VOut) -> FOut {
             l = dot(n, g.sun.xyz);
         }
         col = terrain_look(v.world, n, col);
+    }
+    if (coastal_rock && g.look.z < 0.5) {
+        let wall_normal = normalize(vec3<f32>(n.xy, 0.28));
+        col = terrain_look(v.world, wall_normal, col);
     }
     var emissive = false;
     let season = i32(g.look.x + 0.5);
@@ -775,6 +777,11 @@ fn fs_main(v: VOut) -> FOut {
                 let step = max(s1, s2);
                 let dark = s2 >= 0;
                 col = mix(leaf_palette(col, step, dark, previous), leaf_palette(col, step, dark, season), season_phase(v.world));
+                if (step == 3) {
+                    let spring = mix(f32(previous == 2), f32(season == 2), season_phase(v.world));
+                    let blossom = smoothstep(0.69, 0.82, vnoise(v.room_anchor.xy * 0.083));
+                    col = mix(col, vec3<f32>(0.79, 0.62, 0.66), spring * blossom * 0.76);
+                }
                 let foliage = vnoise(v.world.xy * 0.95 + v.world.z * 0.63);
                 col = col * (0.86 + foliage * 0.29);
             }
@@ -839,7 +846,7 @@ fn fs_main(v: VOut) -> FOut {
         col = textured_surface(col, v.color.rgb, v.world, n, g.screen.z * v.dist, cel, !ground && !exempt);
     }
     var k = 1.0;
-    if (cel && ground && wkind == 0) {
+    if (cel && (ground || coastal_rock) && wkind == 0) {
         // hillshade: stepped tones by how the slope faces the sun compared with level ground
         var d = l - g.sun.z;
         if (g.rock[7].z > 0.5) {
