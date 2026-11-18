@@ -12,7 +12,7 @@
 - Streets have clearer arterial markings, textured asphalt and paving, larger tree canopies, more roadside planting and more detailed grass, roofs and brick. Rail crossings show sleepers and brighter railheads.
 - Season colours change over four game weeks. Rain follows the wind and ripples in puddles. Roads stay wet as the sky clears.
 - Civic buildings snap beside open streets. The placement preview shows where the building will go before you pay.
-- Towns start with more water, power, school seats and clinic capacity. Water towers, power plants, schools and clinics cost less to build.
+- Towns start with more water, power, school seats and clinic capacity. Water towers, power plants, schools and clinics cost less to build. Buildings reopening or rebuilding reserve capacity just like new construction.
 
 ### For developers
 

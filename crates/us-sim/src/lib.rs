@@ -895,7 +895,12 @@ impl Sim {
         };
         let li = self.vacant.swap_remove(vi);
         let kind = self.lots[li].kind;
-        let level = self.start_level(li);
+        let preferred = self.start_level(li);
+        let level = if Sim::fits_room(room, kind, preferred) {
+            preferred
+        } else {
+            1
+        };
         self.take_units(kind, Sim::units_at(kind, level));
         Sim::use_room(room, kind, level);
         if level > 1 {
@@ -970,6 +975,7 @@ impl Sim {
 
         // abandonment, recovery and clearing: each lot answers to its own class's rate; the
         // poorest land goes first
+        let mut recovery_room = None;
         for i in 0..self.lots.len() {
             let l = &self.lots[i];
             let rate = self.lot_rate_eff_x10(i);
@@ -989,6 +995,11 @@ impl Sim {
                         let no_work =
                             self.jobless && class_of(self.lots[i].kind) == Some(Class::Homes);
                         if !no_work && roll(self.seed ^ 0xbeef, i as u64, day as u64) < 0.01 {
+                            let room = recovery_room.get_or_insert_with(|| self.start_room());
+                            if !Sim::fits_room(room, l.kind, l.level) {
+                                continue;
+                            }
+                            Sim::use_room(room, l.kind, l.level);
                             self.lots[i].phase = Phase::Built {
                                 since: day,
                                 tax_x10: rate,

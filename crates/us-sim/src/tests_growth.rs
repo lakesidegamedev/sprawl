@@ -424,20 +424,24 @@ fn the_first_fire_in_a_town_without_a_station_says_so() {
 fn growth_stops_when_demand_reaches_supply_not_a_month_later() {
     for (p, t) in TOWNS {
         let mut s = untended(p, t);
-        let mut worst = 0.0f64;
+        let mut worst = (0.0f64, Capacity::Water, 0, 0, 0);
         for _ in 0..365 * 3 {
             s.step_day();
             for c in Capacity::ALL {
                 let st = s.capacity_with(c, false);
-                if st.supply > 0 {
-                    worst = worst.max(st.ratio());
+                if st.supply > 0 && st.ratio() > worst.0 {
+                    worst = (st.ratio(), c, s.day, st.demand, st.supply);
                 }
             }
         }
         assert!(
-            worst <= 1.10,
-            "{p:?}: a capacity reached {:.0}% of its supply",
-            worst * 100.0
+            worst.0 <= 1.10,
+            "{p:?}: {:?} reached {:.1}% on day {} ({} used, {} supplied)",
+            worst.1,
+            worst.0 * 100.0,
+            worst.2,
+            worst.3,
+            worst.4
         );
     }
 }
