@@ -1024,7 +1024,7 @@ impl State {
             if !cfg!(any(target_os = "ios", target_os = "android")) {
                 ui.checkbox(
                     &mut self.settings.detailed_graphics,
-                    "Detailed fog and surfaces",
+                    "Detailed atmosphere and surfaces",
                 );
             }
             label(ui, "Day and night", 14.0);

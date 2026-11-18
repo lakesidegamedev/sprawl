@@ -1,8 +1,7 @@
 //! us-render: draws a generated Urban Sprawl town in 3D in a cel look.
 //!
-//! Flat colour per face in three stepped tones, ink outlines on every building edge, hard
-//! shadows from one sun. Nothing soft: no fog, glow, bloom or haze. The crate has no UI or
-//! windowing code; it renders offscreen to RGBA, or into a host surface through
+//! Draws textured terrain and buildings, day and night lighting, and world-space weather.
+//! The crate renders offscreen to RGBA or into a host surface through
 //! [`SurfaceTarget`].
 //!
 //! Headless renders use whatever adapter wgpu finds; on a machine without a GPU that is the

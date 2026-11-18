@@ -38,7 +38,7 @@ pub struct Style {
     pub lod: bool,
     /// Scale of world render targets on window surfaces. The UI stays native.
     pub window_world_scale: f32,
-    /// Full-resolution fog with finer volume sampling and surface detail.
+    /// Full-resolution atmospheric effects with finer volume sampling and surface detail.
     pub high_detail: bool,
 }
 
@@ -989,13 +989,22 @@ impl Renderer {
             height: n as u32,
             depth_or_array_layers: 1,
         };
-        // Two filterable UNORM channels preserve 16 bits of elevation on mobile GPUs.
-        let mut bytes = Vec::with_capacity(n * n * 2);
+        // Store elevation and the relative depth of nearby hollows in one filtered lookup.
+        let mut bytes = Vec::with_capacity(n * n * 4);
         for y in 0..n {
             for x in 0..n {
-                let h = land.height(x as f32 * land.step(), y as f32 * land.step());
+                let x = x as f32 * land.step();
+                let y = y as f32 * land.step();
+                let h = land.height(x, y);
+                let around = (land.height(x + 24.0, y)
+                    + land.height(x - 24.0, y)
+                    + land.height(x, y + 24.0)
+                    + land.height(x, y - 24.0))
+                    * 0.25;
+                let hollow = ((around - h + 6.0) / 11.0).clamp(0.0, 1.0);
                 let value = ((h - base) / range * 65535.0).round() as u16;
                 bytes.extend(value.to_be_bytes());
+                bytes.extend([(hollow * 255.0).round() as u8, 255]);
             }
         }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1004,7 +1013,7 @@ impl Renderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rg8Unorm,
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -1013,7 +1022,7 @@ impl Renderer {
             &bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(size.width * 2),
+                bytes_per_row: Some(size.width * 4),
                 rows_per_image: None,
             },
             size,
@@ -1908,9 +1917,9 @@ impl Renderer {
                 pass.draw(0..6, 0..36 * 36 * 12);
             }
         }
-        if fog_density > 0.005 {
+        if !map_view && (fog_density > 0.005 || oc > 0.12) {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("ground fog volume"),
+                label: Some("fog and cloud volume"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &tg.fog_view,
                     depth_slice: None,
