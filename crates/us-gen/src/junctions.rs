@@ -298,6 +298,35 @@ pub fn ramps(drafts: &mut Vec<Draft>, terrain: &Terrain, wet: &[Vec<Pt>]) {
     }
 }
 
+/// The allowed direction of a generated slip lane, relative to its point order.
+/// Returns `None` for a road without the ramp template.
+pub fn slip_lane_forward(line: &[Pt], highways: &[&[Pt]]) -> Option<bool> {
+    if line.len() != 15 {
+        return None;
+    }
+    for (on, near, other, forward) in [
+        (line[0], line[1], line[14], true),
+        (line[14], line[13], line[0], false),
+    ] {
+        for &highway in highways.iter().filter(|h| h.len() >= 2) {
+            let (_, distance, _) = project(highway, on);
+            if distance > 1.5 || project(highway, other).1 < 28.0 {
+                continue;
+            }
+            let (along, distance, centre) = project(highway, near);
+            let (_, tangent) = interpolate(highway, along);
+            let heading = (near - on).unit();
+            if !(7.0..=27.0).contains(&distance) || heading.dot(tangent).abs() < 0.75 {
+                continue;
+            }
+            let on_right = pt(tangent.y, -tangent.x).dot(near - centre) > 0.0;
+            let away_from_highway = (heading.dot(tangent) > 0.0) == on_right;
+            return Some(away_from_highway == forward);
+        }
+    }
+    None
+}
+
 /// A cul-de-sac whose tip is close to another street, with open ground between, is joined to
 /// it. It stops being a dead end.
 pub fn link_culs(drafts: &mut [Draft], additions: &[Addition]) {

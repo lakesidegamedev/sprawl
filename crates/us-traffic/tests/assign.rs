@@ -1,7 +1,7 @@
 //! Assignment checks that do not trust the assignment's own bookkeeping.
 
 use us_gen::{Preset, RoadClass, generate, pt};
-use us_metrics::graph::{Street, StreetGraph};
+use us_metrics::graph::{Street, StreetGraph, Travel};
 use us_traffic::{AssignParams, Demand, DemandParams, Network, Zone, assign, class_capacity};
 
 fn town_case(preset: Preset, seed: u64) -> (Network, Demand) {
@@ -82,6 +82,7 @@ fn two_parallel_roads_reach_wardrop_equilibrium() {
                 a: 0,
                 b: 1,
                 class: RoadClass::Local,
+                travel: Travel::Both,
                 len: 1000.0,
                 pts: vec![a, b],
             },
@@ -89,6 +90,7 @@ fn two_parallel_roads_reach_wardrop_equilibrium() {
                 a: 0,
                 b: 1,
                 class: RoadClass::Arterial,
+                travel: Travel::Both,
                 len: 1280.0,
                 pts: vec![a, mid, b],
             },

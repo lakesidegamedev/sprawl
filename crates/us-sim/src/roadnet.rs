@@ -2,7 +2,7 @@
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use us_gen::{Pt, RoadClass};
+use us_gen::{Pt, RoadClass, Town};
 use us_traffic::{Network, NodeGrid};
 
 pub(crate) struct RoadNet {
@@ -12,9 +12,10 @@ pub(crate) struct RoadNet {
 
 impl RoadNet {
     /// Build from the roads that exist now.
-    pub fn build(roads: &[(RoadClass, Vec<Pt>)]) -> RoadNet {
-        let g = us_metrics::roads_graph(roads.iter().map(|(c, p)| (*c, p.as_slice())))
-            .without(&[RoadClass::Alley, RoadClass::Rail]);
+    pub fn build(town: &Town, roads: &[(RoadClass, Vec<Pt>)]) -> RoadNet {
+        let g =
+            us_metrics::terrain_roads_graph(town, roads.iter().map(|(c, p)| (*c, p.as_slice())))
+                .without(&[RoadClass::Alley, RoadClass::Rail]);
         let net = Network::from_streets(g.contract());
         let grid = net.node_grid();
         RoadNet { net, grid }
@@ -70,14 +71,14 @@ const SIREN_BOOST: f64 = 1.35;
 
 /// Fastest routes from one junction, by travel time with sirens.
 pub(crate) struct Tree {
-    /// Seconds from the source to each node, `f32::MAX` when out of reach.
+    /// Seconds from each node to the incident, or `f32::MAX` if unreachable.
     pub secs: Vec<f32>,
-    /// The arc each node was reached by, `u32::MAX` for the source and unreached nodes.
+    /// Next arc toward the incident, or `u32::MAX` at the incident or if unreachable.
     pred: Vec<u32>,
 }
 
 impl RoadNet {
-    /// Fastest travel time in seconds from `src` to every node within `limit` seconds.
+    /// Fastest travel time in seconds toward the incident within `limit` seconds.
     pub fn tree(&self, src: u32, limit: f64) -> Tree {
         let n = self.net.n_nodes();
         let mut dist = vec![u64::MAX; n];
@@ -91,16 +92,16 @@ impl RoadNet {
                 continue;
             }
             let (a, b) = (
-                self.net.off[u as usize] as usize,
-                self.net.off[u as usize + 1] as usize,
+                self.net.in_off[u as usize] as usize,
+                self.net.in_off[u as usize + 1] as usize,
             );
-            for &ai in &self.net.out[a..b] {
+            for &ai in &self.net.incoming[a..b] {
                 let arc = &self.net.arcs[ai as usize];
                 let nd = d + (arc.t0 / SIREN_BOOST * 100.0) as u64;
-                if nd <= cap && nd < dist[arc.to as usize] {
-                    dist[arc.to as usize] = nd;
-                    pred[arc.to as usize] = ai;
-                    heap.push(Reverse((nd, arc.to)));
+                if nd <= cap && nd < dist[arc.from as usize] {
+                    dist[arc.from as usize] = nd;
+                    pred[arc.from as usize] = ai;
+                    heap.push(Reverse((nd, arc.from)));
                 }
             }
         }
@@ -129,14 +130,12 @@ impl RoadNet {
             let ai = tree.pred[at as usize] as usize;
             let arc = &self.net.arcs[ai];
             let e = &self.net.streets.edges[arc.street as usize];
-            // the arc ran from `arc.from` to `at`; we travel it backwards
             if ai.is_multiple_of(2) {
-                // a to b was the way the source side came: we go b to a
-                out.extend(e.pts.iter().rev().copied());
-            } else {
                 out.extend(e.pts.iter().copied());
+            } else {
+                out.extend(e.pts.iter().rev().copied());
             }
-            at = arc.from;
+            at = arc.to;
         }
         out
     }

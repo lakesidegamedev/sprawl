@@ -8,11 +8,44 @@
 use std::collections::{BTreeMap, HashMap};
 use us_gen::{Pt, RoadClass};
 
+/// Maximum height difference that can still be a junction.
+const JOIN_HEIGHT_M: f64 = 1.25;
+
+/// Permitted travel along a centerline's point order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Travel {
+    Both,
+    Forward,
+    Reverse,
+}
+
+impl Travel {
+    pub fn reversed(self) -> Self {
+        match self {
+            Self::Both => Self::Both,
+            Self::Forward => Self::Reverse,
+            Self::Reverse => Self::Forward,
+        }
+    }
+
+    pub fn allows_forward(self) -> bool {
+        self != Self::Reverse
+    }
+}
+
+/// A road centerline and its clearance above the terrain at each vertex.
+pub struct GradedLine {
+    pub class: RoadClass,
+    pub points: Vec<(Pt, f64)>,
+    pub travel: Travel,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Edge {
     pub a: u32,
     pub b: u32,
     pub class: RoadClass,
+    pub travel: Travel,
     pub len: f64,
 }
 
@@ -28,6 +61,7 @@ pub struct Street {
     pub a: u32,
     pub b: u32,
     pub class: RoadClass,
+    pub travel: Travel,
     pub len: f64,
     /// Polyline from node `a` to node `b`.
     pub pts: Vec<Pt>,
@@ -54,6 +88,7 @@ pub fn rank(c: RoadClass) -> u8 {
 struct Snap {
     tol: f64,
     pts: Vec<Pt>,
+    elevations: Vec<f64>,
     map: HashMap<(i64, i64), Vec<u32>>,
 }
 
@@ -64,13 +99,15 @@ impl Snap {
             (p.y / self.tol).floor() as i64,
         )
     }
-    fn get(&mut self, p: Pt) -> u32 {
+    fn get(&mut self, p: Pt, elevation: f64) -> u32 {
         let (kx, ky) = self.key(p);
         for dx in -1..=1 {
             for dy in -1..=1 {
                 if let Some(v) = self.map.get(&(kx + dx, ky + dy)) {
                     for &i in v {
-                        if self.pts[i as usize].dist(p) <= self.tol {
+                        if self.pts[i as usize].dist(p) <= self.tol
+                            && (self.elevations[i as usize] - elevation).abs() <= JOIN_HEIGHT_M
+                        {
                             return i;
                         }
                     }
@@ -79,6 +116,7 @@ impl Snap {
         }
         let id = self.pts.len() as u32;
         self.pts.push(p);
+        self.elevations.push(elevation);
         self.map.entry((kx, ky)).or_default().push(id);
         id
     }
@@ -87,7 +125,15 @@ impl Snap {
 struct Seg {
     a: Pt,
     b: Pt,
+    elevation: [f64; 2],
     class: RoadClass,
+    travel: Travel,
+}
+
+impl Seg {
+    fn height(&self, t: f64) -> f64 {
+        self.elevation[0] + (self.elevation[1] - self.elevation[0]) * t
+    }
 }
 
 fn closest_param(p: Pt, a: Pt, b: Pt) -> (f64, f64) {
@@ -113,11 +159,39 @@ pub fn build(lines: &[(RoadClass, Vec<Pt>)], tol: f64, intersect: bool) -> Graph
                 segs.push(Seg {
                     a: w[0],
                     b: w[1],
+                    elevation: [0.0; 2],
                     class: *class,
+                    travel: Travel::Both,
                 });
             }
         }
     }
+    build_segments(segs, tol, intersect)
+}
+
+/// Node roads only where their horizontal positions and heights meet. The returned
+/// planar coordinates can repeat at distinct junctions on different levels.
+pub fn build_graded(lines: &[GradedLine], tol: f64) -> Graph {
+    let segs = lines
+        .iter()
+        .filter(|line| line.class != RoadClass::Rail)
+        .flat_map(|line| {
+            line.points.windows(2).filter_map(move |w| {
+                let [(a, za), (b, zb)] = [w[0], w[1]];
+                (a.dist(b) > 1e-6).then_some(Seg {
+                    a,
+                    b,
+                    elevation: [za, zb],
+                    class: line.class,
+                    travel: line.travel,
+                })
+            })
+        })
+        .collect();
+    build_segments(segs, tol, true)
+}
+
+fn build_segments(segs: Vec<Seg>, tol: f64, intersect: bool) -> Graph {
     let n = segs.len();
     let mut splits: Vec<Vec<f64>> = vec![vec![0.0, 1.0]; n];
     if intersect && n > 0 {
@@ -159,9 +233,10 @@ pub fn build(lines: &[(RoadClass, Vec<Pt>)], tol: f64, intersect: bool) -> Graph
     let mut snap = Snap {
         tol,
         pts: Vec::new(),
+        elevations: Vec::new(),
         map: HashMap::new(),
     };
-    let mut emap: BTreeMap<(u32, u32), RoadClass> = BTreeMap::new();
+    let mut emap: BTreeMap<(u32, u32), (RoadClass, Travel)> = BTreeMap::new();
     for (i, s) in segs.iter().enumerate() {
         let sp = &mut splits[i];
         sp.sort_by(|a, b| a.total_cmp(b));
@@ -173,14 +248,21 @@ pub fn build(lines: &[(RoadClass, Vec<Pt>)], tol: f64, intersect: bool) -> Graph
             }
             last_t = t;
             let p = s.a.lerp(s.b, t);
-            let id = snap.get(p);
+            let id = snap.get(p, s.height(t));
             if let Some(pv) = prev
                 && pv != id
             {
                 let key = (pv.min(id), pv.max(id));
-                let e = emap.entry(key).or_insert(s.class);
-                if rank(s.class) > rank(*e) {
-                    *e = s.class;
+                let travel = if pv < id {
+                    s.travel
+                } else {
+                    s.travel.reversed()
+                };
+                let e = emap.entry(key).or_insert((s.class, travel));
+                if rank(s.class) > rank(e.0) {
+                    *e = (s.class, travel);
+                } else if s.class == e.0 && travel != e.1 {
+                    e.1 = Travel::Both;
                 }
             }
             prev = Some(id);
@@ -188,10 +270,11 @@ pub fn build(lines: &[(RoadClass, Vec<Pt>)], tol: f64, intersect: bool) -> Graph
     }
     let edges = emap
         .into_iter()
-        .map(|((a, b), class)| Edge {
+        .map(|((a, b), (class, travel))| Edge {
             a,
             b,
             class,
+            travel,
             len: snap.pts[a as usize].dist(snap.pts[b as usize]),
         })
         .collect();
@@ -204,6 +287,9 @@ pub fn build(lines: &[(RoadClass, Vec<Pt>)], tol: f64, intersect: bool) -> Graph
 fn node_pair(segs: &[Seg], i: usize, j: usize, tol: f64, splits: &mut [Vec<f64>]) {
     let (a, b) = (segs[i].a, segs[i].b);
     let (c, d) = (segs[j].a, segs[j].b);
+    // Heights are measured from the same terrain surface, so only their
+    // relative separation is needed at a shared horizontal coordinate.
+    let same_level = |u, v| (segs[i].height(u) - segs[j].height(v)).abs() <= JOIN_HEIGHT_M;
     // crossing
     let r = b - a;
     let s = d - c;
@@ -212,7 +298,7 @@ fn node_pair(segs: &[Seg], i: usize, j: usize, tol: f64, splits: &mut [Vec<f64>]
         let qp = c - a;
         let t = qp.cross(s) / den;
         let u = qp.cross(r) / den;
-        if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
+        if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) && same_level(t, u) {
             splits[i].push(t);
             splits[j].push(u);
         }
@@ -220,7 +306,7 @@ fn node_pair(segs: &[Seg], i: usize, j: usize, tol: f64, splits: &mut [Vec<f64>]
     // ends touching the other segment within tolerance
     for (p, t_self) in [(a, 0.0), (b, 1.0)] {
         let (u, dist) = closest_param(p, c, d);
-        if dist <= tol {
+        if dist <= tol && same_level(t_self, u) {
             splits[j].push(u);
             splits[i].push(t_self);
         }
@@ -282,6 +368,13 @@ impl Graph {
     /// Merge degree 2 chains of one class into streets. Nodes that remain are junctions, dead
     /// ends and class changes. Output node and edge order is deterministic.
     pub fn contract(&self) -> StreetGraph {
+        let outward = |edge: Edge, node: u32| {
+            if edge.a == node {
+                edge.travel
+            } else {
+                edge.travel.reversed()
+            }
+        };
         let (off, adj) = self.csr();
         let nn = self.nodes.len();
         let keep: Vec<bool> = (0..nn)
@@ -289,19 +382,25 @@ impl Graph {
                 let s = &adj[off[n] as usize..off[n + 1] as usize];
                 match s.len() {
                     0 => false,
-                    2 => self.edges[s[0].1 as usize].class != self.edges[s[1].1 as usize].class,
+                    2 => {
+                        let first = self.edges[s[0].1 as usize];
+                        let second = self.edges[s[1].1 as usize];
+                        first.class != second.class
+                            || outward(first, n as u32) != outward(second, n as u32).reversed()
+                    }
                     _ => true,
                 }
             })
             .collect();
         let mut keep = keep;
         let mut used = vec![false; self.edges.len()];
-        let mut out_edges: Vec<(u32, u32, RoadClass, Vec<Pt>)> = Vec::new();
+        let mut out_edges = Vec::new();
         let walk = |start: u32, first: u32, keep: &[bool], used: &mut Vec<bool>| {
             let mut pts = vec![self.nodes[start as usize]];
             let mut cur = start;
             let mut e = first;
             let class = self.edges[e as usize].class;
+            let travel = outward(self.edges[e as usize], start);
             loop {
                 used[e as usize] = true;
                 let ed = &self.edges[e as usize];
@@ -320,7 +419,7 @@ impl Graph {
                 }
                 e = ne;
             }
-            (start, cur, class, pts)
+            (start, cur, class, travel, pts)
         };
         for n in 0..nn {
             if !keep[n] {
@@ -344,7 +443,7 @@ impl Graph {
         let mut remap: Vec<i64> = vec![-1; nn];
         let mut nodes: Vec<Pt> = Vec::new();
         let mut edges: Vec<Street> = Vec::new();
-        for (a, b, class, pts) in out_edges {
+        for (a, b, class, travel, pts) in out_edges {
             let mut id = |n: u32| -> u32 {
                 if remap[n as usize] < 0 {
                     remap[n as usize] = nodes.len() as i64;
@@ -358,6 +457,7 @@ impl Graph {
                 a: a2,
                 b: b2,
                 class,
+                travel,
                 len,
                 pts,
             });
@@ -537,4 +637,58 @@ pub fn shoelace(ring: &[Pt]) -> f64 {
         a += p.x * q.y - q.x * p.y;
     }
     a * 0.5
+}
+
+#[cfg(test)]
+mod grade_tests {
+    use super::*;
+    use us_gen::pt;
+
+    #[test]
+    fn elevated_crossing_needs_an_explicit_connection() {
+        let highway = GradedLine {
+            travel: Travel::Both,
+            class: RoadClass::Highway,
+            points: vec![(pt(-10.0, 0.0), 0.0), (pt(10.0, 0.0), 0.0)],
+        };
+        let overpass = GradedLine {
+            travel: Travel::Both,
+            class: RoadClass::Arterial,
+            points: vec![(pt(0.0, -10.0), 8.0), (pt(0.0, 10.0), 8.0)],
+        };
+        let mut lines = vec![highway, overpass];
+        let bridge = build_graded(&lines, 0.5).contract();
+        assert_eq!(bridge.components().1.len(), 2);
+        assert!(!bridge.nodes.contains(&pt(0.0, 0.0)));
+
+        lines.push(GradedLine {
+            travel: Travel::Both,
+            class: RoadClass::Collector,
+            points: vec![(pt(-8.0, 0.0), 0.0), (pt(0.0, 10.0), 8.0)],
+        });
+        let connected = build_graded(&lines, 0.5).contract();
+        assert_eq!(connected.components().1.len(), 1);
+        assert!(connected.nodes.contains(&pt(-8.0, 0.0)));
+        assert!(connected.nodes.contains(&pt(0.0, 10.0)));
+        assert!(!connected.nodes.contains(&pt(0.0, 0.0)));
+    }
+
+    #[test]
+    fn flat_crossings_and_touching_ends_still_form_junctions() {
+        let lines = [
+            GradedLine {
+                travel: Travel::Both,
+                class: RoadClass::Arterial,
+                points: vec![(pt(-10.0, 0.0), 0.0), (pt(10.0, 0.0), 0.0)],
+            },
+            GradedLine {
+                travel: Travel::Both,
+                class: RoadClass::Collector,
+                points: vec![(pt(0.0, 0.0), 0.0), (pt(0.0, 10.0), 0.0)],
+            },
+        ];
+        let graph = build_graded(&lines, 0.5);
+        let junction = graph.nodes.iter().position(|&p| p == pt(0.0, 0.0)).unwrap();
+        assert_eq!(graph.degrees()[junction], 3);
+    }
 }

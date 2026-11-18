@@ -166,6 +166,8 @@ pub fn lamp_instances(paths: &[Path]) -> Vec<Instance> {
 #[derive(Clone, Debug)]
 pub struct Path {
     pub class: RoadClass,
+    /// Allowed point order on a slip lane. None allows both directions.
+    pub one_way: Option<bool>,
     pub pts: Vec<[f32; 2]>,
     /// Distance along the road at each point.
     pub cum: Vec<f32>,
@@ -203,6 +205,7 @@ impl Path {
         }
         Path {
             class,
+            one_way: None,
             pts,
             cum,
             zs,
@@ -305,7 +308,11 @@ pub fn make_cars(paths: &[Path], volumes: &[f32]) -> Vec<Car> {
             cars.push(Car {
                 road: i as u32,
                 phase: (j as f32 + rng.range(0.1, 0.9)) / n as f32,
-                dir: if j % 2 == 0 { 1.0 } else { -1.0 },
+                dir: if p.one_way.unwrap_or(j % 2 == 0) {
+                    1.0
+                } else {
+                    -1.0
+                },
                 speed: cruise(p.class) * (1.0 - 0.55 * v) * rng.range(0.9, 1.1),
                 colour: rng.pick(&crate::kit::CAR_COLS),
             });
@@ -327,7 +334,11 @@ pub fn car_instances(paths: &[Path], cars: &[Car], time: f32) -> Vec<Instance> {
         let (pt, d) = p.at(s);
         let hw = p.class.half_width() as f32;
         // keep to the right of the direction of travel
-        let side = -c.dir * hw * 0.5;
+        let side = if p.one_way.is_some() {
+            0.0
+        } else {
+            -c.dir * hw * 0.5
+        };
         let (nx, ny) = (-d[1], d[0]);
         let heading = libm::atan2f(d[1] * c.dir, d[0] * c.dir);
         out.push(Instance {

@@ -1139,7 +1139,7 @@ impl Sim {
                 .filter(|r| s.street_open(r.street))
                 .map(|r| (r.class, r.points.clone()))
                 .collect();
-            s.roadnet = Some(roadnet::RoadNet::build(&roads));
+            s.roadnet = Some(roadnet::RoadNet::build(&s.town, &roads));
         }
         Ok(s)
     }

@@ -19,6 +19,7 @@ mod terrain;
 mod world;
 
 pub use geom::{Pt, pt};
+pub use junctions::slip_lane_forward;
 pub use rockcoast::{
     CoastField, Cove, Formation, Harbour, MesaField, Mooring, Rock, RockCoast, Stack,
 };
