@@ -1464,6 +1464,9 @@ impl LiveScene {
                 .entry(cell_of(l.pos.x, l.pos.y))
                 .or_default()
                 .push(i);
+            if sim.is_planned_lot(i) {
+                self.mark(cell_of(l.pos.x, l.pos.y));
+            }
             self.look.push(Look::default());
             self.objs.push(None);
             self.parked.push(true);
@@ -1541,10 +1544,27 @@ impl LiveScene {
         if let Some(ids) = self.cell_lots.get(&cell) {
             for &i in ids {
                 let k = self.look[i];
+                let l = &sim.lots()[i];
                 if k.state == 0 {
+                    if l.phase == Phase::Vacant && sim.is_planned_lot(i) {
+                        let colour = match l.kind {
+                            LotKind::House | LotKind::Apartments => [92, 169, 111],
+                            LotKind::Shop | LotKind::Office => [76, 143, 185],
+                            _ => [206, 160, 76],
+                        };
+                        let (s, c) = (l.facing as f32).sin_cos();
+                        let half = l.radius as f32 * 0.67;
+                        let pad = [[-half, -half], [half, -half], [half, half], [-half, half]].map(
+                            |[a, b]| {
+                                let x = l.pos.x as f32 + c * a - s * b;
+                                let y = l.pos.y as f32 + s * a + c * b;
+                                [x, y, self.ground_at(x, y) + 0.42]
+                            },
+                        );
+                        mesh.push_poly(&pad, colour, true, false, us_render::ID_NONE);
+                    }
                     continue;
                 }
-                let l = &sim.lots()[i];
                 let r = l.radius as u16;
                 if !matches!(&self.objs[i], Some((lk, lr, _)) if *lk == k && *lr == r) {
                     let density = sim.lot_density(i) as f32;
@@ -1823,6 +1843,41 @@ mod tests {
             exact.len() < 256,
             "there are still safe tiles for distant terrain"
         );
+    }
+
+    #[test]
+    fn reopening_city_planning_preserves_vacant_zone_markers() {
+        let town = Arc::new(generate(Preset::Grid, 2));
+        let hall = hall_sites(&town)[0];
+        let rules = us_sim::Rules::sandbox_unlimited().with_city_planning(true);
+        let mut sim = Sim::new_with_rules(&town, hall, 2, 0, rules);
+        let mut live = LiveScene::new(town.clone(), &sim, true);
+        let a = Pt {
+            x: hall.x - 330.0,
+            y: hall.y - 330.0,
+        };
+        let b = Pt {
+            x: hall.x + 330.0,
+            y: hall.y + 330.0,
+        };
+        let count = sim
+            .paint_zone(us_sim::PlanningUse::Residential, a, b)
+            .unwrap();
+        let marker_vertices = |scene: &LiveScene| {
+            scene
+                .scene
+                .chunks
+                .iter()
+                .flat_map(|c| &c.mesh.vertices)
+                .filter(|v| v.id == us_render::ID_NONE && v.color[..3] == [92, 169, 111])
+                .count()
+        };
+        live.sync(&mut sim, 1.0e9);
+        assert_eq!(marker_vertices(&live), count * 4);
+        let mut loaded = Sim::load(&sim.save()).unwrap();
+        let mut live = LiveScene::new(town, &loaded, true);
+        live.sync(&mut loaded, 1.0e9);
+        assert_eq!(marker_vertices(&live), count * 4);
     }
 
     #[test]

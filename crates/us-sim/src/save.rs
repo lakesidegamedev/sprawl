@@ -1041,6 +1041,7 @@ impl Sim {
             bankruptcy: r.bool()?,
             elections: r.bool()?,
             unlimited_money: r.bool()?,
+            city_planning: false,
             difficulty: decode(&Difficulty::ALL, r.u8()?, "difficulty")?,
         };
         s.game_over = if r.bool()? {

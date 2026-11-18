@@ -207,6 +207,23 @@ impl State {
                 }
             });
             label(ui, "How you play", 14.0);
+            if choice(
+                ui,
+                !self.city_planning,
+                "Town Growth",
+                "Start at a crossroads and let the town lay out its neighborhoods.",
+            ) {
+                self.city_planning = false;
+            }
+            if choice(
+                ui,
+                self.city_planning,
+                "City Planning",
+                "Draw streets, then zone land for homes, shops, offices and industry.",
+            ) {
+                self.city_planning = true;
+            }
+            label(ui, "Town rules", 14.0);
             for m in Mode::ALL {
                 if choice(ui, self.mode == m, m.label(), m.blurb()) {
                     self.mode = m;
@@ -573,6 +590,7 @@ impl Game {
         u.ordinances_open = false;
         u.trams.open = false;
         u.paint = None;
+        u.zone = None;
         u.tool = None;
         u.civic_site = None;
         u.goals.open = false;
