@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Dense downtown blocks get taller, distinct office and apartment towers with setbacks, glazed podiums and rooftop details.
+- Water ripples respond to wind, sky and viewing angle, with shallows and foam at the shore. Grass and exposed ground blend along slopes.
+- Bridge approaches follow rises in the ground to keep the pavement visible.
+
 - Windows brighten gradually across neighborhoods and hold a steady pattern while the town grows. Streetlights and vehicle beams light nearby roads and buildings.
 
 - Rolling mist forms on damp, calm mornings and drifts along terrain. High roofs stay above the banks. Rain and snow fall in world space and disappear behind buildings and hills.

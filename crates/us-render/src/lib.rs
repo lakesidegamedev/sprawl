@@ -40,6 +40,7 @@ pub mod roadpaint;
 pub mod rock;
 mod scene;
 pub mod site;
+mod skyline;
 pub mod trains;
 pub mod trams;
 pub mod weather;

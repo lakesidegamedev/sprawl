@@ -4,7 +4,7 @@ use glam::Vec3;
 use us_gen::{Preset, generate};
 use us_render::kit::{self, ALL_KINDS};
 use us_render::obj::newell;
-use us_render::{Calendar, Camera, Mesh, Renderer, Rng, Scene, Style, WeatherLook};
+use us_render::{Calendar, Camera, Land, Mesh, Renderer, Rng, Scene, Style, WeatherLook};
 
 fn renderer() -> Option<Renderer> {
     match Renderer::new() {
@@ -200,6 +200,50 @@ fn night_windows_are_stable_when_outline_ids_change() {
     );
     let next = draw(20, 20.51);
     assert!(evening.iter().zip(next).all(|(a, b)| a.abs_diff(b) < 12));
+}
+
+#[test]
+fn water_responds_to_depth_wind_and_view() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let mut mesh = Mesh::default();
+    mesh.push_poly(
+        &[
+            [0., 0., 0.],
+            [180., 0., 0.],
+            [180., 180., 0.],
+            [0., 180., 0.],
+        ],
+        [54, 108, 176],
+        false,
+        true,
+        0,
+    );
+    let mut scene = Scene::dynamic(180.0, mesh, Vec3::new(90.0, 90.0, 0.0));
+    scene.set_land(Land::from_grid(
+        2,
+        180.0,
+        vec![-0.35, -6.0, -0.35, -6.0],
+        Vec::new(),
+    ));
+    let camera = Camera::framing(Vec3::new(90.0, 90.0, 0.0), 130.0, 1.0, 0.0, 66.0);
+    let style = Style {
+        shadow_size: 128,
+        supersample: 1,
+        ..Style::default()
+    };
+    let base = renderer.render_to_rgba(&scene, &camera, &style, 128, 128);
+    let left = (64 * 128 + 32) * 4;
+    let right = (64 * 128 + 96) * 4;
+    assert!(base.rgba[left + 1].abs_diff(base.rgba[right + 1]) > 5);
+    scene.set_weather(WeatherLook {
+        wind: [7.0, -4.0],
+        ..WeatherLook::default()
+    });
+    scene.set_time(4.0);
+    let moved = renderer.render_to_rgba(&scene, &camera, &style, 128, 128);
+    assert_ne!(base.rgba, moved.rgba);
 }
 
 /// Every solid is watertight apart from its floor: the area-weighted normals sum to straight up.

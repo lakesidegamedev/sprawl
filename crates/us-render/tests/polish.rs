@@ -1,4 +1,4 @@
-use us_gen::{Preset, generate};
+use us_gen::{LotKind, Preset, generate};
 use us_render::instances::{LAMP_LENS, lamp_instances, lamp_mesh};
 use us_render::{ALL_CIVIC, Rng, Scene, build_civic};
 
@@ -68,5 +68,27 @@ fn far_form_is_much_lighter_than_the_full_chunk() {
     for c in &scene.chunks {
         let far = c.far.as_ref().unwrap();
         assert!(far.vertices.iter().all(|v| v.id == us_render::ID_NONE));
+    }
+}
+
+#[test]
+fn downtown_towers_are_taller_and_still_fit_their_lots() {
+    for seed in 1..=4 {
+        for (kind, minimum) in [(LotKind::Office, 130.0), (LotKind::Apartments, 79.0)] {
+            let tower = us_render::build_lot_level_dense(
+                Preset::Crossroads,
+                kind,
+                5,
+                17.0,
+                1.0,
+                &mut Rng::new(seed, 4),
+            );
+            assert!(us_render::levels::top_of(&tower) > minimum);
+            assert!(tower.polys.len() > 160);
+            for vertex in tower.polys.iter().flat_map(|p| &p.pts) {
+                assert!(vertex.iter().all(|v| v.is_finite()));
+                assert!(vertex[0].hypot(vertex[1]) < 17.0);
+            }
+        }
     }
 }
