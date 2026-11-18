@@ -57,7 +57,7 @@ pub use rivals::{Personality, RivalView};
 pub use save::{AUTOSAVE_SLOTS, FIRST_LASTING_VERSION, LoadError, SAVE_VERSION, autosave_path};
 pub use streets::{RoadBuildState, RoadStage, StreetState};
 pub use tending::{build_ahead, tend};
-pub use traffic::RoadTraffic;
+pub use traffic::{RoadTraffic, TrafficApproach};
 pub use trams::{MAX_LINES as MAX_TRAM_LINES, TramError, TramLineView, TramPlan, TramState};
 
 use us_gen::{LotKind, Pt, RoadClass, Town, Zone, pt};

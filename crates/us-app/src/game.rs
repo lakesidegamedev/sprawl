@@ -1848,7 +1848,7 @@ impl Game {
     /// Calm visual day: one full day and night every few real minutes at 1x, scaled by game
     /// speed and frozen when paused. Seasons follow the game date.
     fn light_tick(&mut self, dt: f32, cycle: bool) {
-        if cycle && self.placed && !self.menu_open && !self.hour_frozen {
+        if self.placed && !self.menu_open && !self.hour_frozen {
             self.hour = (self.hour + dt * SPEEDS[self.speed] as f32 * 24.0 / LIGHT_DAY_SECONDS)
                 .rem_euclid(24.0);
         }
@@ -1858,6 +1858,7 @@ impl Game {
             12.0
         };
         let d = self.sim.date();
+        self.live.scene.set_traffic_hour(self.hour);
         self.live
             .scene
             .set_calendar(Some(Calendar::from_date(d.month, d.day, hour)));

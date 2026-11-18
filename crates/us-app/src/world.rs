@@ -230,6 +230,7 @@ pub struct LiveScene {
     /// Lots or roads changed since the scene was last told the geometry.
     geo_dirty: bool,
     geo_at: Instant,
+    traffic_day: Option<i32>,
     /// The chunk that holds every tram track, and what it was last drawn from.
     tram_chunk: Option<usize>,
     tram_key: Vec<u32>,
@@ -683,6 +684,7 @@ impl LiveScene {
             triangles: 0,
             geo_dirty: true,
             geo_at: Instant::now(),
+            traffic_day: None,
             tram_chunk: None,
             tram_key: vec![u32::MAX],
         };
@@ -944,19 +946,38 @@ impl LiveScene {
             })
             .collect();
         self.scene.set_geometry(lots, roads);
-        // cars keep off roads under construction
-        let mut vol = sim.road_values(us_sim::MapKind::Traffic);
-        for (v, w) in vol.iter_mut().zip(&works) {
-            if w.is_some() {
-                *v = 0.0;
-            }
-        }
-        self.scene.set_road_volumes(&vol);
+        self.refresh_traffic(sim);
         for (i, k) in self.look.iter().enumerate() {
             if matches!(k.state, 1 | 3 | 4) {
                 self.scene.set_lot_info(i, k.level, false);
             }
         }
+    }
+
+    fn refresh_traffic(&mut self, sim: &Sim) {
+        self.traffic_day = Some(sim.day);
+        let roads: Vec<_> = sim
+            .road_traffic()
+            .iter()
+            .zip(sim.road_runs())
+            .enumerate()
+            .map(|(i, (traffic, run))| {
+                if !sim.road_open(i)
+                    || self.works_progress(i, sim.day).is_some()
+                    || sim.flooded_roads().binary_search(&i).is_ok()
+                {
+                    return Default::default();
+                }
+                traffic
+                    .directions_for(run.class)
+                    .map(|a| us_render::RoadApproach {
+                        rate: a.rate,
+                        capacity: a.capacity,
+                        stop: a.stop,
+                    })
+            })
+            .collect();
+        self.scene.set_road_traffic(&roads);
     }
 
     /// Roadworks progress 0 to 1 of a road run, `None` when no work is going on.
@@ -1460,6 +1481,9 @@ impl LiveScene {
         }
         if self.geo_dirty && self.geo_at.elapsed().as_secs_f32() > 1.0 {
             self.ensure_geometry(sim);
+        }
+        if !self.geo_dirty && self.traffic_day != Some(sim.day) {
+            self.refresh_traffic(sim);
         }
         self.triangles = self.scene.triangles();
     }
