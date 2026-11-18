@@ -237,7 +237,7 @@ fn cloud_threshold() -> f32 {
     return mix(0.95, 0.42, g.shade.w);
 }
 
-fn cloud_density(point: vec3<f32>, detail: bool) -> f32 {
+fn cloud_density(point: vec3<f32>, detail: f32) -> f32 {
     let height = point.z - cloud_base();
     let layer = height / cloud_thickness();
     if (layer <= 0.0 || layer >= 1.0) {
@@ -262,13 +262,13 @@ fn cloud_density(point: vec3<f32>, detail: bool) -> f32 {
         * (1.0 - smoothstep(ceiling - 0.32, ceiling, layer));
     let base = field + (billow - 0.5) * 0.51;
     var shape = base;
-    if (detail && base < threshold + 0.27) {
+    if (detail > 0.0 && base < threshold + 0.27) {
         // Faster flow at this scale continually erodes and replaces the wisps
         // on a growing billow. Neither octave changes its opacity with time.
         let fine = billow_pos + time * vec3<f32>(1.9, -0.8, -0.43);
         let folds = textureSampleLevel(cloud_tex, cloud_sampler, fine / 132.0, 0.0).rg;
         let edge = 1.0 - smoothstep(threshold + 0.05, threshold + 0.27, base);
-        shape += (folds.x - 0.5) * 0.17 * edge - folds.y * 0.048 * edge;
+        shape += ((folds.x - 0.5) * 0.17 - folds.y * 0.048) * edge * detail;
     }
     let mass = smoothstep(threshold - 0.06, threshold + 0.19, shape);
     // A thin fringe transmits light from town. The denser part of the same
@@ -1344,11 +1344,15 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>, co
         return vec2<f32>(0.0);
     }
     let detailed = g.resolve.w > 0.5;
-    let budget = select(select(26, 38, detailed), 12, coarse);
+    let nominal = select(26, 38, detailed);
+    let grazing = min(select(46, 56, detailed), i32(ceil(span / 17.0)));
+    let budget = select(max(nominal, grazing), 12, coarse);
     let step_size = span / f32(budget);
-    // Integrate between staggered taps. Offsetting each interval independently
-    // breaks the repeated contours visible through a long, grazing ray.
+    let detail = select(1.0 - smoothstep(12.0, 30.0, step_size), 0.0, coarse);
+    // Stagger samples with a small per-pixel phase. Limiting the offset
+    // keeps the longer intervals from turning smooth shade into grain.
     let phase = hash2(vec2<i32>(floor(pixel / g.resolve.z)));
+    let jitter_range = mix(0.29, 0.17, smoothstep(10.0, 22.0, step_size));
     var previous_distance = start;
     var previous = 0.0;
     var transmission = 1.0;
@@ -1357,10 +1361,10 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>, co
     let forward = pow(max(0.0, dot(dir, g.sun.xyz)), 4.0);
     for (var i = 0; i <= budget; i++) {
         let jitter = fract(phase + f32(i) * 0.618034);
-        let distance = select(start + step_size * (f32(i) + mix(0.08, 0.92, jitter)), end, i == budget);
+        let distance = select(start + step_size * (f32(i) + 0.5 + (jitter - 0.5) * jitter_range), end, i == budget);
         let interval = distance - previous_distance;
         let point = eye + dir * distance;
-        let density = cloud_density(point, !coarse);
+        let density = cloud_density(point, detail);
         let smooth_density = (previous + density) * 0.5;
         let light_point = point - dir * interval * (previous / max(0.001, previous + density));
         previous = density;
@@ -1377,7 +1381,7 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>, co
         if (day > 0.0) {
             // One sample toward the sun combines with the local density to
             // estimate extinction. The broad fill can reach a shadowed face.
-            let blocker = cloud_density(light_point + g.sun.xyz * 21.0, false);
+            let blocker = cloud_density(light_point + g.sun.xyz * 21.0, 0.0);
             let direct = exp(-(blocker * 3.55 + smooth_density * 0.49));
             let bounced = 0.13 + 0.19 * exp(-blocker * 0.84);
             sunlight += scatter * (direct * (0.87 + forward * 0.33) + bounced) * day;
