@@ -28,8 +28,12 @@ pub struct WeatherLook {
     pub overcast: f32,
     /// Ground mist density from 0 (clear) to 1 (dense banks).
     pub ground_fog: f32,
-    /// A lightning flash right now, 0 to 1.
-    pub flash: f32,
+    /// Smoothed thunderstorm intensity.
+    pub storm: f32,
+    /// World x, world y, and the strength of the current lightning flash.
+    pub lightning: [f32; 3],
+    /// Integrated wind displacement so fronts stay continuous as winds turn.
+    pub drift: [f32; 2],
     /// Wind in metres per second (east, north); trees lean downwind.
     pub wind: [f32; 2],
     /// Flood water: (x, y, size in metres) of each square tile.

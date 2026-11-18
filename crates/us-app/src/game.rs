@@ -40,6 +40,8 @@ pub struct Settings {
     pub ui_scale: f32,
     pub high_shadows: bool,
     pub balanced_world_resolution: bool,
+    pub detailed_graphics: bool,
+    pub tilt_shift: bool,
     pub(crate) audio: crate::audio::Preferences,
     /// Day and night cycle (true) or always day (false).
     pub day_night: bool,
@@ -163,6 +165,9 @@ pub struct State {
     pub settings: Settings,
     preset: Preset,
     seed_text: String,
+    setup_name: String,
+    setup_step: usize,
+    map_preview: Option<(Preset, egui::TextureHandle)>,
     game: Option<Game>,
     demo: Option<Demo>,
     gen_wait: u8,
@@ -266,12 +271,17 @@ impl State {
                 ui_scale: 1.0,
                 high_shadows: true,
                 balanced_world_resolution: false,
+                detailed_graphics: false,
+                tilt_shift: false,
                 audio: crate::audio::Preferences::load(),
                 day_night: true,
                 reduce_motion: std::env::var("URBAN_SPRAWL_REDUCE_MOTION").is_ok_and(|v| v == "1"),
             },
             preset: Preset::Grid,
             seed_text: random_seed().to_string(),
+            setup_name: String::new(),
+            setup_step: 0,
+            map_preview: None,
             game: None,
             demo: None,
             gen_wait: 0,
@@ -439,7 +449,11 @@ impl State {
         } else {
             2048
         };
-        self.style.window_world_scale = if self.settings.balanced_world_resolution {
+        self.style.high_detail = self.settings.detailed_graphics;
+        self.style.tilt_shift = self.settings.tilt_shift;
+        self.style.window_world_scale = if self.settings.detailed_graphics {
+            1.0
+        } else if self.settings.balanced_world_resolution {
             0.8
         } else {
             1.0
@@ -557,7 +571,7 @@ impl State {
         }
         let Some(g) = self.game.as_mut() else { return };
         g.refresh_stats();
-        g.light_tick(dt, cycle);
+        g.light_tick(dt, cycle, self.settings.reduce_motion);
         g.ui_tick(dt);
         if g.placed && !g.menu_open {
             g.coach_tick(dt);
@@ -602,12 +616,25 @@ impl State {
                 }
             }
         }
-        let weather = game.sim.weather();
+        let weather = &game.live.scene.weather;
+        let thunder = game.storm_cue(weather.storm).map(|(slot, point, elapsed)| {
+            let delta = glam::Vec2::from_array(point) - focus;
+            let distance = delta.length();
+            (
+                game.live.scene.uid,
+                slot,
+                distance,
+                delta.dot(right) / distance.max(1.0),
+                elapsed,
+            )
+        });
         let night = game.live.scene.calendar.map_or(0.0, |c| c.darkness());
         crate::audio::SoundScene {
             night,
-            wind: (weather.wind_speed() / 16.0).clamp(0.0, 1.0) * 0.7 + 0.1,
-            rain: game.sim.rain(),
+            wind: (glam::Vec2::from_array(weather.wind).length() / 16.0).clamp(0.0, 1.0) * 0.7
+                + 0.1,
+            rain: weather.rain,
+            thunder,
             traffic: traffic * (1.0 - night * 0.58) * fade,
             traffic_pan: (pan / weight.max(0.01)).clamp(-1.0, 1.0),
             built: Some(game.stats.built),
@@ -647,7 +674,12 @@ impl State {
         let mut live = LiveScene::new(town.clone(), &sim, false);
         live.sync(&mut sim, 1.0e9);
         let cam = CamCtl::overview(town.size as f32, 1.7);
-        let name = format!("{} {}", screens::town_name(self.preset.label()), seed);
+        let name: String = self.setup_name.trim().chars().take(48).collect();
+        let name = if name.is_empty() {
+            format!("{} {}", screens::town_name(self.preset.label()), seed)
+        } else {
+            name
+        };
         self.game = Some(Game::new(
             town,
             self.preset,
@@ -677,7 +709,13 @@ impl State {
         let mut cam = CamCtl::overview(town.size as f32, 1.7);
         cam.look_at(Vec2::new(sim.hall.x as f32, sim.hall.y as f32), 650.0);
         let rules = sim.rules();
-        let name = format!("{} {}", screens::town_name(preset.label()), seed);
+        let name = path
+            .as_ref()
+            .and_then(|path| self.saves.iter().find(|save| &save.path == path))
+            .map_or_else(
+                || format!("{} {}", screens::town_name(preset.label()), seed),
+                |save| save.name.clone(),
+            );
         let mut g = Game::new(
             town,
             preset,
@@ -930,6 +968,8 @@ impl State {
                     self.load_save(&c.path);
                 }
                 if theme::button(ui, "New town").clicked() {
+                    self.setup_step = 0;
+                    self.setup_name.clear();
                     self.screen = Screen::NewTown;
                 }
                 if theme::button(ui, "Load game").clicked() {
@@ -997,6 +1037,13 @@ impl State {
                     "Balanced",
                 );
             });
+            if !cfg!(any(target_os = "ios", target_os = "android")) {
+                ui.checkbox(
+                    &mut self.settings.detailed_graphics,
+                    "Detailed atmosphere and surfaces",
+                );
+            }
+            ui.checkbox(&mut self.settings.tilt_shift, "Mild tilt shift");
             label(ui, "Day and night", 14.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(
@@ -1391,11 +1438,17 @@ impl State {
         if g.placed && compact {
             let dock = egui::Panel::bottom("dock")
                 .frame(theme::bar().inner_margin(egui::Margin::symmetric(4, 3)))
-                .show(ui, |ui| g.dock_ui(ui));
+                .show(ui, |ui| {
+                    g.capacity_strip(ui);
+                    g.dock_ui(ui);
+                });
             // sheets are placed from where the bar really is, so they never cover it
             panels::set_dock_top(ctx, dock.response.rect.top());
         } else if g.placed {
             g.rail_ui(ui);
+            egui::Panel::bottom("capacity-bar")
+                .frame(theme::bar().inner_margin(egui::Margin::symmetric(10, 3)))
+                .show(ui, |ui| g.capacity_strip(ui));
         }
 
         if g.placed {
@@ -1683,6 +1736,7 @@ impl State {
                             egui::Label::new(RichText::new(&reason).size(15.0).color(TEXT)).wrap(),
                         );
                         if let Sel::Lot(i) = sel {
+                            g.civic_upgrade_ui(ui, i);
                             g.why_extra(ui, i);
                         }
                     });
@@ -1708,12 +1762,7 @@ impl State {
         } else {
             "WASD pan   Q E rotate   right drag orbit   wheel zoom   0 1 2 3 speed   space pause   P K O B G J V I H R F panels   Y roads   M map view"
         };
-        let show_help = !compact
-            || (!g.placed
-                && !g.any_sheet()
-                && g.sel.is_none()
-                && g.ui.tool.is_none()
-                && g.ui.growth.height() <= 0.0);
+        let show_help = !g.placed && !g.any_sheet() && g.sel.is_none() && g.ui.tool.is_none();
         if show_help {
             egui::Area::new(egui::Id::new("help"))
                 .anchor(
@@ -1875,6 +1924,8 @@ impl State {
         match over_nav {
             Some(Nav::NewTown) => {
                 self.game = None;
+                self.setup_step = 0;
+                self.setup_name.clear();
                 self.screen = Screen::NewTown;
             }
             Some(Nav::Load) => {
@@ -1957,7 +2008,7 @@ impl Game {
 
     /// Calm visual day: one full day and night every few real minutes at 1x, scaled by game
     /// speed and frozen when paused. Seasons follow the game date.
-    fn light_tick(&mut self, dt: f32, cycle: bool) {
+    fn light_tick(&mut self, dt: f32, cycle: bool, reduce_motion: bool) {
         if self.placed && !self.menu_open && !self.hour_frozen {
             self.hour = (self.hour + dt * SPEEDS[self.speed] as f32 * 24.0 / LIGHT_DAY_SECONDS)
                 .rem_euclid(24.0);
@@ -1973,7 +2024,7 @@ impl Game {
             .scene
             .set_calendar(Some(Calendar::from_date(d.month, d.day, hour)));
         self.live.set_emergency(&self.sim, hour);
-        let look = self.weather_look(hour);
+        let look = self.weather_look(hour, dt, reduce_motion);
         self.live.scene.set_weather(look);
     }
 

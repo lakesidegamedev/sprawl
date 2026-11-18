@@ -16,20 +16,36 @@ pub enum Goal {
     Budget,
     Grow,
     Policy,
+    Utilities,
+    ServiceUpgrade,
+    DistrictCentre,
+    RegionalCity,
 }
 
 impl Goal {
-    pub const ALL: [Goal; 6] = [
+    pub const ALL: [Goal; 10] = [
         Goal::Settle,
         Goal::Water,
         Goal::School,
         Goal::Budget,
         Goal::Grow,
         Goal::Policy,
+        Goal::Utilities,
+        Goal::ServiceUpgrade,
+        Goal::DistrictCentre,
+        Goal::RegionalCity,
     ];
 
     pub fn index(self) -> usize {
         self as usize
+    }
+
+    pub fn chapter(self) -> &'static str {
+        match self {
+            Self::Settle | Self::Water | Self::School | Self::Budget => "Founding",
+            Self::Grow | Self::Policy | Self::Utilities | Self::ServiceUpgrade => "Growing town",
+            Self::DistrictCentre | Self::RegionalCity => "Regional city",
+        }
     }
 
     pub fn title(self) -> &'static str {
@@ -40,6 +56,10 @@ impl Goal {
             Goal::Budget => "Change a tax rate or a budget",
             Goal::Grow => "Reach 1,000 people",
             Goal::Policy => "Pass an ordinance or draw a district",
+            Goal::Utilities => "Open a power plant and a clinic",
+            Goal::ServiceUpgrade => "Expand a service to tier 2",
+            Goal::DistrictCentre => "Reach 3,000 with room to grow",
+            Goal::RegionalCity => "Reach 10,000 and keep services ahead",
         }
     }
 
@@ -51,6 +71,10 @@ impl Goal {
             Goal::Budget => "Adjust department funding or a tax rate and watch the monthly net.",
             Goal::Grow => "Water, power, schools and clinics each hold growth back when full.",
             Goal::Policy => "Unlocks as the town grows. Open Districts or Ordinances.",
+            Goal::Utilities => "Build both so new homes have power and health capacity.",
+            Goal::ServiceUpgrade => "Select an operating civic building, then choose Upgrade.",
+            Goal::DistrictCentre => "Keep every service under 90% use and the budget positive.",
+            Goal::RegionalCity => "Keep services under 85% use and approval at 60% or higher.",
         }
     }
 
@@ -59,6 +83,7 @@ impl Goal {
         match self {
             Goal::Water => Some(CivicKind::Water),
             Goal::School => Some(CivicKind::School),
+            Goal::Utilities => Some(CivicKind::Power),
             _ => None,
         }
     }
@@ -72,6 +97,10 @@ impl Goal {
             Goal::Budget => 5_000,
             Goal::Grow => 40_000,
             Goal::Policy => 25_000,
+            Goal::Utilities => 35_000,
+            Goal::ServiceUpgrade => 30_000,
+            Goal::DistrictCentre => 85_000,
+            Goal::RegionalCity => 180_000,
         }
     }
 
@@ -159,6 +188,20 @@ impl Sim {
             }
             Goal::Grow => self.population() >= 1000,
             Goal::Policy => !self.dist.is_default(),
+            Goal::Utilities => count(CivicKind::Power) > 0 && count(CivicKind::Clinic) > 0,
+            Goal::ServiceUpgrade => self.lots.iter().any(|lot| {
+                lot.civic.is_some() && lot.level >= 2 && matches!(lot.phase, Phase::Built { .. })
+            }),
+            Goal::DistrictCentre => {
+                self.population() >= 3_000
+                    && self.last_ledger.income_total() >= self.last_ledger.expense_total()
+                    && self.committed_capacities().iter().all(|c| c.ratio() < 0.90)
+            }
+            Goal::RegionalCity => {
+                self.population() >= 10_000
+                    && self.approval().total >= 60
+                    && self.committed_capacities().iter().all(|c| c.ratio() < 0.85)
+            }
         }
     }
 

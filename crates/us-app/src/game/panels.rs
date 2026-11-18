@@ -179,7 +179,7 @@ pub(super) fn sheet(ctx: &Context, title: &str, body: impl FnOnce(&mut Ui)) -> b
     let width = (screen.width() - 12.0).max(160.0);
     let bottom = dock_top(ctx) - 4.0;
     let available = (bottom - screen.top()).max(0.0);
-    let total = (available * 0.62).max(160.0).min(available);
+    let total = (available - 8.0).max(1.0);
     let open = theme::opening(ctx, title, 0.2);
     let (fade, done) = closing(ctx, title, false);
     let mut clicked = false;
@@ -208,7 +208,8 @@ pub(super) fn sheet(ctx: &Context, title: &str, body: impl FnOnce(&mut Ui)) -> b
                         });
                     });
                     egui::ScrollArea::both()
-                        .max_height((total - theme::TOUCH - 30.0).max(32.0))
+                        .max_height((total - theme::TOUCH - 27.0).max(32.0))
+                        .min_scrolled_height((total * 0.48).max(1.0))
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
                             ui.set_min_width(width - 40.0);
@@ -1170,7 +1171,7 @@ impl Game {
             ui.separator();
             wrapped(
                 ui,
-                "Funding below 100 percent shortens how far a building reaches and weakens it. Above 100 it reaches further. Road upkeep below 100 lowers land value.",
+                "Funding changes service reach. Low road upkeep lowers land value.",
                 11.0,
                 Color32::from_rgb(170, 176, 196),
             );
@@ -2178,7 +2179,9 @@ impl Game {
         });
         let Some(s) = svc else { return };
         let reach = (s.reach_m()
-            * l.civic.map_or(1.0, CivicKind::reach_mult)
+            * l.civic.map_or(1.0, |kind| {
+                kind.reach_mult() * us_sim::civic_reach_multiplier(l.level)
+            })
             * (0.4 + 0.6 * dept_fraction(&self.sim, s))) as f32;
         let ring = ring_points(&self.live, view, l.pos, reach, w, h, ppp);
         if ring.len() > 3 {
@@ -2187,6 +2190,46 @@ impl Game {
     }
 
     // ----- why panel extras -----
+
+    pub(super) fn civic_upgrade_ui(&mut self, ui: &mut Ui, lot: usize) {
+        let Some(site) = self.sim.lots().get(lot).filter(|site| site.civic.is_some()) else {
+            return;
+        };
+        lab(ui, format!("Service tier {} of 3", site.level), 14.0);
+        if site.level > 1 {
+            let kind = site.civic.expect("civic building");
+            let description = match kind {
+                CivicKind::Water
+                | CivicKind::Power
+                | CivicKind::School
+                | CivicKind::HighSchool
+                | CivicKind::Clinic
+                | CivicKind::Hospital => format!(
+                    "Capacity {:.1}×",
+                    us_sim::civic_capacity_pct(site.level) as f64 / 100.0
+                ),
+                CivicKind::University => "Expanded town-wide benefits".to_string(),
+                _ => format!("Reach {:.2}×", us_sim::civic_reach_multiplier(site.level)),
+            };
+            lab_c(ui, description, 12.0, theme::MUTED);
+        }
+        if let Some((tier, cost)) = self.sim.civic_upgrade(lot) {
+            let label = if self.sim.rules().unlimited_money {
+                format!("Upgrade to tier {tier}")
+            } else {
+                format!("Upgrade to tier {tier} · {}", super::money(cost))
+            };
+            if theme::button(ui, &label).clicked() {
+                match self.sim.upgrade_civic(lot) {
+                    Ok(_) => {
+                        self.ui.growth.capacities = None;
+                        self.toast("Service expanded", false);
+                    }
+                    Err(error) => self.toast(error.text(), true),
+                }
+            }
+        }
+    }
 
     pub(super) fn why_extra(&self, ui: &mut Ui, lot: usize) {
         let l = &self.sim.lots()[lot];

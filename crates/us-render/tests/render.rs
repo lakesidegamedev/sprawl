@@ -325,3 +325,82 @@ fn mesh_hash_for_a_fixed_lot_set_is_stable() {
 }
 
 const GOLDEN: u64 = 0xb24b_afe6_d5f9_eb5b;
+
+#[test]
+fn storm_flash_is_local_and_tilt_focus_keeps_the_centre_sharp() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let mut mesh = Mesh::default();
+    mesh.push_poly(
+        &[
+            [0., 0., 0.],
+            [520., 0., 0.],
+            [520., 520., 0.],
+            [0., 520., 0.],
+        ],
+        [95, 100, 110],
+        true,
+        false,
+        0,
+    );
+    for x in (10..500).step_by(22) {
+        let x = x as f32;
+        mesh.push_poly(
+            &[
+                [x, 0., 0.2],
+                [x + 8., 0., 0.2],
+                [x + 8., 520., 0.2],
+                [x, 520., 0.2],
+            ],
+            [180, 148, 124],
+            true,
+            false,
+            7,
+        );
+    }
+    let target = Vec3::new(260.0, 260.0, 0.0);
+    let mut scene = Scene::dynamic(520.0, mesh, target);
+    let camera = Camera::framing(target, 420.0, 1.0, 0.0, 90.0);
+    let mut style = Style {
+        shadow_size: 256,
+        supersample: 1,
+        ..Style::default()
+    };
+    scene.set_weather(WeatherLook {
+        wet: 0.7,
+        storm: 0.8,
+        ..WeatherLook::default()
+    });
+    let plain = renderer.render_to_rgba(&scene, &camera, &style, 112, 112);
+    style.tilt_shift = true;
+    let focus = renderer.render_to_rgba(&scene, &camera, &style, 112, 112);
+    assert_eq!(
+        &plain.rgba[112 * 4 * 55..112 * 4 * 57],
+        &focus.rgba[112 * 4 * 55..112 * 4 * 57]
+    );
+    assert_ne!(&plain.rgba[..112 * 4 * 10], &focus.rgba[..112 * 4 * 10]);
+
+    style.tilt_shift = false;
+    scene.weather.lightning = [80., 260., 1.0];
+    let lightning = renderer.render_to_rgba(&scene, &camera, &style, 112, 112);
+    let difference = |range: std::ops::Range<usize>| -> u32 {
+        range
+            .map(|x| (112 * 56 + x) * 4)
+            .map(|i| u32::from(lightning.rgba[i + 2].abs_diff(plain.rgba[i + 2])))
+            .sum()
+    };
+    assert!(difference(9..32) > difference(80..103) + 30);
+
+    style.high_detail = true;
+    scene.weather.lightning = [0.0; 3];
+    let first = renderer.render_to_rgba(&scene, &camera, &style, 112, 112);
+    scene.set_time(0.016);
+    let moved = Camera {
+        yaw_deg: 2.0,
+        ..camera
+    };
+    let second = renderer.render_to_rgba(&scene, &moved, &style, 112, 112);
+    assert_ne!(first.rgba, second.rgba);
+    assert!(second.rgba.chunks_exact(4).all(|p| p[3] == 255));
+}

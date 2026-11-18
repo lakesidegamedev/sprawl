@@ -446,7 +446,7 @@ impl Sim {
     // ----- hooks: density, upgrades -----
 
     /// Highest level a building on this lot may reach, with ordinances.
-    pub(crate) fn lot_cap(&self, i: usize) -> u8 {
+    pub(crate) fn lot_cap(&self, i: usize, population: i64) -> u8 {
         let l = &self.lots[i];
         let d = self.lot_density(i);
         let mut cap = max_level_at(l.kind, d);
@@ -456,6 +456,24 @@ impl Sim {
         }
         if m & Ordinance::HeightLimit.bit() != 0 {
             cap = cap.min(2);
+        }
+        if cap < 4 || !matches!(l.kind, LotKind::Office | LotKind::Apartments) {
+            return cap;
+        }
+        let value = self.lot_value.get(i).copied().unwrap_or(0.0);
+        let cover = self.services_avg(i);
+        let neighbors = self.taller_neighbours(i, 1);
+        let core = self.town.lots.get(l.src).map_or(0.0, |lot| lot.density);
+        if value < 0.58 || cover < 0.23 || neighbors < 2 || population < 3_000 {
+            return 3;
+        }
+        if core < 0.72
+            || value < 0.69
+            || cover < 0.42
+            || self.taller_neighbours(i, 2) < 3
+            || population < 10_000
+        {
+            return cap.min(4);
         }
         cap
     }

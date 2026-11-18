@@ -106,7 +106,10 @@ impl Sim {
                     if svc != Some(s) {
                         continue;
                     }
-                    let reach = reach * l.civic.map_or(1.0, CivicKind::reach_mult);
+                    let reach = reach
+                        * l.civic.map_or(1.0, |kind| {
+                            kind.reach_mult() * civic_reach_multiplier(l.level)
+                        });
                     let Some((src, off)) = self.lot_node[i] else {
                         continue;
                     };

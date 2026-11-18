@@ -133,12 +133,12 @@ impl RockLook {
     /// Banded sea cliffs over a wet rock shelf, with a sandy beach inside the cove.
     pub const COAST: RockLook = RockLook {
         bands: [
-            [152, 124, 98],
-            [180, 150, 112],
-            [122, 102, 86],
-            [194, 166, 126],
+            [146, 143, 130],
+            [177, 167, 146],
+            [126, 125, 117],
+            [191, 184, 164],
         ],
-        talus: [150, 130, 104],
+        talus: [147, 139, 122],
         snow: [236, 241, 247],
         band_height: 22.0,
         snow_line: NONE,
@@ -146,10 +146,10 @@ impl RockLook {
         tree_line: NONE,
         fractured: false,
         forest_slope: 0.0,
-        ledge: 0.5,
+        ledge: 0.16,
         ground: Some(GroundTint {
-            flat: [112, 164, 96],
-            hollow: [150, 176, 110],
+            flat: [105, 134, 97],
+            hollow: [130, 148, 104],
             cap: None,
             beach: Some(([226, 212, 166], 4.2)),
             shelf: Some(([104, 98, 96], 2.2)),

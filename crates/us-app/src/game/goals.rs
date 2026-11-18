@@ -63,6 +63,7 @@ fn next_goal(ui: &mut Ui, goals: &[GoalView]) -> Option<GoalAction> {
     });
     let g = goals.iter().find(|g| !g.done)?;
     ui.add_space(2.0);
+    lab_c(ui, g.goal.chapter(), 11.0, ACCENT);
     lab(ui, g.title, 13.0);
     wrapped(ui, g.hint, 11.5, TEXT);
     if !g.reward.is_empty() {
@@ -76,6 +77,10 @@ fn rows(ui: &mut Ui, goals: &[GoalView], touch: bool) -> Option<GoalAction> {
     // the first goal not done is spelled out; the rest are one line each
     let next = goals.iter().position(|g| !g.done);
     for (i, g) in goals.iter().enumerate() {
+        if i == 0 || goals[i - 1].goal.chapter() != g.goal.chapter() {
+            ui.add_space(7.0);
+            lab_c(ui, g.goal.chapter(), 13.0, ACCENT);
+        }
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), egui::Sense::hover());
             let c = r.center();
@@ -131,7 +136,7 @@ impl Game {
         let done = goals.iter().filter(|g| g.done).count();
         let (mut hide, mut build) = (false, None);
         ui.horizontal(|ui| {
-            lab(ui, format!("First goals  {done}/{}", goals.len()), 13.0);
+            lab(ui, format!("Campaign  {done}/{}", goals.len()), 13.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .small_button(RichText::new("Hide").font(ui_font(11.0)).color(MUTED))
@@ -172,7 +177,7 @@ impl Game {
                 .show(ctx, |ui| {
                     let b = ui.add(
                         egui::Button::new(
-                            RichText::new(format!("Goals {done}/{}", goals.len()))
+                            RichText::new(format!("Campaign {done}/{}", goals.len()))
                                 .font(ui_font(12.5))
                                 .color(INK),
                         )

@@ -38,10 +38,73 @@ impl GrowthUi {
 const REFRESH_S: f64 = 0.5;
 
 impl Game {
+    /// Reserved growth counts toward the warning before the new residents arrive.
+    pub(super) fn capacity_strip(&mut self, ui: &mut Ui) {
+        let Some(capacities) = self.ui.growth.capacities else {
+            return;
+        };
+        let short = ["Water", "Power", "Schools", "Health"];
+        let mut selected = None;
+        let width = ((ui.available_width() - 12.0) / 4.0).clamp(44.0, 240.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (index, status) in capacities.into_iter().enumerate() {
+                let ratio = status.ratio();
+                let colour = if ratio >= 1.0 {
+                    BAD
+                } else if ratio >= 0.75 {
+                    ACCENT
+                } else {
+                    MUTED
+                };
+                let text = if self.compact {
+                    format!("{}\n{:.0}%", short[index], ratio * 100.0)
+                } else {
+                    format!("{}  {:.0}%", short[index], ratio * 100.0)
+                };
+                if ui
+                    .add_sized(
+                        [width, 30.0],
+                        egui::Button::new(
+                            RichText::new(text)
+                                .font(ui_font(if self.compact { 10.0 } else { 12.0 }))
+                                .color(colour),
+                        ),
+                    )
+                    .on_hover_text(format!("{} of {} committed", status.demand, status.supply))
+                    .clicked()
+                {
+                    selected = Some(status.capacity.civic());
+                }
+            }
+        });
+        if let Some(kind) = selected {
+            let upgrade = self
+                .sim
+                .lots()
+                .iter()
+                .enumerate()
+                .filter(|(id, lot)| {
+                    lot.civic == Some(kind) && self.sim.civic_upgrade(*id).is_some()
+                })
+                .min_by_key(|(_, lot)| lot.level)
+                .map(|(id, _)| id);
+            if let Some(lot) = upgrade {
+                self.close_sheets();
+                self.sel = Some(super::Sel::Lot(lot));
+            } else {
+                self.open_build_for(kind);
+            }
+        }
+    }
+
     /// The compact banner sits above the dock, away from the controls at the top.
     pub(super) fn growth_banner_ui(&mut self, ctx: &Context) {
         self.ui.growth.banner_height = 0.0;
-        if !self.map_input_available() || self.any_sheet() || self.ui.growth.alerts.is_empty() {
+        if !self.map_input_available()
+            || self.any_sheet()
+            || !self.ui.growth.alerts.iter().any(|alert| alert.blocked)
+        {
             return;
         }
         let screen = ctx.content_rect();
@@ -56,7 +119,7 @@ impl Game {
     /// Show the most urgent capacity limit and the next action.
     pub(super) fn growth_panel(&mut self, ui: &mut Ui, width: f32) {
         let alerts = &self.ui.growth.alerts;
-        if alerts.is_empty() {
+        if !alerts.iter().any(|alert| alert.blocked) {
             return;
         }
         let compact = self.compact;

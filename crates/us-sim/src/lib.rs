@@ -44,6 +44,7 @@ mod trams;
 mod value;
 
 pub use avenues::{RoadError, RoadPlan, UpgradePlan};
+pub use civic::{civic_capacity_pct, civic_reach_multiplier};
 pub use climate::{Sky, Weather, WeatherCosts};
 pub use density::max_level_at;
 pub use districts::{
@@ -404,7 +405,7 @@ pub struct Sim {
     /// Bit per `CivicKind::ALL` position: the buildings the town has unlocked.
     pub(crate) unlocked: u32,
     /// Standing new civic buildings with their places, rebuilt with the land values.
-    pub(crate) fx_sites: Vec<(CivicKind, Pt)>,
+    pub(crate) fx_sites: Vec<(CivicKind, Pt, u8)>,
     /// Per `Capacity`: past the warning level.
     pub(crate) warned: [bool; 4],
     /// Families are leaving for lack of jobs.

@@ -1,13 +1,13 @@
 //! us-render: draws a generated Urban Sprawl town in 3D in a cel look.
 //!
-//! Flat colour per face in three stepped tones, ink outlines on every building edge, hard
-//! shadows from one sun. Nothing soft: no fog, glow, bloom or haze. The crate has no UI or
-//! windowing code; it renders offscreen to RGBA, or into a host surface through
+//! Draws textured terrain and buildings, day and night lighting, and world-space weather.
+//! The crate renders offscreen to RGBA or into a host surface through
 //! [`SurfaceTarget`].
 //!
 //! Headless renders use whatever adapter wgpu finds; on a machine without a GPU that is the
 //! Mesa software Vulkan driver.
 
+pub mod architecture;
 mod calendar;
 mod camera;
 pub mod civic;
@@ -33,6 +33,7 @@ pub mod overlay;
 pub mod park;
 pub mod parts;
 pub mod rail;
+mod reflection;
 mod renderer;
 mod rng;
 mod road_traffic;
@@ -40,7 +41,6 @@ pub mod roadpaint;
 pub mod rock;
 mod scene;
 pub mod site;
-mod skyline;
 pub mod trains;
 pub mod trams;
 pub mod weather;

@@ -4,6 +4,7 @@ struct Globals {
     view_proj: mat4x4<f32>,
     light_vp: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
+    previous_view_proj: mat4x4<f32>,
     eye: vec4<f32>,     // xyz camera position, w near plane
     fog: vec4<f32>,     // rgb atmospheric light, w mist density
     terrain: vec4<f32>, // elevation base and range, inverse map size and texture size
@@ -17,6 +18,9 @@ struct Globals {
     look: vec4<f32>,   // x season (1 autumn, 2 spring, 3 summer), y snow, z map view (desaturate), w share of lamps and vehicle lights on (0 to 1)
     wx: vec4<f32>,     // x snow cover 0 to 1, y wet ground, zw wind (east, north) in m/s
     precipitation: vec4<f32>, // rain, snow and the lower corner of the weather grid
+    weather_flow: vec4<f32>,   // wind displacement, storm strength and tilt shift
+    lightning: vec4<f32>,     // strike position and intensity
+    temporal: vec4<f32>,     // history weight, bloom intensity, exposure, tone mapping
     rock: array<vec4<f32>, 8>, // rows 0 to 3 strata colours, 4 talus, 5 (snow line, tree line, band height, on), 6 (snow rgb, winter drop)
 };
 
@@ -24,6 +28,7 @@ struct Globals {
 @group(0) @binding(1) var shadow_tex: texture_depth_2d;
 @group(0) @binding(2) var shadow_cmp: sampler_comparison;
 @group(0) @binding(5) var lights_tex: texture_2d<f32>;
+@group(0) @binding(6) var reflection_probes: texture_2d<f32>;
 
 struct VIn {
     @location(0) pos: vec3<f32>,
@@ -128,6 +133,21 @@ fn lit(world: vec3<f32>, n: vec3<f32>) -> f32 {
     return textureSampleCompareLevel(shadow_tex, shadow_cmp, uv, c.z - g.shade.y);
 }
 
+fn packed_surface(n: vec3<f32>, material: u32) -> u32 {
+    let sum = abs(n.x) + abs(n.y) + abs(n.z);
+    let normal = n / max(sum, 0.001);
+    let face = select(normal.xy, (1.0 - abs(normal.yx)) * sign(normal.xy + 0.0001), normal.z < 0.0);
+    let uv = vec2<u32>(round((face * 0.5 + 0.5) * 7.0));
+    return ((material & 3u) << 30u) | (uv.y << 27u) | (uv.x << 24u);
+}
+
+fn surface_normal(value: u32) -> vec3<f32> {
+    let uv = vec2<f32>(f32((value >> 24u) & 7u), f32((value >> 27u) & 7u)) * (2.0 / 7.0) - 1.0;
+    let z = 1.0 - abs(uv.x) - abs(uv.y);
+    let fold = max(0.0, -z);
+    return normalize(vec3<f32>(uv - sign(uv) * fold, z));
+}
+
 struct FOut {
     @location(0) colour: vec4<f32>,
     @location(1) aux: vec4<u32>,
@@ -188,6 +208,85 @@ fn vnoise(p: vec2<f32>) -> f32 {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
+fn cloud_base() -> f32 {
+    return max(0.0, g.terrain.x) + mix(156.0, 104.0, g.shade.w) - 18.0 * g.weather_flow.z;
+}
+
+fn cloud_thickness() -> f32 {
+    return mix(36.0, 82.0, g.shade.w) + 48.0 * g.weather_flow.z;
+}
+
+// The broad weather field stays shared by visible clouds and their ground shadows.
+fn cloud_field(xy: vec2<f32>, height: f32) -> f32 {
+    let drift = g.screen.w * vec2<f32>(2.1, 0.86) + g.weather_flow.xy;
+    let shear = clamp(g.wx.zw, vec2<f32>(-9.0), vec2<f32>(9.0)) * (3.0 + 4.0 * height);
+    let p = xy - drift - shear;
+    let mass = vnoise(p * 0.0048 + vec2<f32>(0.19, 0.67) * height);
+    let billow = vnoise(p * 0.019 + vec2<f32>(-1.17, 1.62) * height);
+    return mass * 0.67 + billow * 0.33;
+}
+
+fn cloud_threshold() -> f32 {
+    return mix(0.82, 0.30, g.shade.w);
+}
+
+fn cloud_cell(p: vec3<i32>) -> f32 {
+    let key = bitcast<u32>(p.x) * 73856093u ^ bitcast<u32>(p.y) * 19349663u
+        ^ bitcast<u32>(p.z) * 83492791u;
+    return f32(hash_u(key) & 65535u) / 65535.0;
+}
+
+fn cloud_noise(p: vec3<f32>) -> f32 {
+    let cell = vec3<i32>(floor(p));
+    let f = fract(p);
+    let t = f * f * (3.0 - 2.0 * f);
+    let plane = mix(
+        mix(cloud_cell(cell), cloud_cell(cell + vec3<i32>(1, 0, 0)), t.x),
+        mix(cloud_cell(cell + vec3<i32>(0, 1, 0)), cloud_cell(cell + vec3<i32>(1, 1, 0)), t.x), t.y);
+    let next = cell + vec3<i32>(0, 0, 1);
+    let upper = mix(
+        mix(cloud_cell(next), cloud_cell(next + vec3<i32>(1, 0, 0)), t.x),
+        mix(cloud_cell(next + vec3<i32>(0, 1, 0)), cloud_cell(next + vec3<i32>(1, 1, 0)), t.x), t.y);
+    return mix(plane, upper, t.z);
+}
+
+fn cloud_density(point: vec3<f32>, detail: bool) -> f32 {
+    let layer = (point.z - cloud_base()) / cloud_thickness();
+    if (layer <= 0.0 || layer >= 1.0) {
+        return 0.0;
+    }
+    let field = cloud_field(point.xy, layer);
+    var threshold = cloud_threshold();
+    if (g.weather_flow.z > 0.02) {
+        let gaps = 1.0 - storm_cell(point.xy);
+        threshold += gaps * gaps * 0.34 * g.weather_flow.z;
+    }
+    var shape = field;
+    if (detail && field > threshold - 0.11 && field < threshold + 0.27) {
+        let xyz = point - vec3<f32>(g.screen.w * vec2<f32>(2.1, 0.86) + g.weather_flow.xy, 0.0);
+        let cells = cloud_noise(xyz * 0.042);
+        let edges = cloud_noise(xyz * 0.106 + vec3<f32>(3.7, 2.4, -1.1));
+        shape += (0.74 * cells + 0.26 * edges - 0.5) * 0.31;
+    }
+    let deck = smoothstep(0.0, 0.24, layer) * (1.0 - smoothstep(0.56, 1.0, layer));
+    let mass = smoothstep(threshold - 0.035, threshold + 0.19, shape);
+    return mass * deck;
+}
+
+fn cloud_sunlight(world: vec3<f32>) -> f32 {
+    if (g.shade.w <= 0.12 || g.sun.z <= 0.035 || g.look.z > 0.5) {
+        return 1.0;
+    }
+    let level = cloud_base() + cloud_thickness() * 0.46;
+    let distance = max(0.0, level - world.z) / max(0.19, g.sun.z);
+    let field = cloud_field(world.xy + g.sun.xy * distance, 0.46);
+    let threshold = cloud_threshold();
+    let shadow = smoothstep(threshold - 0.14, threshold + 0.22, field);
+    let below = 1.0 - smoothstep(level - 8.0, level + 28.0, world.z);
+    let cover = smoothstep(0.12, 0.36, g.shade.w);
+    return 1.0 - shadow * below * cover * smoothstep(0.035, 0.21, g.sun.z) * 0.29;
+}
+
 // Natural ground (grass, fields, sand, dirt, snow), not roads, pavements, markings or water.
 fn natural(c: vec3<f32>) -> bool {
     let hi = max(c.r, max(c.g, c.b));
@@ -213,27 +312,8 @@ fn ground_kind(c: vec3<f32>) -> i32 {
 
 // A small tuft in a jittered cell of size `cell`: a short upright stroke with a leaning twin.
 // Returns 1 inside a blade, 0 outside.
-fn tuft(w: vec2<f32>, cell: f32, seed: i32) -> f32 {
-    let q = w / cell;
-    let ci = vec2<i32>(floor(q));
-    let h1 = hash2(ci + vec2<i32>(seed, 3));
-    if (h1 < 0.55) {
-        return 0.0;
-    }
-    let h2 = hash2(ci + vec2<i32>(7, seed));
-    let c = vec2<f32>(0.3 + 0.4 * h1, 0.3 + 0.4 * h2);
-    let d = fract(q) - c;
-    // two blades leaning apart (a small V), width about a seventh of the cell
-    let up = d.y * 1.0;
-    let a = abs(d.x - up * 0.55);
-    let b = abs(d.x + up * 0.55);
-    let in_v = d.y > -0.05 && d.y < 0.3 && (a < 0.07 || b < 0.07);
-    return select(0.0, 1.0, in_v);
-}
-
-// Stepped tone multiplier and optional colour for natural ground at a world place and camera
-// distance. Fine detail fades into the mid-scale pattern with distance, never into flat colour.
-fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist: f32, snowy: bool, season: i32) -> vec3<f32> {
+// Terrain detail is filtered by the world-space footprint of a screen pixel.
+fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist: f32, snowy: bool) -> vec3<f32> {
     var c = col;
     let near_d = dist < 140.0;
     let mid_d = dist < 600.0;
@@ -263,46 +343,20 @@ fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist:
         return c * s;
     }
     if (kind == 1 || kind == 4) {
-        if (kind == 4) {
-            // mown stripes
-            let sp = floor((w.x + w.y * 0.35) / 5.0);
-            if ((i32(sp) & 1) == 0) {
-                k = k * 1.045;
-            } else {
-                k = k * 0.97;
-            }
-        }
-        // clumps a couple of metres across, darker
-        if (mid_d && vnoise(w / 1.9 + vec2<f32>(31.0, 4.0)) > 0.74) {
-            k = k * 0.95;
-        }
-        // broad patches of yellower and deeper green, big enough to read from the far view
-        let broad = vnoise(w / 150.0 + vec2<f32>(13.0, 2.0)) * 0.7 + vnoise(w / 55.0) * 0.3;
-        if (broad > 0.6) {
-            c = c * vec3<f32>(1.07, 1.03, 0.88);
-        } else if (broad < 0.4) {
-            c = c * vec3<f32>(0.9, 0.97, 1.0);
-        }
         let footprint = g.screen.z * dist;
-        let grass_detail = 1.0 - smoothstep(0.28, 0.85, footprint);
-        let clover = vnoise(w * 1.62 + vec2<f32>(11.0, 17.0));
-        let meadow = vnoise(w / 6.0);
-        c = c * (k + (clover - 0.5) * 0.26 * grass_detail + (meadow - 0.5) * 0.14);
-        let stems = 1.0 - smoothstep(0.10, 0.32, footprint);
-        if (stems > 0.0 && tuft(w, 0.74, 23) > 0.5) {
-            c = mix(c, c * vec3<f32>(0.81, 0.94, 0.79), stems);
-        }
-        if (near_d) {
-            let tf = tuft(w, 1.5, 1);
-            if (tf > 0.5) {
-                c = c * 0.9;
-            }
-            let tl = tuft(w + vec2<f32>(0.7, 0.4), 2.3, 5);
-            if (tl > 0.5) {
-                c = c * 1.1;
-            }
-        }
-        return c;
+        let large = vnoise(w / 163.0 + vec2<f32>(4.1, 22.8));
+        let meadow = large * 0.65 + vnoise(w / 39.0) * 0.35;
+        let damp_meadow = vec3<f32>(0.32, 0.43, 0.32);
+        let dry_meadow = vec3<f32>(0.52, 0.54, 0.36);
+        let seasonal = mix(damp_meadow, dry_meadow, smoothstep(0.19, 0.82, meadow));
+        let lush = mix(c, seasonal, select(0.57, 0.43, kind == 4));
+        let clump = vnoise(w * 0.29 + vec2<f32>(2.9, -8.1));
+        let fibre = vnoise(w * vec2<f32>(5.6, 2.8) + vec2<f32>(0.5, 13.0));
+        let detail = 1.0 - smoothstep(0.06, 0.32, footprint);
+        let tufts = 1.0 - smoothstep(0.15, 0.68, footprint);
+        let cut = 1.0 + select(0.0, 0.032 * sin((w.x + w.y * 0.22) * 0.64), kind == 4);
+        return lush * cut * (0.94 + 0.09 * meadow + (clump - 0.5) * 0.109 * tufts
+            + (fibre - 0.5) * 0.23 * detail);
     }
     if (kind == 2) {
         // crop rows: rows run one way per field colour, a broad band of tone per row
@@ -321,7 +375,9 @@ fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist:
                 k = k * 0.95;
             }
         }
-        return c * k;
+        let base_crop = mix(vec3<f32>(0.48, 0.49, 0.32), vec3<f32>(0.60, 0.53, 0.33),
+            smoothstep(0.28, 0.78, vnoise(w / 65.0)));
+        return mix(c, base_crop, 0.38) * k;
     }
     if (kind == 3) {
         // sand ripples: wavy lines
@@ -362,6 +418,18 @@ fn water_kind(c: vec3<f32>) -> i32 {
 
 // Two wave bands follow the wind in world space. Filter the shorter band as it
 // falls below a pixel so moving water stays steady at town-scale zoom.
+fn storm_cell(xy: vec2<f32>) -> f32 {
+    let p = xy - g.weather_flow.xy * 1.3;
+    let front = vnoise(p * 0.006);
+    let squall = vnoise(p * 0.021 + vec2<f32>(17.0, 4.0));
+    return smoothstep(0.21, 0.83, front * 0.76 + squall * 0.24);
+}
+
+fn flash_at(world: vec3<f32>) -> f32 {
+    let d = (world.xy - g.lightning.xy) * 0.004;
+    return g.lightning.z / (1.0 + dot(d, d));
+}
+
 fn wave_normal(w: vec2<f32>, px: f32, pond: bool) -> vec3<f32> {
     let velocity = g.wx.zw;
     let gust = min(length(velocity) / 13.0, 1.0);
@@ -379,6 +447,52 @@ fn wave_normal(w: vec2<f32>, px: f32, pond: bool) -> vec3<f32> {
     return normalize(vec3<f32>(-slope * wind_scale * (0.72 + breaks * 0.62), 1.0));
 }
 
+fn sky_radiance(origin: vec3<f32>, ray: vec3<f32>) -> vec3<f32> {
+    let horizon = 1.0 - clamp(ray.z, 0.0, 1.0);
+    let day = smoothstep(-0.1, 0.38, g.sun.z);
+    let sunset = (1.0 - smoothstep(0.03, 0.35, g.sun.z)) * day;
+    let toward_sun = pow(max(0.0, dot(ray, g.sun.xyz)), 9.0);
+    let blue = mix(vec3<f32>(0.29, 0.51, 0.73), vec3<f32>(0.63, 0.75, 0.83), horizon);
+    var sky = mix(vec3<f32>(0.10, 0.16, 0.27), blue, day)
+        + vec3<f32>(0.32, 0.13, 0.04) * sunset * (0.3 + toward_sun);
+    if (g.shade.w > 0.12) {
+        let level = cloud_base() + cloud_thickness() * 0.5;
+        let sample_xy = origin.xy + ray.xy * min(650.0, max(0.0, level - origin.z) / max(0.06, ray.z));
+        let threshold = cloud_threshold();
+        let cover = smoothstep(threshold - 0.10, threshold + 0.23, cloud_field(sample_xy, 0.5));
+        let cloud_light = vec3<f32>(0.39, 0.48, 0.60) + vec3<f32>(0.19) * day;
+        sky = mix(sky, cloud_light, cover * smoothstep(0.12, 0.45, g.shade.w));
+    }
+    return sky;
+}
+
+fn probe_face(origin: vec3<f32>, face: i32) -> vec4<f32> {
+    let cell = clamp(origin.xy * g.terrain.z * 16.0 - 0.5, vec2<f32>(0.0), vec2<f32>(15.0));
+    let base = vec2<i32>(floor(cell));
+    let f = fract(cell);
+    let next = min(base + vec2<i32>(1), vec2<i32>(15));
+    let north = mix(textureLoad(reflection_probes, vec2<i32>(base.x * 6 + face, base.y), 0),
+        textureLoad(reflection_probes, vec2<i32>(next.x * 6 + face, base.y), 0), f.x);
+    let south = mix(textureLoad(reflection_probes, vec2<i32>(base.x * 6 + face, next.y), 0),
+        textureLoad(reflection_probes, vec2<i32>(next.x * 6 + face, next.y), 0), f.x);
+    return mix(north, south, f.y);
+}
+
+fn nearby_radiance(origin: vec3<f32>, ray: vec3<f32>) -> vec3<f32> {
+    let sky = sky_radiance(origin, ray);
+    if (g.resolve.w < 0.5) {
+        return sky;
+    }
+    let weight = ray * ray;
+    let x = probe_face(origin, select(1, 0, ray.x >= 0.0));
+    let y = probe_face(origin, select(3, 2, ray.y >= 0.0));
+    let z = probe_face(origin, select(5, 4, ray.z >= 0.0));
+    let local_tone = mix(g.tone.rgb, vec3<f32>(1.0), 0.18);
+    let reflected = x.rgb * (weight.x * x.a) + y.rgb * (weight.y * y.a) + z.rgb * (weight.z * z.a);
+    let coverage = dot(weight, vec3<f32>(x.a, y.a, z.a));
+    return sky * (1.0 - coverage) + reflected * local_tone;
+}
+
 fn water_colour(kind: i32, world: vec3<f32>, dist: f32, normal: vec3<f32>) -> vec3<f32> {
     let water_depth = max(0.0, world.z - terrain_height(world.xy));
     let shore = kind >= 3;
@@ -390,9 +504,7 @@ fn water_colour(kind: i32, world: vec3<f32>, dist: f32, normal: vec3<f32>) -> ve
     let base = mix(deep, bottom, transmitted);
     let eye = normalize(g.eye.xyz - world);
     let ray = reflect(-eye, normal);
-    let near_horizon = 1.0 - clamp(ray.z, 0.0, 1.0);
-    let blue = mix(vec3<f32>(0.30, 0.53, 0.71), vec3<f32>(0.68, 0.79, 0.83), near_horizon);
-    let sky = mix(blue, vec3<f32>(0.52, 0.59, 0.64), g.shade.w);
+    let sky = nearby_radiance(world, ray);
     let facing = max(0.0, dot(normal, eye));
     let fresnel = 0.055 + 0.945 * pow(1.0 - facing, 5.0);
     let half_ray = normalize(eye + g.sun.xyz);
@@ -436,12 +548,9 @@ fn season_ground(c: vec3<f32>, season: i32) -> vec3<f32> {
 }
 
 // Leaf colour for spring (some trees in blossom) and summer (deeper green).
-fn season_leaf(step: i32, dark: bool, season: i32) -> vec3<f32> {
+fn season_leaf(dark: bool, season: i32) -> vec3<f32> {
     if (season == 2) {
-        if (step == 3) {
-            if (dark) { return vec3<f32>(226.0, 142.0, 176.0) / 255.0; }
-            return vec3<f32>(244.0, 176.0, 198.0) / 255.0;
-        }
+
         if (dark) { return vec3<f32>(92.0, 158.0, 74.0) / 255.0; }
         return vec3<f32>(116.0, 180.0, 86.0) / 255.0;
     }
@@ -482,43 +591,26 @@ fn terrain_look(world: vec3<f32>, n: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
         }
         return vec3<f32>(66.0, 130.0, 70.0) / 255.0;
     }
-    if (s > rock_s) {
-        if (g.rock[7].x > 0.5) {
-            // fractured granite: irregular blocks and cracks, no stripes
-            let blk = vnoise(world.xy / 6.0 + vec2<f32>(z / 8.0, -z / 6.0));
-            let blk2 = vnoise(world.xy / 17.0 + vec2<f32>(-z / 21.0, z / 13.0));
-            var pick = 1u;
-            if (blk2 > 0.62) {
-                pick = 3u;
-            } else if (blk2 < 0.34) {
-                pick = 0u;
-            }
-            if (blk < 0.22) {
-                pick = 2u;
-            }
-            return g.rock[pick].rgb;
-        }
-        let bz = (z + (fine - 0.5) * 1.6) / g.rock[5].z;
-        let pick = hash_u(u32(i32(floor(bz)) + 65536)) % 4u;
-        var rc = g.rock[pick].rgb;
-        // a thin dark ledge at the top of each stratum, and a fainter line inside it
-        let lg = g.rock[7].w;
-        if (lg > 0.0) {
-            let fb = fract(bz);
-            if (fb > 0.95) {
-                rc = rc * (1.0 - lg);
-            } else if (fract(bz * 4.0) < 0.1) {
-                rc = rc * (1.0 - lg * 0.24);
-            }
-        }
-        return rc;
-    }
     if (s > talus_s) {
-        var tc = g.rock[4].rgb;
-        if (fine > 0.72) {
-            tc = tc * 0.9;
+        let tilt = world.x * 0.061 + world.y * 0.035;
+        let joint_axis = world.x * 0.56 + world.y * 0.82;
+        let cleavage = vnoise(vec2<f32>(joint_axis / 14.0, z / 55.0));
+        let lithology = vnoise(world.xy / 74.0 + vec2<f32>(z / 40.0, -z / 71.0));
+        let fragments = vnoise(vec2<f32>(joint_axis / 3.6, z / 7.8));
+        var colour = mix(g.rock[0].rgb, g.rock[3].rgb, smoothstep(0.12, 0.91, lithology));
+        if (g.rock[7].x < 0.5) {
+            let warp = (vnoise(world.xy / 60.0 + vec2<f32>(8.0, -1.0)) - 0.5) * 18.0;
+            let layer = (z + tilt + warp + (fragments - 0.5) * 2.1) / max(2.0, g.rock[5].z);
+            let seam = smoothstep(0.82, 1.0, fract(layer)) * smoothstep(0.30, 0.78, cleavage);
+            let bed = 0.5 + 0.5 * sin(layer * 1.9 + lithology * 2.8);
+            colour = mix(colour, g.rock[1].rgb, bed * 0.41) * (1.0 - seam * g.rock[7].w);
         }
-        return tc;
+        let fracture = 1.0 - smoothstep(0.055, 0.22, abs(cleavage - 0.48));
+        colour = colour * (0.88 + fragments * 0.20 - fracture * 0.09);
+        let talus = g.rock[4].rgb * (0.90 + fine * 0.16);
+        let exposure = smoothstep(talus_s - 0.04, rock_s + 0.15, s);
+        let gravel = smoothstep(talus_s, rock_s - 0.06, s);
+        return mix(mix(grass, talus, gravel), colour, exposure);
     }
     if (forest_s <= 0.0 && s > 0.16) {
         // a gorge slope too gentle to be rock: dry scrub with bare stone showing through, not a
@@ -594,6 +686,20 @@ fn night_illumination(world: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     return light * g.local_lights.z;
 }
 
+fn road_weather_decals(w: vec2<f32>, footprint: f32) -> f32 {
+    let grid = w / 11.0;
+    let cell = vec2<i32>(floor(grid));
+    let seed = hash2(cell);
+    let offset = vec2<f32>(hash2(cell + vec2<i32>(3, 12)), hash2(cell + vec2<i32>(30, 5))) * 0.56 + 0.22;
+    let p = (fract(grid) - offset) * 11.0;
+    let spun = vec2<f32>(p.x + 0.41 * p.y, p.y - 0.41 * p.x);
+    let repair = 1.0 - smoothstep(0.79, 1.05, length(spun * vec2<f32>(0.70, 1.3)));
+    let wet = smoothstep(0.18, 0.85, g.wx.y);
+    let stain = (1.0 - smoothstep(0.41, 0.82, length(spun * vec2<f32>(0.54, 0.92)))) * wet;
+    let distance_fade = 1.0 - smoothstep(0.34, 0.81, footprint);
+    return 1.0 - (repair * select(0.0, 0.13, seed > 0.72) + stain * 0.12) * distance_fade;
+}
+
 // Surface studies in world metres. Filter the grain and seams against the pixel footprint.
 fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, px: f32, cel: bool, object: bool) -> vec3<f32> {
     let w = world.xy;
@@ -607,7 +713,10 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
         if (g.wx.y > 0.05) {
             let pool = vnoise(w * 0.54) * 0.7 + vnoise(w * 1.32) * 0.3;
             let puddle = smoothstep(0.77 - 0.15 * g.wx.y, 0.84 - 0.15 * g.wx.y, pool) * g.wx.y;
-            let broken_sky = mix(vec3<f32>(0.46, 0.54, 0.57), vec3<f32>(0.35, 0.42, 0.48), g.shade.w);
+            let eye = normalize(g.eye.xyz - world);
+            let reflected = reflect(-eye, normal);
+            let sheen = 0.18 + 0.68 * pow(1.0 - max(0.0, dot(eye, normal)), 3.0);
+            let broken_sky = nearby_radiance(world, reflected) * sheen;
             let fine = w * 1.9;
             let tile = vec2<i32>(floor(fine));
             let offset = vec2<f32>(hash2(tile), hash2(tile + vec2<i32>(17, 31))) * 0.5 + 0.25;
@@ -617,7 +726,7 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
             let ripple = ring * (1.0 - life) * g.precipitation.x;
             paved = mix(paved, broken_sky * (1.0 + ripple * 0.47), puddle * (0.50 + 0.16 * dust));
         }
-        return paved;
+        return paved * road_weather_decals(w, px);
     }
     if (near(base, 194.0, 190.0, 182.0) || near(base, 206.0, 202.0, 194.0)) {
         let cell = w / vec2<f32>(1.8, 0.95);
@@ -681,6 +790,17 @@ fn season_phase(world: vec3<f32>) -> f32 {
     return clamp(progress + offset * progress * (1.0 - progress), 0.0, 1.0);
 }
 
+fn field_palette(step: i32, season: i32) -> vec3<f32> {
+    var colour = select(vec3<f32>(214.0, 178.0, 66.0), vec3<f32>(202.0, 164.0, 54.0), step == 1);
+    switch (season) {
+        case 0: { colour = vec3<f32>(150.0, 134.0, 100.0); }
+        case 1: { colour = vec3<f32>(178.0, 148.0, 88.0); }
+        case 2: { colour = vec3<f32>(130.0, 176.0, 84.0); }
+        default: {}
+    }
+    return colour / 255.0;
+}
+
 fn groundcover_palette(step: i32, season: i32) -> vec3<f32> {
     let summer = array<vec3<f32>, 4>(
         vec3<f32>(92.0, 158.0, 62.0), vec3<f32>(106.0, 172.0, 72.0),
@@ -706,7 +826,7 @@ fn groundcover_palette(step: i32, season: i32) -> vec3<f32> {
 fn leaf_palette(base: vec3<f32>, step: i32, dark: bool, season: i32) -> vec3<f32> {
     if (season == 1) { return autumn_leaf(step, dark); }
     if (season == 0) { return base; }
-    return season_leaf(step, dark, season);
+    return season_leaf(dark, season);
 }
 
 @fragment
@@ -725,6 +845,7 @@ fn fs_main(v: VOut) -> FOut {
     let keep = a > 0.001 && a < 0.999;
     let ground = v.id == 0u;
     let exempt = v.id == 16777215u;
+    let coastal_rock = !ground && near(col, 143.0, 138.0, 129.0);
     if (v.tint != 0u) {
         if (near(col, 255.0, 0.0, 255.0)) {
             col = vec3<f32>(f32((v.tint >> 16u) & 255u), f32((v.tint >> 8u) & 255u), f32(v.tint & 255u)) / 255.0;
@@ -748,6 +869,10 @@ fn fs_main(v: VOut) -> FOut {
             l = dot(n, g.sun.xyz);
         }
         col = terrain_look(v.world, n, col);
+    }
+    if (coastal_rock && g.look.z < 0.5) {
+        let wall_normal = normalize(vec3<f32>(n.xy, 0.28));
+        col = terrain_look(v.world, wall_normal, col);
     }
     var emissive = false;
     let season = i32(g.look.x + 0.5);
@@ -789,25 +914,22 @@ fn fs_main(v: VOut) -> FOut {
         }
         if (ws >= 0) {
             is_cover = true;
-            var wc = vec3<f32>(214.0, 178.0, 66.0);
-            if (ws == 1) { wc = vec3<f32>(202.0, 164.0, 54.0); }
-            if (season == 2) { wc = vec3<f32>(130.0, 176.0, 84.0); }
-            if (season == 1) { wc = vec3<f32>(178.0, 148.0, 88.0); }
-            if (season == 0) { wc = vec3<f32>(150.0, 134.0, 100.0); }
-            col = wc / 255.0;
+            col = mix(field_palette(ws, previous), field_palette(ws, season), season_phase(v.world));
         }
         if (fs >= 0) {
-            if (season == 0) { discard; }
             var fc = vec3<f32>(250.0, 214.0, 70.0);
             if (fs == 1) { fc = vec3<f32>(250.0, 248.0, 238.0); }
             if (fs == 2) { fc = vec3<f32>(240.0, 128.0, 166.0); }
             if (fs == 3) { fc = vec3<f32>(156.0, 116.0, 208.0); }
-            if (season == 1) { fc = vec3<f32>(150.0, 110.0, 70.0); }
-            col = fc / 255.0;
+            let dormant = vec3<f32>(153.0, 132.0, 84.0);
+            let winter = mix(f32(previous == 0), f32(season == 0), season_phase(v.world));
+            let autumn = mix(f32(previous == 1), f32(season == 1), season_phase(v.world));
+            col = mix(fc, dormant, max(winter, autumn * 0.86)) / 255.0;
         }
         if (bs >= 0) {
-            if (season == 2 || season == 0) { discard; }
-            col = vec3<f32>(226.0, 192.0, 92.0) / 255.0;
+            let dormant = mix(f32(previous == 2 || previous == 0),
+                f32(season == 2 || season == 0), season_phase(v.world));
+            col = mix(vec3<f32>(226.0, 192.0, 92.0), vec3<f32>(139.0, 135.0, 88.0), dormant) / 255.0;
         }
     }
     if (ground && near(col, 247.0, 248.0, 253.0) && (g.look.y < 0.5 || g.look.z > 0.5)) {
@@ -827,6 +949,11 @@ fn fs_main(v: VOut) -> FOut {
                 let step = max(s1, s2);
                 let dark = s2 >= 0;
                 col = mix(leaf_palette(col, step, dark, previous), leaf_palette(col, step, dark, season), season_phase(v.world));
+                if (step == 3) {
+                    let spring = mix(f32(previous == 2), f32(season == 2), season_phase(v.world));
+                    let blossom = smoothstep(0.69, 0.82, vnoise(v.room_anchor.xy * 0.083));
+                    col = mix(col, vec3<f32>(0.79, 0.62, 0.66), spring * blossom * 0.76);
+                }
                 let foliage = vnoise(v.world.xy * 0.95 + v.world.z * 0.63);
                 col = col * (0.86 + foliage * 0.29);
             }
@@ -853,20 +980,14 @@ fn fs_main(v: VOut) -> FOut {
                 if (col.g > col.b + 0.08 && col.g > col.r - 0.06) {
                     // drifts with rounded edges that join up as the cover deepens
                     let h = vnoise(v.world.xy / 16.0) * 0.7 + vnoise(v.world.xy / 5.0) * 0.3;
-                    if (h < reach) {
-                        col = vec3<f32>(236.0, 241.0, 247.0) / 255.0;
-                    }
+                    col = mix(col, vec3<f32>(236.0, 241.0, 247.0) / 255.0, smoothstep(h - 0.11, h + 0.11, reach));
                 }
             } else if (is_cover) {
                 let h = vnoise(v.world.xy / 16.0) * 0.7 + vnoise(v.world.xy / 5.0) * 0.3;
-                if (h < reach) {
-                    col = vec3<f32>(228.0, 235.0, 244.0) / 255.0;
-                }
+                col = mix(col, vec3<f32>(228.0, 235.0, 244.0) / 255.0, smoothstep(h - 0.11, h + 0.11, reach));
             } else if (cel && !exempt && v.tint == 0u && n.z > 0.35) {
                 let h = f32(hash_u(v.id / 16u) % 1000u) / 1000.0;
-                if (h < reach) {
-                    col = vec3<f32>(238.0, 242.0, 248.0) / 255.0;
-                }
+                col = mix(col, vec3<f32>(238.0, 242.0, 248.0) / 255.0, smoothstep(h - 0.13, h + 0.13, reach));
             }
         }
         // rain: wet roads and ground are darker and a little bluer, wet roofs slightly so
@@ -888,7 +1009,7 @@ fn fs_main(v: VOut) -> FOut {
         col = water_colour(wkind, v.world, v.dist, n);
     } else if (gkind > 0) {
         let snowy = min(col.r, min(col.g, col.b)) > 0.88;
-        col = ground_detail(col, v.color.rgb, gkind, v.world.xy, v.dist, snowy, season);
+        col = ground_detail(col, v.color.rgb, gkind, v.world.xy, v.dist, snowy);
         if ((gkind == 1 || gkind == 4) && !snowy) {
             col = grass_soil(col, v.world, n, g.screen.z * v.dist);
         }
@@ -897,28 +1018,15 @@ fn fs_main(v: VOut) -> FOut {
         col = textured_surface(col, v.color.rgb, v.world, n, g.screen.z * v.dist, cel, !ground && !exempt);
     }
     var k = 1.0;
-    if (cel && ground && wkind == 0) {
+    if (cel && (ground || coastal_rock) && wkind == 0) {
         // hillshade: stepped tones by how the slope faces the sun compared with level ground
         var d = l - g.sun.z;
         if (g.rock[7].z > 0.5) {
             // flat desert and sea flats must read flat: a faint swell of the land is not shaded
             d = d * (1.0 - 0.97 * smoothstep(0.9, 0.97, facet.z));
         }
-        if (d > 0.03) {
-            k = 1.1;
-        } else if (d > 0.012) {
-            k = 1.05;
-        } else if (d > -0.012) {
-            k = 1.0;
-        } else if (d > -0.03) {
-            k = 0.93;
-        } else if (d > -0.055) {
-            k = 0.86;
-        } else if (d > -0.09) {
-            k = 0.78;
-        } else {
-            k = 0.7;
-        }
+        let rock_grade = smoothstep(0.68, 0.95, n.z);
+        k = clamp(1.0 + d * mix(0.42, 1.25, rock_grade), 0.71, 1.12);
     } else if (cel && wkind == 0) {
         // top brightest, sun side, shade side: three steps
         if (n.z > 0.9) {
@@ -934,6 +1042,12 @@ fn fs_main(v: VOut) -> FOut {
     if (l > 0.02 && k > g.shade.x && wkind == 0) {
         k = mix(g.shade.x, k, lit(v.world, n));
     }
+    if (g.resolve.w > 0.5 && g.look.z < 0.5) {
+        let footprint = v.dist * g.screen.z;
+        let grain = vnoise(v.world.xy * 6.4 + v.world.z * vec2<f32>(4.9, 8.1));
+        let detail = 1.0 - smoothstep(0.06, 0.23, footprint);
+        col *= 1.0 + (grain - 0.5) * 0.22 * detail;
+    }
     let material_colour = col;
     col = col * k;
     if (k < 0.97 && !emissive && g.look.z < 0.5) {
@@ -942,7 +1056,16 @@ fn fs_main(v: VOut) -> FOut {
         col = col * mix(vec3<f32>(1.0), vec3<f32>(0.9, 0.96, 1.08), sh);
     }
     if (!emissive) {
-        col = col * g.tone.rgb;
+        col = col * g.tone.rgb * cloud_sunlight(v.world);
+        if (g.resolve.w > 0.5 && g.look.z < 0.5 && wkind == 0) {
+            let sky_fill = sky_radiance(v.world, normalize(n + vec3<f32>(0.0, 0.0, 0.25)));
+            let ambient = 0.12 + 0.17 * max(0.0, 1.0 - l);
+            col = mix(col, col * (0.80 + 0.39 * sky_fill), ambient);
+        }
+        if (g.lightning.z > 0.002) {
+            let intensity = flash_at(v.world) * (0.35 + 0.65 * max(n.z, 0.0));
+            col = sqrt(col * col + material_colour * material_colour * intensity * vec3<f32>(0.56, 0.79, 1.0));
+        }
     }
     if (g.local_lights.z > 0.01 && g.look.z < 0.5 && !emissive) {
         let incoming = night_illumination(v.world, n);
@@ -950,10 +1073,15 @@ fn fs_main(v: VOut) -> FOut {
         // remains in display space. Materials keep their colour in the lit area.
         col = sqrt(col * col + material_colour * material_colour * incoming);
     }
-    col = mix(col, glow, glow_amount);
+    col = mix(col, glow, glow_amount) + glow * glow_amount * 0.33;
     var o: FOut;
+    let raw_colour = v.color.rgb;
+    let wet_road = g.wx.y > 0.10 && near(raw_colour, 108.0, 108.0, 120.0);
+    let glazing = glow_amount < 0.12 && n.z < 0.68 && !emissive
+        && raw_colour.b > raw_colour.r + 0.10 && raw_colour.g > raw_colour.r + 0.045;
+    let material = select(select(select(0u, 3u, glazing), 2u, wet_road), 1u, wkind > 0);
     o.colour = vec4<f32>(col, 1.0);
-    o.aux = vec4<u32>(bitcast<u32>(v.dist), v.id, 0u, 1u);
+    o.aux = vec4<u32>(bitcast<u32>(v.dist), (v.id & 0x00ffffffu) | packed_surface(n, material), 0u, 1u);
     return o;
 }
 
@@ -977,6 +1105,8 @@ fn vs_full(@builtin(vertex_index) i: u32) -> EOut {
 @group(0) @binding(3) var terrain_tex: texture_2d<f32>;
 @group(0) @binding(4) var terrain_sampler: sampler;
 @group(2) @binding(0) var fog_tex: texture_2d<f32>;
+@group(2) @binding(1) var previous_frame: texture_2d<f32>;
+@group(1) @binding(0) var current_frame: texture_2d<f32>;
 
 const EXEMPT: u32 = 16777215u;
 
@@ -984,16 +1114,37 @@ fn aux_at(p: vec2<i32>, s: i32) -> vec2<f32> {
     let size = vec2<i32>(i32(g.screen.x), i32(g.screen.y));
     let q = clamp(p, vec2<i32>(0, 0), size - vec2<i32>(1, 1));
     let t = textureLoad(aux_tex, q, s);
-    return vec2<f32>(bitcast<f32>(t.x), f32(t.y));
+    return vec2<f32>(bitcast<f32>(t.x), f32(t.y & 0x00ffffffu));
 }
 
-fn terrain_height(xy: vec2<f32>) -> f32 {
+fn ray_for_pixel(pixel: vec2<f32>) -> vec3<f32> {
+    let ndc = (pixel / g.screen.xy * 2.0 - 1.0) * vec2<f32>(1.0, -1.0);
+    let q = g.inv_view_proj * vec4<f32>(ndc, 0.0, 1.0);
+    return q.xyz - g.eye.xyz * q.w;
+}
+
+fn world_at(pixel: vec2<i32>, depth: f32) -> vec3<f32> {
+    return g.eye.xyz + ray_for_pixel(vec2<f32>(pixel) + 0.5) * depth;
+}
+
+fn project_pixel(world: vec3<f32>) -> vec3<f32> {
+    let clip = g.view_proj * vec4<f32>(world, 1.0);
+    let uv = clip.xy / max(clip.w, 0.001) * vec2<f32>(0.5, -0.5) + 0.5;
+    return vec3<f32>(uv * g.screen.xy, clip.w);
+}
+
+fn terrain_fog_profile(xy: vec2<f32>) -> vec2<f32> {
     let texel = g.terrain.w;
     let uv = clamp(xy * g.terrain.z, vec2<f32>(0.0), vec2<f32>(1.0));
     let heights = textureSampleLevel(terrain_tex, terrain_sampler,
-        uv * (1.0 - texel) + 0.5 * texel, 0.0).rg;
+        uv * (1.0 - texel) + 0.5 * texel, 0.0).rgb;
     // Filtering both bytes is equivalent to filtering their combined heights.
-    return g.terrain.x + g.terrain.y * dot(heights, vec2<f32>(256.0 / 257.0, 1.0 / 257.0));
+    let height = g.terrain.x + g.terrain.y * dot(heights.rg, vec2<f32>(256.0 / 257.0, 1.0 / 257.0));
+    return vec2<f32>(height, heights.b);
+}
+
+fn terrain_height(xy: vec2<f32>) -> f32 {
+    return terrain_fog_profile(xy).x;
 }
 
 struct Precipitation {
@@ -1005,13 +1156,14 @@ struct Precipitation {
 
 @vertex
 fn vs_precipitation(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Precipitation {
-    let column = instance / 6u;
+    let column = instance / 12u;
     let cell = vec2<i32>(g.precipitation.zw) + vec2<i32>(i32(column % 36u), i32(column / 36u));
-    let slot = i32(instance % 6u);
-    let seed = cell * 6 + vec2<i32>(slot, slot * 17);
+    let slot = i32(instance % 12u);
+    let seed = cell * 12 + vec2<i32>(slot, slot * 17);
     let origin = (vec2<f32>(cell) + vec2<f32>(hash2(seed), hash2(seed + vec2<i32>(41, 29)))) * 12.0;
-    let is_snow = g.precipitation.y > g.precipitation.x;
-    let strength = max(g.precipitation.x, g.precipitation.y);
+    let is_snow = slot >= 6;
+    let local_weather = mix(1.0, 0.35 + 0.95 * storm_cell(origin), g.weather_flow.z);
+    let strength = min(1.0, select(g.precipitation.x, g.precipitation.y, is_snow) * local_weather);
     let chance = hash2(seed + vec2<i32>(-52, 19));
     var o: Precipitation;
     o.clip = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
@@ -1028,7 +1180,8 @@ fn vs_precipitation(@builtin(vertex_index) vertex: u32, @builtin(instance_index)
     let height = 54.0;
     let age = fract(g.screen.w * speed / height + hash2(seed + vec2<i32>(-17, 89)));
     let duration = age * height / speed;
-    let wind = clamp(g.wx.zw, vec2<f32>(-12.0), vec2<f32>(12.0)) * select(0.62, 0.37, is_snow);
+    let gust = 1.0 + g.weather_flow.z * (storm_cell(origin + vec2<f32>(65.0, 18.0)) - 0.43) * 0.8;
+    let wind = clamp(g.wx.zw, vec2<f32>(-18.0), vec2<f32>(18.0)) * select(0.62, 0.37, is_snow) * gust;
     let sway = vec2<f32>(sin(duration * 2.4 + variation * 14.0), cos(duration * 1.6)) * 0.75;
     let xy = origin + wind * duration + select(vec2<f32>(0.0), sway, is_snow);
     let ground = terrain_height(origin);
@@ -1080,78 +1233,181 @@ fn fs_precipitation(p: Precipitation) -> FOut {
     return out;
 }
 
-fn fog_opacity(pixel: vec2<f32>, depth: f32) -> f32 {
-    // Clear pixels have no surface to shade. Geometry clips the volume at the
-    // visible surface, so distant mist cannot be painted over a foreground roof.
-    if (depth > 100000.0 || depth <= g.eye.w) {
-        return 0.0;
-    }
-    let ndc = (pixel / g.screen.xy * 2.0 - 1.0) * vec2<f32>(1.0, -1.0);
-    let q = g.inv_view_proj * vec4<f32>(ndc, 0.0, 1.0);
-    let ray = q.xyz - g.eye.xyz * q.w;
-    let ray_length = length(ray);
-    let dir = ray / ray_length;
-    let hit = g.eye.xyz + ray * depth;
-    let limit = (depth - g.eye.w) * ray_length;
+// Trace from the camera toward terrain. Midpoints are stable in world space as
+// the camera moves, and each sample contributes only the light still visible.
+fn low_fog(eye: vec3<f32>, dir: vec3<f32>, limit: f32) -> vec2<f32> {
+    let depth = min(limit, mix(104.0, 180.0, g.fog.w));
+    let ground = eye + dir * limit;
+    let drift = vec2<f32>(1.18, 0.49) * g.screen.w + g.weather_flow.xy * 0.54;
     let wind = clamp(g.wx.zw, vec2<f32>(-9.0), vec2<f32>(9.0));
-    let shift = (vec2<f32>(0.82, 0.34) + wind * 0.17) * g.screen.w;
-
-    // Short intervals resolve wisps at the ground. Increasing intervals reach the
-    // tops of banks and keep the cost independent of zoom and map size.
-    let ends = array<f32, 6>(3.5, 8.0, 15.0, 26.0, 45.0, 77.0);
-    var start = 0.0;
-    var extinction = 0.0;
-    for (var i = 0; i < 6; i++) {
-        let end = min(ends[i], limit);
-        let point = hit - dir * ((start + end) * 0.5);
-        let above = point.z - terrain_height(point.xy);
-        if (above >= 0.0 && above < 26.0) {
-            let flow = point.xy - shift;
-            let bank = vnoise(flow * 0.018);
-            let roll = vnoise((flow + vec2<f32>(1.3, -0.8) * point.z) * 0.054);
-            let shape = smoothstep(0.22, 0.79, bank * 0.72 + roll * 0.28);
-            let top = 3.5 + shape * 18.5 * g.fog.w;
-            let layer = 1.0 - smoothstep(0.5, top, above);
-            extinction += (end - start) * layer * shape;
-        }
-        if (end >= limit) {
-            break;
+    let count = select(7, 19, g.resolve.w > 0.5);
+    var start = depth;
+    var remaining = 1.0;
+    var centroid = vec3<f32>(0.0);
+    var shafts = 0.0;
+    var checked = 0.0;
+    let daylight = smoothstep(0.015, 0.29, g.sun.z);
+    for (var i = 0; i < count; i++) {
+        let u = 1.0 - f32(i + 1) / f32(count);
+        let end = depth * (0.10 * u + 0.90 * u * u);
+        let point = ground - dir * ((start + end) * 0.5);
+        let ground_profile = terrain_fog_profile(point.xy);
+        let above = point.z - ground_profile.x;
+        if (above >= 0.0 && above < 50.0) {
+            let pool = smoothstep(0.0, 1.0, ground_profile.y);
+            let flow = point.xy - drift - wind * (2.0 + 0.19 * above);
+            let front = vnoise(flow * 0.0105);
+            let curls = vnoise(flow * 0.034 + vec2<f32>(0.056, -0.072) * above);
+            let wisps = vnoise(flow * 0.086 + vec2<f32>(-0.21, 0.17) * above);
+            let billow = smoothstep(0.32, 0.75, front * 0.55 + curls * 0.30 + wisps * 0.15);
+            let ceiling = 4.0 + (7.0 + 31.0 * pool) * billow * g.fog.w;
+            let layer = 1.0 - smoothstep(0.9, ceiling, above);
+            let density = layer * billow * mix(0.48, 1.15, pool) * g.fog.w * 0.19;
+            let scatter = remaining * (1.0 - exp(-density * (start - end)));
+            remaining -= scatter;
+            centroid += point * scatter;
+            if (g.resolve.w > 0.5 && daylight > 0.01 && (i % 3) == 0 && scatter > 0.003) {
+                let normal = vec3<f32>(0.0, 0.0, 1.0);
+                shafts += scatter * lit(point, normal) * cloud_sunlight(point);
+                checked += scatter;
+            }
         }
         start = end;
     }
-    return 1.0 - exp(-extinction * g.fog.w * 0.24);
+    let opacity = 1.0 - remaining;
+    if (opacity < 0.001) {
+        return vec2<f32>(0.0);
+    }
+    let point = centroid / opacity;
+    var direct = 0.0;
+    if (daylight > 0.001) {
+        let forward = pow(max(0.0, dot(dir, g.sun.xyz)), 5.0);
+        let centre = lit(point, vec3<f32>(0.0, 0.0, 1.0)) * cloud_sunlight(point);
+        let sunlight = mix(centre, shafts / max(0.001, checked), smoothstep(0.015, 0.08, checked) * 0.85);
+        direct = sunlight * daylight * (0.39 + 0.61 * forward);
+    }
+    if (g.local_lights.z > 0.02) {
+        let lamps = night_illumination(point, vec3<f32>(0.0, 0.0, 1.0));
+        direct += min(0.74, dot(lamps, vec3<f32>(0.29, 0.57, 0.14))) * (1.0 - daylight);
+    }
+    return vec2<f32>(opacity, opacity * direct);
+}
+
+fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32) -> vec2<f32> {
+    let base = cloud_base();
+    let thickness = cloud_thickness();
+    let top = base + thickness;
+    var start = 0.0;
+    var end = limit;
+    if (abs(dir.z) > 0.001) {
+        let a = (base - eye.z) / dir.z;
+        let b = (top - eye.z) / dir.z;
+        start = max(0.0, min(a, b));
+        end = min(limit, max(a, b));
+    } else if (eye.z < base || eye.z > top) {
+        return vec2<f32>(0.0);
+    }
+    let span = end - start;
+    if (span <= 0.0) {
+        return vec2<f32>(0.0);
+    }
+    let count = select(4, 10, g.resolve.w > 0.5);
+    let step_size = span / f32(count);
+    var transmission = 1.0;
+    var sunlight = 0.0;
+    let day = smoothstep(0.03, 0.37, g.sun.z);
+    let detailed = g.resolve.w > 0.5;
+    let sun_distance = min(60.0, thickness / max(0.36, g.sun.z));
+    let sun_step = sun_distance / 3.0;
+    let forward = pow(max(0.0, dot(dir, g.sun.xyz)), 4.0);
+    for (var i = 0; i < count; i++) {
+        let distance = start + step_size * (f32(i) + 0.5);
+        let point = eye + dir * distance;
+        let open_near_camera = smoothstep(12.0, 100.0, distance);
+        let density = cloud_density(point, detailed) * open_near_camera;
+        if (density < 0.004) {
+            continue;
+        }
+        let scatter = transmission * (1.0 - exp(-density * step_size * 0.082));
+        transmission -= scatter;
+        if (g.lightning.z > 0.002) {
+            sunlight += scatter * flash_at(point) * 1.9;
+        }
+        if (day > 0.0) {
+            // Sample settled cloud density toward the sun. Use the broad field here
+            // so fine edge detail does not introduce flicker in the lighting.
+            let toward_light = g.sun.xyz * sun_step;
+            var blockers = cloud_density(point + toward_light * 0.5, false);
+            if (detailed) {
+                blockers += cloud_density(point + toward_light * 1.5, false);
+                blockers += cloud_density(point + toward_light * 2.5, false);
+            } else {
+                blockers *= 2.1;
+            }
+            let direct = exp(-blockers * sun_step * 0.085);
+            let bounce = exp(-blockers * sun_step * 0.028);
+            sunlight += scatter * (direct * (0.68 + forward * 0.13) + bounce * 0.19) * day;
+        }
+        if (transmission < 0.012) {
+            break;
+        }
+    }
+    return vec2<f32>(1.0 - transmission, sunlight) * smoothstep(0.12, 0.36, g.shade.w);
+}
+
+fn atmosphere(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
+    let ray = ray_for_pixel(pixel);
+    let ray_length = length(ray);
+    let dir = ray / ray_length;
+    let surface = depth <= 100000.0 && depth > g.eye.w;
+    let limit = select(4000.0, depth * ray_length, surface);
+    var fog = vec2<f32>(0.0);
+    if (g.fog.w > 0.005 && surface) {
+        fog = low_fog(g.eye.xyz, dir, limit);
+    }
+    var cloud = vec2<f32>(0.0);
+    if (g.shade.w > 0.12) {
+        cloud = cloud_volume(g.eye.xyz, dir, limit);
+        if (surface && g.weather_flow.z > 0.02) {
+            let city_readability = mix(0.63, 0.92, smoothstep(550.0, 1400.0, depth));
+            cloud *= mix(1.0, city_readability, g.weather_flow.z);
+        }
+    }
+    return vec3<f32>(fog.x, fog.y * (1.0 - cloud.x) * 0.68 + cloud.y * 1.37, cloud.x);
 }
 
 @fragment
 fn fs_fog(e: EOut) -> @location(0) vec4<f32> {
-    let pixel = vec2<i32>(e.clip.xy) * 2;
+    let pixel = vec2<i32>(e.clip.xy) * i32(g.resolve.z);
     let depth = aux_at(pixel, 0).x;
-    return vec4<f32>(fog_opacity(vec2<f32>(pixel) + 0.5, depth), min(depth, 65504.0), 0.0, 1.0);
+    let volume = atmosphere(vec2<f32>(pixel) + 0.5, depth);
+    return vec4<f32>(volume, min(depth, 65504.0));
 }
 
-fn fog_at(pixel: vec2<f32>, depth: f32) -> f32 {
-    if (depth > 100000.0) {
-        return 0.0;
+fn atmosphere_at(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
+    if (g.resolve.z == 1.0) {
+        return textureLoad(fog_tex, vec2<i32>(pixel), 0).rgb;
     }
-    let uv = (pixel - 0.5) * 0.5;
+    let uv = (pixel - 0.5) / g.resolve.z;
     let base = vec2<i32>(floor(uv));
     let f = fract(uv);
     let bound = vec2<i32>(textureDimensions(fog_tex)) - vec2<i32>(1);
-    let tol = 1.0 + depth * 0.007;
-    var result = 0.0;
+    let comparable_depth = min(depth, 65504.0);
+    let tol = 1.0 + comparable_depth * 0.007;
+    var result = vec3<f32>(0.0);
     var weights = 0.0;
     for (var y = 0; y < 2; y++) {
         for (var x = 0; x < 2; x++) {
-            let tap = textureLoad(fog_tex, clamp(base + vec2<i32>(x, y), vec2<i32>(0), bound), 0).rg;
+            let tap = textureLoad(fog_tex, clamp(base + vec2<i32>(x, y), vec2<i32>(0), bound), 0);
             let a = mix(1.0 - f.x, f.x, f32(x));
             let b = mix(1.0 - f.y, f.y, f32(y));
-            let weight = a * b * (1.0 - smoothstep(tol, 2.0 * tol, abs(tap.y - depth)));
-            result += tap.x * weight;
+            let weight = a * b * (1.0 - smoothstep(tol, 2.0 * tol, abs(tap.a - comparable_depth)));
+            result += tap.rgb * weight;
             weights += weight;
         }
     }
     if (weights < 0.0001) {
-        return fog_opacity(pixel, depth);
+        return atmosphere(pixel, depth);
     }
     return result / weights;
 }
@@ -1201,9 +1457,198 @@ fn contact(p: vec2<i32>, px: f32, a: vec2<f32>) -> f32 {
     return 1.0;
 }
 
+fn lightning_segment(pixel: vec2<f32>, depth: f32, a: vec3<f32>, b: vec3<f32>, width: f32) -> f32 {
+    if (min(a.z, b.z) <= g.eye.w) {
+        return 0.0;
+    }
+    let edge = b.xy - a.xy;
+    let t = clamp(dot(pixel - a.xy, edge) / max(0.03, dot(edge, edge)), 0.0, 1.0);
+    let z = 1.0 / mix(1.0 / a.z, 1.0 / b.z, t);
+    let distance = length(pixel - mix(a.xy, b.xy, t));
+    let visible = smoothstep(-0.2, 3.0, depth - z);
+    return (1.0 - smoothstep(width * 0.28, width * 1.37, distance)) * visible;
+}
+
+fn lightning_bolt(p: vec2<i32>, depth: f32) -> f32 {
+    let xy = g.lightning.xy;
+    let seed = vec2<i32>(floor(xy * 0.16));
+    let ground = terrain_height(xy);
+    let top = max(ground + 85.0, cloud_base() + cloud_thickness() * 0.37);
+    let bottom = project_pixel(vec3<f32>(xy, ground + 0.3));
+    let head = project_pixel(vec3<f32>(xy, top));
+    let pixel = vec2<f32>(p) + 0.5;
+    if (any(pixel < min(head.xy, bottom.xy) - 0.22 * g.screen.y)
+        || any(pixel > max(head.xy, bottom.xy) + 0.22 * g.screen.y)) {
+        return 0.0;
+    }
+    let width = max(1.0, 0.0021 * g.screen.y);
+    var brightness = 0.0;
+    var start = bottom;
+    for (var i = 1; i <= 8; i++) {
+        let t = f32(i) * 0.125;
+        let jitter = vec2<f32>(hash2(seed + vec2<i32>(i, 16)), hash2(seed + vec2<i32>(9, i))) - 0.5;
+        let point = vec3<f32>(xy + jitter * 31.0 * sin(t * 3.14159), mix(ground, top, t));
+        let end = project_pixel(point);
+        brightness = max(brightness, lightning_segment(pixel, depth, start, end, width));
+        if ((i == 4) || (i == 6)) {
+            let direction = select(-1.0, 1.0, i == 6);
+            let elbow = project_pixel(point + vec3<f32>(direction * 15.0, 8.0, -11.0));
+            let fork = project_pixel(point + vec3<f32>(direction * 27.0, 13.0, -29.0));
+            brightness = max(brightness, 0.60 * lightning_segment(pixel, depth, end, elbow, width * 0.66));
+            brightness = max(brightness, 0.48 * lightning_segment(pixel, depth, elbow, fork, width * 0.55));
+        }
+        start = end;
+    }
+    return brightness * g.lightning.z;
+}
+
+fn near_geometry_light(p: vec2<i32>, centre: vec2<f32>) -> f32 {
+    if (centre.x > 1250.0) {
+        return 1.0;
+    }
+    let point = world_at(p, centre.x);
+    let value = textureLoad(aux_tex, p, 0).y;
+    let normal = surface_normal(value);
+    let radius = i32(clamp(1.9 / max(g.screen.z * centre.x, 0.035), 2.0, 10.0));
+    let bounds = vec2<i32>(g.screen.xy) - vec2<i32>(1);
+    let directions = array<vec2<i32>, 8>(
+        vec2<i32>(1, 0), vec2<i32>(-1, 0), vec2<i32>(0, 1), vec2<i32>(0, -1),
+        vec2<i32>(1, 1), vec2<i32>(-1, 1), vec2<i32>(1, -1), vec2<i32>(-1, -1));
+    var blocked = 0.0;
+    for (var i = 0; i < 8; i++) {
+        let q = clamp(p + directions[i] * radius * (1 + i / 4), vec2<i32>(0), bounds);
+        let sample = aux_at(q, 0);
+        if (sample.x > 100000.0 || abs(sample.x - centre.x) > 13.0) {
+            continue;
+        }
+        let offset = world_at(q, sample.x) - point;
+        let distance = length(offset);
+        let elevation = dot(normal, offset / max(0.01, distance));
+        blocked += smoothstep(0.14, 0.75, elevation) * (1.0 - smoothstep(1.5, 8.0, distance));
+    }
+    var shade = 0.0;
+    if (g.sun.z > 0.12 && dot(normal, g.sun.xyz) > 0.13) {
+        for (var i = 1; i <= 4; i++) {
+            let ray = point + normal * 0.25 + g.sun.xyz * (0.62 * f32(i));
+            let q = project_pixel(ray);
+            if (any(q.xy < vec2<f32>(0.0)) || any(q.xy > vec2<f32>(bounds))) {
+                break;
+            }
+            let hit = aux_at(vec2<i32>(q.xy), 0);
+            let gap = q.z - hit.x;
+            if (hit.y != centre.y && gap > 0.12 && gap < 1.2) {
+                shade = 0.14 * smoothstep(0.12, 0.3, g.sun.z);
+                break;
+            }
+        }
+    }
+    return 1.0 - blocked * 0.049 - shade;
+}
+
+fn temporal_colour(colour: vec3<f32>, p: vec2<i32>, depth: f32) -> vec3<f32> {
+    if (g.temporal.x < 0.01 || depth > 65000.0) {
+        return colour;
+    }
+    let world = world_at(p, depth);
+    let q = g.previous_view_proj * vec4<f32>(world, 1.0);
+    let uv = q.xy / max(0.001, q.w) * vec2<f32>(0.5, -0.5) + 0.5;
+    if (q.w < g.eye.w || any(uv < vec2<f32>(0.002)) || any(uv > vec2<f32>(0.998))) {
+        return colour;
+    }
+    let previous = textureLoad(previous_frame, vec2<i32>(uv * g.screen.xy), 0);
+    if (abs(previous.a - q.w) > max(0.55, q.w * 0.008)) {
+        return colour;
+    }
+    let limit = vec2<i32>(g.screen.xy) - vec2<i32>(1);
+    var low = colour;
+    var high = colour;
+    let offsets = array<vec2<i32>, 4>(vec2<i32>(-1, 0), vec2<i32>(1, 0), vec2<i32>(0, -1), vec2<i32>(0, 1));
+    for (var i = 0; i < 4; i++) {
+        let sample = textureLoad(colour_tex, clamp(p + offsets[i], vec2<i32>(0), limit), 0).rgb;
+        low = min(low, sample);
+        high = max(high, sample);
+    }
+    let clipped = clamp(previous.rgb, low - 0.020, high + 0.020);
+    let change = length(clipped - colour);
+    let weight = g.temporal.x * (1.0 - smoothstep(0.13, 0.55, change));
+    return mix(colour, clipped, weight);
+}
+
+fn screen_reflection(colour: vec3<f32>, p: vec2<i32>, depth: f32) -> vec3<f32> {
+    let value = textureLoad(aux_tex, p, 0).y;
+    let material = value >> 30u;
+    if (material == 0u || depth > 1700.0) {
+        return colour;
+    }
+    let point = world_at(p, depth);
+    let normal = select(surface_normal(value), vec3<f32>(0.0, 0.0, 1.0), material == 2u);
+    let view = normalize(g.eye.xyz - point);
+    let reflected = reflect(-view, normal);
+    let surface_id = value & 0x00ffffffu;
+    let shape = 0.16 + 0.84 * pow(1.0 - max(dot(view, normal), 0.0), 3.0);
+    let strength = select(0.28, 0.22 * g.wx.y, material == 2u) * shape;
+    let probe = nearby_radiance(point, reflected);
+    let fallback = mix(colour, probe, strength * select(0.34, 0.77, material == 3u));
+    var previous = -1.0;
+    for (var i = 0; i < 16; i++) {
+        let t = f32(i + 1);
+        let q = project_pixel(point + normal * 0.42 + reflected * (t * 1.4 + t * t * 0.46));
+        if (q.z <= g.eye.w || any(q.xy < vec2<f32>(1.0)) || any(q.xy >= g.screen.xy - 1.0)) {
+            break;
+        }
+        let pos = vec2<i32>(q.xy);
+        let depth_id = aux_at(pos, 0);
+        let gap = q.z - depth_id.x;
+        let thickness = 0.8 + t * 0.55;
+        if (depth_id.x < 100000.0 && gap > 0.0 && gap < thickness && previous <= 0.0
+            && u32(depth_id.y) != surface_id) {
+            let uv = q.xy / g.screen.xy;
+            let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
+            let weight = strength * smoothstep(0.0, 0.13, edge) * (1.0 - t / 18.0);
+            return mix(fallback, textureLoad(colour_tex, pos, 0).rgb, weight);
+        }
+        previous = gap;
+    }
+    return fallback;
+}
+
+fn aerial_perspective(colour: vec3<f32>, p: vec2<i32>, depth: f32) -> vec3<f32> {
+    if (depth > 100000.0) {
+        return colour;
+    }
+    let ray = normalize(ray_for_pixel(vec2<f32>(p) + 0.5));
+    var drift = 0.0;
+    if (g.weather_flow.z > 0.01) {
+        drift = g.weather_flow.z * storm_cell(world_at(p, depth).xy);
+    }
+    let extinction = 0.00014 + 0.00027 * g.shade.w + 0.00039 * drift;
+    let opacity = (1.0 - exp(-max(0.0, depth - 210.0) * extinction)) * 0.68;
+    let sky = sky_radiance(g.eye.xyz, vec3<f32>(ray.xy, abs(ray.z) * 0.3));
+    return mix(colour, sky * mix(g.tone.rgb, vec3<f32>(1.0), 0.27), opacity);
+}
+
+fn tilt_focus(colour: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
+    let y = (f32(p.y) + 0.5) / g.screen.y;
+    let blur = smoothstep(0.24, 0.49, abs(y - 0.48));
+    if (blur < 0.02) {
+        return colour;
+    }
+    let size = vec2<i32>(g.screen.xy) - vec2<i32>(1);
+    let radius = i32(round(clamp(g.screen.y * 0.004, 1.0, 5.0) * blur));
+    let step = max(radius, 1);
+    var blur_colour = colour * 0.28;
+    let offsets = array<vec2<i32>, 6>(vec2<i32>(-2, 0), vec2<i32>(2, 0),
+        vec2<i32>(-1, -1), vec2<i32>(1, -1), vec2<i32>(-1, 1), vec2<i32>(1, 1));
+    for (var i = 0; i < 6; i++) {
+        let q = clamp(p + offsets[i] * step, vec2<i32>(0), size);
+        blur_colour += textureLoad(colour_tex, q, 0).rgb * 0.12;
+    }
+    return mix(colour, blur_colour, blur * 0.74);
+}
+
 @fragment
 fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
-    let pixel = e.clip.xy * g.resolve.xy;
+    let pixel = e.clip.xy;
     let p = min(vec2<i32>(pixel), vec2<i32>(g.screen.xy) - vec2<i32>(1));
     var acc = vec3<f32>(0.0);
     // ink thins out as a pixel covers more of the world: a one pixel line from about half a
@@ -1231,8 +1676,58 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
         }
     }
     var col = acc / f32(SAMPLE_COUNT);
-    if (g.fog.w > 0.005) {
-        col = mix(col, g.fog.rgb, fog_at(vec2<f32>(p) + 0.5, centre.x));
+    if (g.look.z < 0.5 && g.resolve.w > 0.5) {
+        col *= near_geometry_light(p, centre);
+        col = screen_reflection(col, p, centre.x);
+    }
+    if (g.look.z < 0.5 && (g.resolve.w > 0.5 || g.weather_flow.z > 0.02)) {
+        col = aerial_perspective(col, p, centre.x);
+    }
+    if (g.look.z < 0.5 && g.weather_flow.w > 0.5) {
+        col = tilt_focus(col, p);
+    }
+    if (g.look.z < 0.5 && (g.fog.w > 0.005 || g.shade.w > 0.12)) {
+        let volume = atmosphere_at(vec2<f32>(p) + 0.5, centre.x);
+        let sun_glow = mix(vec3<f32>(0.43, 0.39, 0.34), vec3<f32>(0.35, 0.39, 0.44), g.shade.w);
+        col = mix(col, g.fog.rgb * 0.82, volume.r);
+        let daylight = smoothstep(0.02, 0.37, g.sun.z);
+        let ambient = mix(vec3<f32>(0.16, 0.23, 0.32), vec3<f32>(0.51, 0.57, 0.65), daylight)
+            * (1.0 - 0.24 * g.weather_flow.z);
+        col = mix(col, ambient, volume.b) + sun_glow * volume.g;
+    }
+    if (g.lightning.z > 0.035 && g.look.z < 0.5) {
+        col += vec3<f32>(0.75, 0.88, 1.0) * lightning_bolt(p, centre.x) * 2.5;
+    }
+    return vec4<f32>(temporal_colour(col, p, centre.x), min(65000.0, centre.x));
+}
+
+fn bright_pass(p: vec2<i32>) -> vec3<f32> {
+    let c = textureLoad(current_frame, p, 0).rgb;
+    let peak = max(c.r, max(c.g, c.b));
+    return c * smoothstep(0.91, 1.17, peak) * min(0.63, max(0.0, peak - 0.84));
+}
+
+@fragment
+fn fs_present(e: EOut) -> @location(0) vec4<f32> {
+    let bounds = vec2<i32>(g.screen.xy) - vec2<i32>(1);
+    let p = min(vec2<i32>(e.clip.xy * g.resolve.xy), bounds);
+    var col = textureLoad(current_frame, p, 0).rgb;
+    if (g.temporal.y > 0.010) {
+        let glow = array<vec2<i32>, 8>(vec2<i32>(-2, 0), vec2<i32>(2, 0), vec2<i32>(0, -2), vec2<i32>(0, 2),
+            vec2<i32>(-4, -3), vec2<i32>(4, -3), vec2<i32>(-4, 3), vec2<i32>(4, 3));
+        var scatter = vec3<f32>(0.0);
+        for (var i = 0; i < 8; i++) {
+            let q = clamp(p + glow[i], vec2<i32>(0), bounds);
+            scatter += bright_pass(q) * select(0.13, 0.055, i < 4);
+        }
+        col += scatter * g.temporal.y * 0.53;
+    }
+    col *= g.temporal.z;
+    if (g.temporal.w > 0.5) {
+        let peak = max(col.r, max(col.g, col.b));
+        let shoulder = max(0.0, peak - 0.83);
+        let compressed = min(peak, 0.83) + shoulder / (1.0 + shoulder * 5.2);
+        col *= compressed / max(0.0001, peak);
     }
     return vec4<f32>(col, 1.0);
 }
