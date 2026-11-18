@@ -1347,8 +1347,8 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>) ->
     }
     let detailed = g.resolve.w > 0.5;
     // Keep steps short when a shallow view ray travels a long way inside the cloud.
-    let budget = select(20, 36, detailed);
-    let step_size = max(select(15.0, 6.8, detailed), span / f32(budget));
+    let budget = select(28, 42, detailed);
+    let step_size = max(select(10.0, 6.0, detailed), span / f32(budget));
     // Offset neighboring rays within each interval so they do not reveal the same layers.
     let lattice = vec2<i32>(floor(pixel / g.resolve.z));
     let phase = hash2(lattice);
@@ -1366,14 +1366,14 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>) ->
         }
         let jitter = fract(phase + f32(i) * 0.618034) - 0.5;
         let middle = interval_start + interval_length * 0.5;
-        let offset = interval_length * jitter * select(0.34, 0.24, detailed);
+        let offset = interval_length * jitter * select(0.58, 0.34, detailed);
         let distance = middle + offset;
         let point = eye + dir * distance;
         let open_near_camera = smoothstep(12.0, 100.0, distance);
         var density = cloud_density(point, select(1u, 2u, detailed));
         // Average opposite sides of coarse intervals so a thin lit rim resolves
         // as a smooth surface instead of alternating light and dark pixels.
-        if (interval_length > 14.0 && density < 0.68) {
+        if (interval_length > 11.0 && density < 0.68) {
             let across = eye + dir * (middle - offset);
             density = 0.5 * (density + cloud_density(across, select(1u, 2u, detailed)));
         }
