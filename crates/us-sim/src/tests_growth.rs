@@ -201,7 +201,9 @@ fn a_town_blocked_for_months_loses_a_little_approval() {
 #[test]
 fn goals_tick_off_and_pay_through_the_ledger() {
     let mut s = untended(Preset::Grid, 3);
-    assert_eq!(s.goals().len(), 6);
+    let goals = s.goals();
+    assert_eq!(goals.len(), 10);
+    assert_eq!(goals.last().map(|g| g.goal), Some(Goal::RegionalCity));
     assert!(s.goals_visible());
     let before = s.treasury;
     s.set_tax_x10(TAX_DEFAULT_X10 + 5);
