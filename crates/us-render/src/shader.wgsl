@@ -1298,7 +1298,7 @@ fn low_fog(eye: vec3<f32>, dir: vec3<f32>, limit: f32) -> vec2<f32> {
     return vec2<f32>(opacity, opacity * direct);
 }
 
-fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32) -> vec2<f32> {
+fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>) -> vec2<f32> {
     let base = cloud_base();
     let thickness = cloud_thickness();
     let top = base + thickness;
@@ -1318,9 +1318,11 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32) -> vec2<f32> {
     }
     let detailed = g.resolve.w > 0.5;
     // Keep steps short when a shallow view ray travels a long way inside the cloud.
-    // A fixed world-space step keeps the existing samples in place as the ray length changes.
-    let budget = select(16, 36, detailed);
+    let budget = select(20, 36, detailed);
     let step_size = max(select(15.0, 6.8, detailed), span / f32(budget));
+    // Offset neighboring rays within each interval so they do not reveal the same layers.
+    let lattice = vec2<i32>(floor(pixel / g.resolve.z));
+    let phase = 0.5 + (hash2(lattice) - 0.5) * select(0.66, 0.40, detailed);
     var transmission = 1.0;
     var sunlight = 0.0;
     let day = smoothstep(0.03, 0.37, g.sun.z);
@@ -1333,7 +1335,7 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32) -> vec2<f32> {
         if (interval_length <= 0.0) {
             break;
         }
-        let distance = interval_start + interval_length * 0.5;
+        let distance = interval_start + interval_length * phase;
         let point = eye + dir * distance;
         let open_near_camera = smoothstep(12.0, 100.0, distance);
         let density = cloud_density(point, detailed) * open_near_camera;
@@ -1379,7 +1381,7 @@ fn atmosphere(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
     }
     var cloud = vec2<f32>(0.0);
     if (g.shade.w > 0.12) {
-        cloud = cloud_volume(g.eye.xyz, dir, limit);
+        cloud = cloud_volume(g.eye.xyz, dir, limit, pixel);
         if (surface && g.weather_flow.z > 0.02) {
             let city_readability = mix(0.63, 0.92, smoothstep(550.0, 1400.0, depth));
             cloud *= mix(1.0, city_readability, g.weather_flow.z);
@@ -1408,19 +1410,20 @@ fn atmosphere_at(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
         return textureLoad(fog_tex, vec2<i32>(pixel), 0).rgb;
     }
     let uv = pixel / g.resolve.z - 0.5;
-    let base = vec2<i32>(floor(uv));
-    let f = fract(uv);
+    let base = vec2<i32>(floor(uv + 0.5));
+    let f = uv - vec2<f32>(base);
     let bound = vec2<i32>(textureDimensions(fog_tex)) - vec2<i32>(1);
     let comparable_depth = min(depth, 65504.0);
     let tol = 1.0 + comparable_depth * 0.007;
     var result = vec3<f32>(0.0);
     var weights = 0.0;
-    for (var y = 0; y < 2; y++) {
-        for (var x = 0; x < 2; x++) {
-            let tap = textureLoad(fog_tex, clamp(base + vec2<i32>(x, y), vec2<i32>(0), bound), 0);
-            let a = mix(1.0 - f.x, f.x, f32(x));
-            let b = mix(1.0 - f.y, f.y, f32(y));
-            let weight = a * b * (1.0 - smoothstep(tol, 2.0 * tol, abs(tap.a - comparable_depth)));
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let offset = vec2<i32>(x, y);
+            let tap = textureLoad(fog_tex, clamp(base + offset, vec2<i32>(0), bound), 0);
+            let d = f - vec2<f32>(offset);
+            let spatial = exp2(-dot(d, d) * 1.8);
+            let weight = spatial * (1.0 - smoothstep(tol, 2.0 * tol, abs(tap.a - comparable_depth)));
             result += tap.rgb * weight;
             weights += weight;
         }
