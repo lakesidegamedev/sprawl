@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The countryside is no longer bare grass. Forests, pine woods, copses and lone trees stand on the open land around every town, in amounts that suit each landscape. The town fells them where it builds a street or a building, and land opened for building keeps a few old trees between the houses.
+- Lighting has more depth. Shadows have soft edges, sunlit faces are warm and shade is filled with cool sky light, more so when the sun is low. Buildings and trees darken the ground at their feet, and corners between close buildings gather shade. Colours are a little richer.
+- Tree crowns are rounded and lit as one mass instead of facet by facet. Grassland has lusher hollows, drier rises, tussocks close up and wild flowers in spring and summer. Outlines take a darker shade of the surface they border instead of one flat ink colour.
+- Contact shading follows the Shadows setting, so it is off by default on phones. Woods are drawn in a much lighter form when zoomed out.
 - Downtown gets taller landmarks, offset atrium towers, and stepped residential terraces. Their façades show different window patterns, and smaller buildings pick up more distinct brick, siding, roof seams, and shingles.
 - Tall buildings use fewer triangles for their windows. Large, well-served City Planning districts can reach the same skyline tier as established Town Growth centers.
 

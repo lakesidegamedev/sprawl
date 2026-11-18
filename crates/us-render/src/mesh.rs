@@ -48,6 +48,47 @@ impl Mesh {
         )
     }
 
+    /// Round the foliage added since vertex `from`: leaf-coloured vertices that share a place
+    /// take the average of their faces' normals, so a crown built from flat faces is lit as one
+    /// rounded mass instead of facet by facet.
+    pub fn round_foliage(&mut self, from: usize) {
+        fn leafy(c: [u8; 4]) -> bool {
+            let near = |r: u8, g: u8, b: u8| c[0] == r && c[1] == g && c[2] >= b && c[2] <= b + 3;
+            c[3] == 255
+                && (near(88, 150, 76)
+                    || near(70, 128, 66)
+                    || near(100, 168, 58)
+                    || near(46, 104, 72))
+        }
+        let mut sums: std::collections::BTreeMap<[i32; 3], Vec3> =
+            std::collections::BTreeMap::new();
+        let key = |p: [f32; 3]| {
+            [
+                (p[0] * 64.0).round() as i32,
+                (p[1] * 64.0).round() as i32,
+                (p[2] * 64.0).round() as i32,
+            ]
+        };
+        for v in &self.vertices[from.min(self.vertices.len())..] {
+            if leafy(v.color) {
+                *sums.entry(key(v.pos)).or_default() += Vec3::from(v.normal);
+            }
+        }
+        if sums.is_empty() {
+            return;
+        }
+        for v in &mut self.vertices[from..] {
+            if leafy(v.color)
+                && let Some(n) = sums.get(&key(v.pos))
+            {
+                let n = n.normalize_or_zero();
+                if n != Vec3::ZERO {
+                    v.normal = n.to_array();
+                }
+            }
+        }
+    }
+
     /// Add a convex polygon (fan triangulated). Degenerate polygons are dropped.
     pub fn push_poly(&mut self, pts: &[V3], color: Rgb, flat: bool, cast: bool, id: u32) {
         self.push_finished_poly(pts, color, flat, cast, id, Finish::Plain);

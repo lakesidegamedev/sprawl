@@ -311,6 +311,19 @@ impl State {
             delete_ask: None,
         };
         st.refresh_saves();
+        // URBAN_SPRAWL_SMOKE_INK=0..1 sets how soft the ink lines are, for comparison pictures
+        if let Some(v) = std::env::var("URBAN_SPRAWL_SMOKE_INK")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+        {
+            st.style.ink_soft = v;
+        }
+        // URBAN_SPRAWL_SMOKE_GFX=detailed|native|balanced picks the graphics setting for pictures
+        match std::env::var("URBAN_SPRAWL_SMOKE_GFX").as_deref() {
+            Ok("detailed") => st.settings.detailed_graphics = true,
+            Ok("native") => st.settings.balanced_world_resolution = false,
+            _ => {}
+        }
         if let Some(v) = std::env::var("URBAN_SPRAWL_SMOKE_SCALE")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
@@ -450,6 +463,7 @@ impl State {
             2048
         };
         self.style.high_detail = self.settings.detailed_graphics;
+        self.style.contact_shade = self.settings.high_shadows || self.settings.detailed_graphics;
         self.style.tilt_shift = self.settings.tilt_shift;
         self.style.window_world_scale = if self.settings.detailed_graphics {
             1.0

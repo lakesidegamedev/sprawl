@@ -987,6 +987,7 @@ fn finish(items: Vec<Item>, kit: &Kit, land: &Land) -> Vec<Chunk> {
             let sit = (!land.is_flat()).then_some(Sit { land, z });
             let (s, c) = (libm::sinf(it.theta), libm::cosf(it.theta));
             let mut pts: Vec<[f32; 3]> = Vec::with_capacity(8);
+            let first_vertex = mesh.vertices.len();
             for p in &tpl.obj.polys {
                 pts.clear();
                 pts.extend(p.pts.iter().map(|v| {
@@ -1003,6 +1004,7 @@ fn finish(items: Vec<Item>, kit: &Kit, land: &Land) -> Vec<Chunk> {
                     if p.outline { id } else { ID_NONE },
                 );
             }
+            mesh.round_foliage(first_vertex);
             if tpl.far {
                 tpl.obj.emit_far_on(&mut far, it.x, it.y, it.theta, sit);
             }

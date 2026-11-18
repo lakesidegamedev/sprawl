@@ -145,7 +145,7 @@ impl Calendar {
 
     /// Brightness multiplier of a shadowed face (night shadows are barely darker).
     pub fn shadow_tone(&self) -> f32 {
-        0.72 + 0.14 * self.darkness()
+        0.60 + 0.26 * self.darkness()
     }
 }
 

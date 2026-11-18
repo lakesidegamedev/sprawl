@@ -45,6 +45,7 @@ pub mod site;
 pub mod trains;
 pub mod trams;
 pub mod weather;
+pub mod woods;
 
 pub use calendar::{Calendar, DayPhase, Season};
 pub use camera::{Camera, View, pick_ground, pick_terrain, project, ray_ground};

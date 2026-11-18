@@ -1081,6 +1081,7 @@ impl Obj {
         let (s, c) = (libm::sinf(theta), libm::cosf(theta));
         let mut pts: Vec<V3> = Vec::with_capacity(8);
         let mut solid_ids: Vec<Option<u32>> = vec![None; self.solids.len()];
+        let first_vertex = mesh.vertices.len();
         for p in &self.polys {
             pts.clear();
             pts.extend(p.pts.iter().map(|v| {
@@ -1107,6 +1108,7 @@ impl Obj {
             };
             mesh.push_finished_poly(&pts, p.color, p.flat, p.shadow, id, p.finish);
         }
+        mesh.round_foliage(first_vertex);
     }
 }
 

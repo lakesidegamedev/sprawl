@@ -34,6 +34,9 @@ pub struct Style {
     pub ink_width: u32,
     /// Ink colour.
     pub ink: [u8; 3],
+    /// How far an ink line takes the colour of the face it borders instead of the ink colour:
+    /// 0 is the flat ink line, 1 a darker line of the face's own colour.
+    pub ink_soft: f32,
     /// Brightness multiplier of a shadowed face.
     pub shadow_tone: f32,
     /// Draw chunks that are small on screen in their simpler far form (no ink, no small parts).
@@ -44,6 +47,8 @@ pub struct Style {
     pub high_detail: bool,
     /// Soft focus at the top and bottom of the gameplay camera.
     pub tilt_shift: bool,
+    /// Darken creases and the ground at the foot of walls from the depth of the picture.
+    pub contact_shade: bool,
 }
 
 /// A chunk uses its far form when one metre of it spans less than this share of the frame height
@@ -62,11 +67,13 @@ impl Default for Style {
             shadow_size: 4096,
             ink_width: 2,
             ink: [28, 30, 38],
-            shadow_tone: 0.72,
+            ink_soft: 0.7,
+            shadow_tone: 0.60,
             lod: true,
             window_world_scale: 1.0,
             high_detail: false,
             tilt_shift: false,
+            contact_shade: true,
         }
     }
 }
@@ -1787,7 +1794,12 @@ impl Renderer {
                 land.size().max(1.0).recip(),
                 (land.n() as f32).recip(),
             ],
-            local_lights: [origin[0], origin[1], night_lighting, 0.0],
+            local_lights: [
+                origin[0],
+                origin[1],
+                night_lighting,
+                f32::from(style.contact_shade && !map_view),
+            ],
             resolve: [
                 rw as f32 / present[0] as f32,
                 rh as f32 / present[1] as f32,
@@ -1822,7 +1834,11 @@ impl Renderer {
                 wl.lightning[0],
                 wl.lightning[1],
                 if map_view { 0.0 } else { wl.lightning[2] },
-                0.0,
+                if map_view {
+                    0.0
+                } else {
+                    style.ink_soft.clamp(0.0, 1.0)
+                },
             ],
             temporal: [
                 if previous.is_some() && wl.lightning[2] < 0.025 {
