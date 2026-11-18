@@ -1,0 +1,49 @@
+name: Windows 1.4.0 release smoke
+on:
+  push:
+    branches: [ci/sprawl-1.4-windows-smoke]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Verify and install the published package
+        shell: pwsh
+        run: |
+          gh run download 44233088540 -n installers-windows-latest -R $env:GITHUB_REPOSITORY -D installer
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch the release installer' }
+          $setup = Resolve-Path installer/UrbanSprawl-1.4.0-setup.exe
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne 'a232725c83861f581a31ec910e0d27abc16ba5d8e94e78884aba72c478c537b1') { throw 'Published checksum mismatch' }
+          $install = Join-Path $env:LOCALAPPDATA 'Programs\Urban Sprawl'
+          $process = Start-Process $setup -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$install`"" -PassThru
+          if (-not $process.WaitForExit(120000)) { $process.Kill(); throw 'Inno installer timed out' }
+          if ($process.ExitCode -ne 0) { throw "Inno installer exit code $($process.ExitCode)" }
+          $entry = Get-ItemProperty 'HKCU:\Software\Lakeside Games\Urban Sprawl'
+          if ($entry.Version -ne '1.4.0' -or -not (Test-Path $entry.Executable -PathType Leaf)) { throw 'Missing registered Urban Sprawl 1.4.0 executable' }
+          Write-Host "Installed version $($entry.Version)"
+
+      - name: Launch the installed game and render frames
+        shell: pwsh
+        run: |
+          $binary = (Get-ItemProperty 'HKCU:\Software\Lakeside Games\Urban Sprawl').Executable
+          $env:URBAN_SPRAWL_SMOKE = '20'
+          $env:LAKESIDE_LAUNCHER = '1'
+          $log = Join-Path $env:TEMP 'urban-sprawl.log'
+          $process = Start-Process $binary -WorkingDirectory (Split-Path $binary) -PassThru
+          try {
+            if (-not $process.WaitForExit(120000)) { $process.Kill(); throw 'Game smoke test timed out' }
+            if ($process.ExitCode -ne 0) { throw "Game exit code $($process.ExitCode)" }
+            if (-not (Select-String -Path $log -Pattern '^graphics:' -Quiet)) { throw 'No graphics adapter initialized' }
+            if (-not (Select-String -Path $log -Pattern '^frame:' -Quiet)) { throw 'No frames rendered' }
+            if (Select-String -Path $log -Pattern 'panic:|could not start|event loop error' -Quiet) { throw 'Game reported a startup error' }
+          } finally {
+            if (Test-Path $log) { Get-Content $log }
+          }
