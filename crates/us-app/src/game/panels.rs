@@ -755,6 +755,24 @@ impl Game {
                     }
                 }
                 "low" => self.cam.set_angle(n as f32, 18.0),
+                "storm" => {
+                    for _ in 0..365 {
+                        if self.sim.storm() {
+                            break;
+                        }
+                        self.sim.step_day();
+                    }
+                    eprintln!(
+                        "smoke: weather {:?} on day {}",
+                        self.sim.sky_now(),
+                        self.sim.day
+                    );
+                    self.hour = 16.8;
+                    self.hour_frozen = true;
+                    let hall = self.live.scene.hall.truncate();
+                    self.cam.look_at(hall, 1320.0);
+                    self.cam.set_angle(41.0, 26.0);
+                }
                 "levers" => self.ui.levers_open = true,
                 "budget" => self.ui.budget_open = true,
                 "loans" => self.ui.loans_open = true,

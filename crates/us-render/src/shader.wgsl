@@ -262,11 +262,12 @@ fn cloud_density(point: vec3<f32>, detail: bool) -> f32 {
         threshold += gaps * gaps * 0.34 * g.weather_flow.z;
     }
     var shape = field;
-    if (detail && field > threshold - 0.11 && field < threshold + 0.27) {
+    if (detail && field > threshold - 0.10 && field < threshold + 0.27) {
         let xyz = point - vec3<f32>(g.screen.w * vec2<f32>(2.1, 0.86) + g.weather_flow.xy, 0.0);
-        let cells = cloud_noise(xyz * 0.042);
-        let edges = cloud_noise(xyz * 0.106 + vec3<f32>(3.7, 2.4, -1.1));
-        shape += (0.74 * cells + 0.26 * edges - 0.5) * 0.31;
+        let cells = cloud_noise(xyz * vec3<f32>(0.036, 0.036, 0.054));
+        let wisps = cloud_noise(xyz * vec3<f32>(0.093, 0.093, 0.15) + vec3<f32>(3.7, 2.4, -1.1));
+        let edge = 1.0 - smoothstep(threshold + 0.04, threshold + 0.27, field);
+        shape += ((cells - 0.5) * 0.24 + (wisps - 0.5) * 0.18) * edge;
     }
     let deck = smoothstep(0.0, 0.24, layer) * (1.0 - smoothstep(0.56, 1.0, layer));
     let mass = smoothstep(threshold - 0.035, threshold + 0.19, shape);
@@ -1240,7 +1241,7 @@ fn low_fog(eye: vec3<f32>, dir: vec3<f32>, limit: f32) -> vec2<f32> {
     let ground = eye + dir * limit;
     let drift = vec2<f32>(1.18, 0.49) * g.screen.w + g.weather_flow.xy * 0.54;
     let wind = clamp(g.wx.zw, vec2<f32>(-9.0), vec2<f32>(9.0));
-    let count = select(7, 19, g.resolve.w > 0.5);
+    let count = select(9, 26, g.resolve.w > 0.5);
     var start = depth;
     var remaining = 1.0;
     var centroid = vec3<f32>(0.0);
@@ -1311,24 +1312,31 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32) -> vec2<f32> {
     if (span <= 0.0) {
         return vec2<f32>(0.0);
     }
-    let count = select(4, 10, g.resolve.w > 0.5);
-    let step_size = span / f32(count);
+    let detailed = g.resolve.w > 0.5;
+    // Keep steps short when a shallow view ray travels a long way inside the cloud.
+    // A fixed world-space step keeps the existing samples in place as the ray length changes.
+    let budget = select(16, 36, detailed);
+    let step_size = max(select(15.0, 6.8, detailed), span / f32(budget));
     var transmission = 1.0;
     var sunlight = 0.0;
     let day = smoothstep(0.03, 0.37, g.sun.z);
-    let detailed = g.resolve.w > 0.5;
     let sun_distance = min(60.0, thickness / max(0.36, g.sun.z));
     let sun_step = sun_distance / 3.0;
     let forward = pow(max(0.0, dot(dir, g.sun.xyz)), 4.0);
-    for (var i = 0; i < count; i++) {
-        let distance = start + step_size * (f32(i) + 0.5);
+    for (var i = 0; i < budget; i++) {
+        let interval_start = start + step_size * f32(i);
+        let interval_length = min(step_size, end - interval_start);
+        if (interval_length <= 0.0) {
+            break;
+        }
+        let distance = interval_start + interval_length * 0.5;
         let point = eye + dir * distance;
         let open_near_camera = smoothstep(12.0, 100.0, distance);
         let density = cloud_density(point, detailed) * open_near_camera;
         if (density < 0.004) {
             continue;
         }
-        let scatter = transmission * (1.0 - exp(-density * step_size * 0.082));
+        let scatter = transmission * (1.0 - exp(-density * interval_length * 0.082));
         transmission -= scatter;
         if (g.lightning.z > 0.002) {
             sunlight += scatter * flash_at(point) * 1.9;
@@ -1378,9 +1386,10 @@ fn atmosphere(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
 
 @fragment
 fn fs_fog(e: EOut) -> @location(0) vec4<f32> {
-    let pixel = vec2<i32>(e.clip.xy) * i32(g.resolve.z);
-    let depth = aux_at(pixel, 0).x;
-    let volume = atmosphere(vec2<f32>(pixel) + 0.5, depth);
+    let pixel = e.clip.xy * g.resolve.z;
+    // Match the ray to the middle of its footprint at standard resolution.
+    let depth = aux_at(vec2<i32>(pixel), 0).x;
+    let volume = atmosphere(pixel, depth);
     return vec4<f32>(volume, min(depth, 65504.0));
 }
 
@@ -1388,7 +1397,7 @@ fn atmosphere_at(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
     if (g.resolve.z == 1.0) {
         return textureLoad(fog_tex, vec2<i32>(pixel), 0).rgb;
     }
-    let uv = (pixel - 0.5) / g.resolve.z;
+    let uv = pixel / g.resolve.z - 0.5;
     let base = vec2<i32>(floor(uv));
     let f = fract(uv);
     let bound = vec2<i32>(textureDimensions(fog_tex)) - vec2<i32>(1);

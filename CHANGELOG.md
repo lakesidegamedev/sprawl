@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fog and cloud detail holds up better at shallow viewing angles, with finer volume sampling and more stable edges around the city.
+
 ## 1.4.1 (2026-11-18)
 
 <!-- Release coverage starts after v1.4.0 (60bd560). Includes the city and renderer overhaul in #60. -->
