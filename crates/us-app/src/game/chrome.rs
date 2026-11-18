@@ -252,8 +252,16 @@ impl Game {
                     stat(
                         ui,
                         icon::BUDGET,
-                        money(tre),
-                        if g.sim.treasury < 0 { BAD } else { INK },
+                        if g.rules.unlimited_money {
+                            "Unlimited".into()
+                        } else {
+                            money(tre)
+                        },
+                        if !g.rules.unlimited_money && g.sim.treasury < 0 {
+                            BAD
+                        } else {
+                            INK
+                        },
                         "Treasury",
                     );
                     let net_now = g.stats.income - g.stats.expense;

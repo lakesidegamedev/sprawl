@@ -353,7 +353,7 @@ impl Sim {
         if self.trams.lines.len() >= MAX_LINES {
             return Err(TramError::TooManyLines);
         }
-        if self.treasury < cost {
+        if !self.can_afford(cost) {
             return Err(TramError::TooPoor { cost });
         }
         Ok(TramPlan {
@@ -370,7 +370,7 @@ impl Sim {
     /// Build a line through the transit stops `stops`. Returns the line's index.
     pub fn build_tram(&mut self, stops: &[usize]) -> Result<usize, TramError> {
         let plan = self.check_tram(stops)?;
-        self.treasury -= plan.cost;
+        self.charge(plan.cost);
         let line = TramLine {
             stops: stops.iter().map(|&s| s as u32).collect(),
             points: plan.points,

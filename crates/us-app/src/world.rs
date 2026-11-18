@@ -542,9 +542,10 @@ impl LiveScene {
             let coarse = coarse_land(&land, &town);
             let far = base_ground_far_on(&land, &coarse, &town, &farm);
             let near = std::mem::take(&mut scene.ground);
+            let exact = ground_tiles_needing_exact_height(&land, &coarse);
             scene
                 .chunks
-                .extend(ground_tiles(&near, &far, town.size as f32));
+                .extend(ground_tiles(&near, &far, town.size as f32, &exact));
         }
         let mut cell_lots: HashMap<Cell, Vec<usize>> = HashMap::new();
         for (i, l) in sim.lots().iter().enumerate() {
@@ -1674,9 +1675,33 @@ fn coarse_land(land: &Land, town: &Town) -> Land {
     Land::from_grid(n, size, data, town.water.clone()).with_rock(land.rock())
 }
 
+/// The coarse mesh can bridge a dip and cover its road. Keep the original surface where the
+/// height error approaches the pavement offset, including across a coarse triangle's tile edge.
+fn ground_tiles_needing_exact_height(fine: &Land, coarse: &Land) -> HashSet<Cell> {
+    let mut exact = HashSet::new();
+    let pad = coarse.step() as f64;
+    let clearance = us_render::ground::layer::ROAD * 0.5;
+    for j in 0..fine.n() {
+        for i in 0..fine.n() {
+            let (x, y) = (i as f32 * fine.step(), j as f32 * fine.step());
+            if coarse.height(x, y) - fine.height(x, y) <= clearance {
+                continue;
+            }
+            let (lo_x, lo_y) = cell_of(f64::from(x) - pad, f64::from(y) - pad);
+            let (hi_x, hi_y) = cell_of(f64::from(x) + pad, f64::from(y) + pad);
+            for cx in lo_x..=hi_x {
+                for cy in lo_y..=hi_y {
+                    exact.insert((cx, cy));
+                }
+            }
+        }
+    }
+    exact
+}
+
 /// Cut the ground into 256 m tiles by where each face lies; the faces that reach past the map
 /// edge go into one more chunk. Each tile carries the matching faces of the coarse ground.
-fn ground_tiles(near: &Mesh, far: &Mesh, size: f32) -> Vec<Chunk> {
+fn ground_tiles(near: &Mesh, far: &Mesh, size: f32, exact: &HashSet<Cell>) -> Vec<Chunk> {
     let tiles = (size / CELL).ceil().max(1.0) as i32;
     let split = |m: &Mesh| -> HashMap<Cell, Mesh> {
         let mut out: HashMap<Cell, (Mesh, HashMap<u32, u32>)> = HashMap::new();
@@ -1727,7 +1752,9 @@ fn ground_tiles(near: &Mesh, far: &Mesh, size: f32) -> Vec<Chunk> {
                 hi = hi.max(p);
             }
             // the apron chunk has no coarse form and is never culled by size
-            let far = (k.0 >= 0).then(|| far.remove(&k).unwrap_or_default());
+            let far = (k.0 >= 0 && !exact.contains(&k))
+                .then(|| far.remove(&k))
+                .flatten();
             Chunk {
                 rev: 1,
                 mesh,
@@ -1757,7 +1784,7 @@ mod tests {
             m.vertices.extend([v(x, y), v(x + 5.0, y), v(x, y + 5.0)]);
             m.plain.extend([b, b + 1, b + 2]);
         }
-        let chunks = ground_tiles(&m, &m, 512.0);
+        let chunks = ground_tiles(&m, &m, 512.0, &HashSet::new());
         assert_eq!(chunks.len(), 3);
         let total: usize = chunks.iter().map(|c| c.mesh.triangles()).sum();
         assert_eq!(total, 3);
@@ -1767,6 +1794,36 @@ mod tests {
     use super::*;
     use us_gen::{Preset, generate};
     use us_sim::{CivicKind, Phase, hall_sites};
+
+    #[test]
+    fn coarse_terrain_cannot_cover_roads_in_a_dip() {
+        let town = generate(Preset::Mesa, 1);
+        let land = Land::from_town(&town);
+        let coarse = coarse_land(&land, &town);
+        let exact = ground_tiles_needing_exact_height(&land, &coarse);
+        let mut affected = 0;
+        for road in &town.roads {
+            let bed = land.bed(&road.points);
+            for (i, p) in bed.pts.iter().enumerate() {
+                let (x, y) = (p.x as f32, p.y as f32);
+                if coarse.height(x, y) > bed.z(&land, i, x, y) + us_render::ground::layer::ROAD {
+                    affected += 1;
+                    assert!(
+                        exact.contains(&cell_of(p.x, p.y)),
+                        "road can sink below terrain at {p:?}"
+                    );
+                }
+            }
+        }
+        assert!(
+            affected > 0,
+            "this seed contains the original height conflict"
+        );
+        assert!(
+            exact.len() < 256,
+            "there are still safe tiles for distant terrain"
+        );
+    }
 
     #[test]
     fn reopening_a_save_restores_neighbourhood_road_meshes() {
