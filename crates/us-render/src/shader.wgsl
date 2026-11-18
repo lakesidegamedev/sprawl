@@ -220,10 +220,10 @@ fn cloud_thickness() -> f32 {
 // The broad weather field stays shared by visible clouds and their ground shadows.
 fn cloud_field(xy: vec2<f32>, height: f32) -> f32 {
     let drift = g.screen.w * vec2<f32>(2.1, 0.86) + g.weather_flow.xy;
-    let shear = clamp(g.wx.zw, vec2<f32>(-9.0), vec2<f32>(9.0)) * (3.0 + 4.0 * height);
+    let shear = clamp(g.wx.zw, vec2<f32>(-9.0), vec2<f32>(9.0)) * (3.0 + 2.0 * height);
     let p = xy - drift - shear;
-    let mass = vnoise(p * 0.0048 + vec2<f32>(0.19, 0.67) * height);
-    let billow = vnoise(p * 0.019 + vec2<f32>(-1.17, 1.62) * height);
+    let mass = vnoise(p * 0.0048);
+    let billow = vnoise(p * 0.014);
     return mass * 0.67 + billow * 0.33;
 }
 
@@ -261,11 +261,12 @@ fn cloud_puffs(xy: vec2<f32>, layer: f32) -> f32 {
             let variation = hash2(id + vec2<i32>(41, 19));
             let offset = vec2<f32>(hash2(id), hash2(id + vec2<i32>(5, 29))) - 0.5;
             let d = p - (vec2<f32>(id) + 0.5 + offset * 0.35);
-            let crown = (layer - (0.47 + variation * 0.18)) * 1.82;
+            let crown = (layer - (0.46 + variation * 0.18)) * (1.88 + 0.56 * variation);
             let shoulder = vec3<f32>(d - offset * 0.16, (layer - 0.27) * 2.25);
             let core = vec3<f32>(d * (1.05 + variation * 0.45), crown);
-            let shape = min(dot(core, core), dot(shoulder, shoulder) * 1.15);
-            puff = max(puff, 1.0 - smoothstep(0.14, 0.72, shape));
+            let crown_mass = 1.0 - smoothstep(0.08, 0.72, dot(core, core));
+            let base_mass = 1.0 - smoothstep(0.07, 0.54, dot(shoulder, shoulder));
+            puff += (1.0 - puff) * (crown_mass + (1.0 - crown_mass) * base_mass * 0.48);
         }
     }
     return puff;
@@ -290,21 +291,28 @@ fn cloud_density(point: vec3<f32>, detail: u32) -> f32 {
         return 0.0;
     }
     let xyz = point - vec3<f32>(g.screen.w * vec2<f32>(2.1, 0.86) + g.weather_flow.xy, 0.0);
-    let billow = cloud_puffs(xyz.xy - g.wx.zw * (3.0 + 4.0 * layer), layer);
-    var shape = field + (billow - 0.57) * mix(0.28, 0.15, g.weather_flow.z);
-    if (detail > 0u && field > threshold - 0.10 && field < threshold + 0.27) {
-        let warped = vec3<f32>(xyz.xy + xyz.z * vec2<f32>(0.33, -0.21), xyz.z);
-        let cells = cloud_noise(warped * vec3<f32>(0.034, 0.038, 0.055));
-        let edge = 1.0 - smoothstep(threshold + 0.04, threshold + 0.27, field);
-        shape += (cells - 0.5) * 0.19 * edge;
+    let wind = clamp(g.wx.zw, vec2<f32>(-9.0), vec2<f32>(9.0));
+    let billow = cloud_puffs(xyz.xy - wind * (3.0 + 2.0 * layer), layer);
+    let shape = field + (billow - 0.58) * mix(0.52, 0.34, g.weather_flow.z);
+    var erosion = 0.0;
+    if (detail > 0u && shape < threshold + 0.29) {
+        // Rotate the noise axes away from world height so texture features can
+        // cut around the billows without lining up on horizontal planes.
+        let rotated = vec3<f32>(dot(xyz, vec3<f32>(2.0, 2.0, 1.0)),
+            dot(xyz, vec3<f32>(-2.0, 1.0, 2.0)),
+            dot(xyz, vec3<f32>(1.0, -2.0, 2.0))) / 3.0;
+        let edge = 1.0 - smoothstep(threshold + 0.06, threshold + 0.29, shape);
+        erosion = (cloud_noise(rotated * 0.037) - 0.5) * 0.23 * edge;
         if (detail > 1u) {
-            let wisps = cloud_noise(warped * vec3<f32>(0.093, 0.093, 0.15) + vec3<f32>(3.7, 2.4, -1.1));
-            shape += (wisps - 0.5) * 0.18 * edge;
+            erosion += (cloud_noise(rotated * 0.090 + vec3<f32>(3.7, 2.4, -1.1)) - 0.5)
+                * 0.095 * edge;
         }
     }
-    let deck = smoothstep(0.0, 0.21, layer) * (1.0 - smoothstep(0.61 + 0.10 * billow, 1.0, layer));
-    let mass = smoothstep(threshold - 0.035, threshold + 0.19, shape);
-    return mass * deck;
+    let bottom = smoothstep(0.0, 0.19, layer);
+    let top = 1.0 - smoothstep(0.70, 1.0, layer);
+    let mass = smoothstep(threshold - 0.04, threshold + 0.21, shape + erosion);
+    let coverage = smoothstep(threshold - 0.16, threshold - 0.08, field);
+    return mass * bottom * top * coverage;
 }
 
 fn cloud_sunlight(world: vec3<f32>) -> f32 {
@@ -1346,62 +1354,50 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>) ->
         return vec2<f32>(0.0);
     }
     let detailed = g.resolve.w > 0.5;
-    // Keep steps short when a shallow view ray travels a long way inside the cloud.
-    let budget = select(28, 42, detailed);
-    let step_size = max(select(10.0, 6.0, detailed), span / f32(budget));
-    // Offset neighboring rays within each interval so they do not reveal the same layers.
-    let lattice = vec2<i32>(floor(pixel / g.resolve.z));
-    let phase = hash2(lattice);
+    let budget = select(44, 60, detailed);
+    let step_size = span / f32(budget);
+    let detail = select(1u, 2u, detailed);
+    let phase = hash2(vec2<i32>(floor(pixel / g.resolve.z)));
     var transmission = 1.0;
     var sunlight = 0.0;
     let day = smoothstep(0.03, 0.37, g.sun.z);
-    let sun_distance = min(105.0, thickness / max(0.36, g.sun.z));
-    let sun_step = sun_distance / 3.0;
     let forward = pow(max(0.0, dot(dir, g.sun.xyz)), 4.0);
     for (var i = 0; i < budget; i++) {
-        let interval_start = start + step_size * f32(i);
-        let interval_length = min(step_size, end - interval_start);
-        if (interval_length <= 0.0) {
-            break;
-        }
-        let jitter = fract(phase + f32(i) * 0.618034) - 0.5;
-        let middle = interval_start + interval_length * 0.5;
-        let offset = interval_length * jitter * select(0.58, 0.34, detailed);
-        let distance = middle + offset;
-        let point = eye + dir * distance;
-        let open_near_camera = smoothstep(12.0, 100.0, distance);
-        var density = cloud_density(point, select(1u, 2u, detailed));
-        // Average opposite sides of coarse intervals so a thin lit rim resolves
-        // as a smooth surface instead of alternating light and dark pixels.
-        if (interval_length > 11.0 && density < 0.68) {
-            let across = eye + dir * (middle - offset);
-            density = 0.5 * (density + cloud_density(across, select(1u, 2u, detailed)));
-        }
-        density *= open_near_camera;
-        if (density < 0.004) {
+        let distance = start + step_size * (f32(i) + 0.5);
+        let center = eye + dir * distance;
+        // Stagger the two taps within each interval, keeping their midpoint
+        // fixed. This breaks up marching contours without moving the cloud edge.
+        let jitter = fract(phase + f32(i) * 0.618034);
+        let offset = dir * (step_size * mix(0.16, 0.40, jitter));
+        let near_density = cloud_density(center - offset, detail);
+        let far_density = cloud_density(center + offset, detail);
+        if (near_density + far_density < 0.002) {
             continue;
         }
-        let scatter = transmission * (1.0 - exp(-density * interval_length * 0.082));
+        let extinction = step_size * 0.024 * smoothstep(12.0, 100.0, distance);
+        let near_scatter = 1.0 - exp(-near_density * extinction);
+        let far_scatter = (1.0 - near_scatter) * (1.0 - exp(-far_density * extinction));
+        // Light the part of the interval that actually scattered light. At a
+        // dense edge it can lie far from the geometric center of the interval.
+        let point = center + offset * ((far_scatter - near_scatter)
+            / max(0.0001, near_scatter + far_scatter));
+        let scatter = transmission * (near_scatter + far_scatter);
         transmission -= scatter;
         if (g.lightning.z > 0.002) {
             sunlight += scatter * flash_at(point) * 1.9;
         }
         if (day > 0.0) {
-            // Sample settled cloud density toward the sun. Use the broad field here
-            // so fine edge detail does not introduce flicker in the lighting.
-            let toward_light = g.sun.xyz * sun_step;
-            var blockers = cloud_density(point + toward_light * 0.5, 0u);
-            if (detailed) {
-                blockers += cloud_density(point + toward_light * 1.5, 0u);
-                blockers += cloud_density(point + toward_light * 2.5, 0u);
-            } else {
-                blockers += cloud_density(point + toward_light * 1.9, 0u) * 1.15;
-            }
-            let direct = exp(-blockers * sun_step * 0.105);
-            let bounce = exp(-blockers * sun_step * 0.025);
+            // Resolve the smooth density gradient near the lit face first.
+            // The longer tap accounts for cloud behind it without putting the
+            // shadow samples on a second regularly spaced lattice.
+            let light_near = cloud_density(point + g.sun.xyz * 9.0, 0u);
+            let light_far = cloud_density(point + g.sun.xyz * 31.0, 0u);
+            let blockers = light_near * 18.0 + light_far * 35.0;
+            let direct = exp(-blockers * 0.105);
+            let bounce = exp(-blockers * 0.025);
             sunlight += scatter * (direct * (0.82 + forward * 0.20) + bounce * 0.20) * day;
         }
-        if (transmission < 0.012) {
+        if (transmission < 0.002) {
             break;
         }
     }

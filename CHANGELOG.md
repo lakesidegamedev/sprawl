@@ -9,12 +9,12 @@
 ### For players
 
 - Zoom into the streets to clear the overhead cloud cover. Ground fog stays visible in foggy weather, and clouds still shade the city.
-- Clouds have rounded billows, brighter sunlit edges and cooler shadowed interiors. Their edges hold up better at shallow angles and on narrow screens.
+- Clouds have rounded billows, brighter sunlit edges and cooler shadowed interiors. The rounded shapes have fewer visible bands and cleaner edges at shallow angles and on narrow screens.
 - Breaks in stronger storms keep streets and buildings easier to see at planning zoom.
 
 ### For developers
 
-- Shape cloud density with rounded 3D volumes and use staggered ray samples with depth-aware reconstruction. Adjust direct and scattered light separately to define cloud interiors and sunlit edges.
+- Shape cloud density with overlapping 3D billows and rotated erosion noise. Integrate paired ray samples with depth-aware reconstruction and light the density-weighted sample position to reduce banding in dense cloud edges.
 - Fade only the overhead cloud volume on ground-facing rays as the camera approaches street zoom. Keep the ground fog, weather state and cloud shadows independent of that fade.
 - Capture a seeded coastal storm through the normal game surface for simulator verification.
 
