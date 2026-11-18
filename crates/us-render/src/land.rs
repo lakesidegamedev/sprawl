@@ -188,6 +188,10 @@ impl Land {
     }
 
     /// Samples per side of the grid.
+    pub(crate) fn shares_grid_with(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     pub fn n(&self) -> usize {
         self.inner.n
     }

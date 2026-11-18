@@ -1,8 +1,7 @@
 //! The weather on screen: what the renderer is told each frame (snow, wet, cloud, wind, flood
-//! water, lightning) and the rain and snow that fall in front of the map.
+//! water, lightning and ground fog).
 
 use super::Game;
-use egui::{Color32, Context, Pos2};
 use us_render::WeatherLook;
 
 /// Most flood water tiles sent to the renderer.
@@ -35,7 +34,7 @@ impl Game {
         a.max(b) * 0.8
     }
 
-    pub(super) fn weather_look(&self) -> WeatherLook {
+    pub(super) fn weather_look(&self, visual_hour: f32) -> WeatherLook {
         let sim = &self.sim;
         let w = sim.wind();
         let mut flood: Vec<[f32; 3]> = Vec::new();
@@ -66,44 +65,25 @@ impl Game {
             snow: sim.snow_cover(),
             wet: sim.ground_wet(),
             rain: sim.rain(),
+            snowfall: sim.snowfall(),
             overcast: sim.overcast(),
+            ground_fog: self.ground_fog(visual_hour),
             flash: self.lightning_flash(),
             wind: [w.x as f32, w.y as f32],
             flood,
         }
     }
 
-    /// Snowflakes over the map. The renderer handles rain and road wetness together.
-    pub(super) fn paint_weather(&self, ctx: &Context, map: egui::Rect) {
-        let snow = self.sim.snowfall();
-        if snow <= 0.0 {
-            return;
-        }
-        // only over the map: the panels round it stay dry
-        let rect = map.intersect(ctx.content_rect());
-        let (w, h) = (rect.width(), rect.height());
-        if w < 10.0 || h < 10.0 {
-            return;
-        }
-        let painter = ctx
-            .layer_painter(egui::LayerId::new(
-                egui::Order::Background,
-                egui::Id::new("weather-fx"),
-            ))
-            .with_clip_rect(rect);
-        let t = self.live.scene.time;
-        let wind = self.sim.wind();
-        // wind leans the fall sideways on screen
-        let lean = (wind.x as f32 * 0.06).clamp(-0.8, 0.8);
-        let n = (120.0 + 700.0 * snow) as u32;
-        let col = Color32::from_rgba_unmultiplied(250, 252, 255, 220);
-        for i in 0..n {
-            let fall = 0.16 + 0.12 * unit(i, 3);
-            let y = (unit(i, 2) + t * fall).fract() * (h + 20.0) - 10.0;
-            let sway = (t * (0.8 + unit(i, 5)) + unit(i, 6) * std::f32::consts::TAU).sin() * 14.0;
-            let x = unit(i, 1) * (w + 200.0) - 100.0 + lean * y * 0.6 + sway;
-            let r = 1.0 + 1.6 * unit(i, 4);
-            painter.circle_filled(Pos2::new(rect.left() + x, rect.top() + y), r, col);
-        }
+    /// Damp ground feeds gentle dawn banks. As the ground warms, or strong wind mixes
+    /// the air, they dissipate. Persistent wet weather can sustain lighter mist by day.
+    pub(super) fn ground_fog(&self, visual_hour: f32) -> f32 {
+        let sim = &self.sim;
+        let dawn = 1.0 - ((visual_hour - 5.8).abs() / 3.4).clamp(0.0, 1.0);
+        let damp = (1.0 - sim.dryness() as f32).clamp(0.0, 1.0);
+        let calm = 1.0 - (sim.weather().wind_speed() / 8.0).clamp(0.0, 1.0);
+        let thawed = ((sim.temperature_c() + 4.0) / 9.0).clamp(0.0, 1.0);
+        let dawn_banks = dawn * dawn * damp.sqrt() * calm * thawed * 1.22;
+        let drizzle = sim.rain() * sim.overcast() * calm * 0.42;
+        (dawn_banks + drizzle).clamp(0.0, 1.0)
     }
 }

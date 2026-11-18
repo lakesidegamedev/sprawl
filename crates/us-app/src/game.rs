@@ -1589,9 +1589,6 @@ impl State {
                 g.views_popover(ctx);
             }
         }
-        // rain and snow over the map only: what the bars, rail and inspector left free
-        g.paint_weather(ctx, ui.available_rect_before_wrap());
-
         let help = if cfg!(target_os = "ios") {
             if compact {
                 "Drag pan   pinch zoom   twist rotate   tap select"
@@ -1867,7 +1864,7 @@ impl Game {
             .scene
             .set_calendar(Some(Calendar::from_date(d.month, d.day, hour)));
         self.live.set_emergency(&self.sim, hour);
-        let look = self.weather_look();
+        let look = self.weather_look(hour);
         self.live.scene.set_weather(look);
     }
 
