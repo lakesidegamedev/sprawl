@@ -2,9 +2,8 @@
 //! water, lightning) and the rain and snow that fall in front of the map.
 
 use super::Game;
-use egui::{Color32, Context, Pos2, Stroke, vec2};
+use egui::{Color32, Context, Pos2};
 use us_render::WeatherLook;
-use us_sim::Sky;
 
 /// Most flood water tiles sent to the renderer.
 const MAX_FLOOD_TILES: usize = 900;
@@ -66,6 +65,7 @@ impl Game {
             active: true,
             snow: sim.snow_cover(),
             wet: sim.ground_wet(),
+            rain: sim.rain(),
             overcast: sim.overcast(),
             flash: self.lightning_flash(),
             wind: [w.x as f32, w.y as f32],
@@ -73,11 +73,10 @@ impl Game {
         }
     }
 
-    /// Rain streaks and snowflakes over the map, thicker as the weather gets harder.
+    /// Snowflakes over the map. The renderer handles rain and road wetness together.
     pub(super) fn paint_weather(&self, ctx: &Context, map: egui::Rect) {
-        let rain = self.sim.rain();
         let snow = self.sim.snowfall();
-        if rain <= 0.0 && snow <= 0.0 {
+        if snow <= 0.0 {
             return;
         }
         // only over the map: the panels round it stay dry
@@ -96,34 +95,15 @@ impl Game {
         let wind = self.sim.wind();
         // wind leans the fall sideways on screen
         let lean = (wind.x as f32 * 0.06).clamp(-0.8, 0.8);
-        if rain > 0.0 {
-            let n = (160.0 + 900.0 * rain) as u32;
-            let col = Color32::from_rgba_unmultiplied(188, 206, 236, 150);
-            let stroke = Stroke::new(1.2, col);
-            let storm = self.sim.sky_now() == Sky::Storm;
-            let speed = if storm { 1.9 } else { 1.4 };
-            for i in 0..n {
-                let x0 = unit(i, 1) * (w + 200.0) - 100.0;
-                let y =
-                    (unit(i, 2) + t * speed * (0.8 + 0.4 * unit(i, 3))).fract() * (h + 40.0) - 20.0;
-                let x = x0 + lean * y;
-                let len = 10.0 + 12.0 * unit(i, 4);
-                let a = Pos2::new(rect.left() + x, rect.top() + y);
-                painter.line_segment([a, a + vec2(lean * len, len)], stroke);
-            }
-        }
-        if snow > 0.0 {
-            let n = (120.0 + 700.0 * snow) as u32;
-            let col = Color32::from_rgba_unmultiplied(250, 252, 255, 220);
-            for i in 0..n {
-                let fall = 0.16 + 0.12 * unit(i, 3);
-                let y = (unit(i, 2) + t * fall).fract() * (h + 20.0) - 10.0;
-                let sway =
-                    (t * (0.8 + unit(i, 5)) + unit(i, 6) * std::f32::consts::TAU).sin() * 14.0;
-                let x = unit(i, 1) * (w + 200.0) - 100.0 + lean * y * 0.6 + sway;
-                let r = 1.0 + 1.6 * unit(i, 4);
-                painter.circle_filled(Pos2::new(rect.left() + x, rect.top() + y), r, col);
-            }
+        let n = (120.0 + 700.0 * snow) as u32;
+        let col = Color32::from_rgba_unmultiplied(250, 252, 255, 220);
+        for i in 0..n {
+            let fall = 0.16 + 0.12 * unit(i, 3);
+            let y = (unit(i, 2) + t * fall).fract() * (h + 20.0) - 10.0;
+            let sway = (t * (0.8 + unit(i, 5)) + unit(i, 6) * std::f32::consts::TAU).sin() * 14.0;
+            let x = unit(i, 1) * (w + 200.0) - 100.0 + lean * y * 0.6 + sway;
+            let r = 1.0 + 1.6 * unit(i, 4);
+            painter.circle_filled(Pos2::new(rect.left() + x, rect.top() + y), r, col);
         }
     }
 }

@@ -10,6 +10,7 @@ struct Globals {
     tone: vec4<f32>,   // rgb flat tint of the whole picture, a share of lit windows
     look: vec4<f32>,   // x season (1 autumn, 2 spring, 3 summer), y snow, z map view (desaturate), w share of lamps and vehicle lights on (0 to 1)
     wx: vec4<f32>,     // x snow cover 0 to 1, y wet ground, zw wind (east, north) in m/s
+    precipitation: vec4<f32>, // x rainfall intensity
     rock: array<vec4<f32>, 8>, // rows 0 to 3 strata colours, 4 talus, 5 (snow line, tree line, band height, on), 6 (snow rgb, winter drop)
 };
 
@@ -272,7 +273,15 @@ fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist:
         } else if (broad < 0.4) {
             c = c * vec3<f32>(0.9, 0.97, 1.0);
         }
-        c = c * k;
+        let footprint = g.screen.z * dist;
+        let grass_detail = 1.0 - smoothstep(0.28, 0.85, footprint);
+        let clover = vnoise(w * 1.62 + vec2<f32>(11.0, 17.0));
+        let meadow = vnoise(w / 6.0);
+        c = c * (k + (clover - 0.5) * 0.26 * grass_detail + (meadow - 0.5) * 0.14);
+        let stems = 1.0 - smoothstep(0.10, 0.32, footprint);
+        if (stems > 0.0 && tuft(w, 0.74, 23) > 0.5) {
+            c = mix(c, c * vec3<f32>(0.81, 0.94, 0.79), stems);
+        }
         if (near_d) {
             let tf = tuft(w, 1.5, 1);
             if (tf > 0.5) {
@@ -547,7 +556,14 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
             let pool = vnoise(w * 0.54) * 0.7 + vnoise(w * 1.32) * 0.3;
             let puddle = smoothstep(0.77 - 0.15 * g.wx.y, 0.84 - 0.15 * g.wx.y, pool) * g.wx.y;
             let broken_sky = mix(vec3<f32>(0.46, 0.54, 0.57), vec3<f32>(0.35, 0.42, 0.48), g.shade.w);
-            paved = mix(paved, broken_sky, puddle * (0.42 + 0.16 * dust));
+            let fine = w * 1.9;
+            let tile = vec2<i32>(floor(fine));
+            let offset = vec2<f32>(hash2(tile), hash2(tile + vec2<i32>(17, 31))) * 0.5 + 0.25;
+            let life = fract(g.screen.w * 1.65 + hash2(tile + vec2<i32>(31, 7)));
+            let radius = length(fract(fine) - offset);
+            let ring = 1.0 - smoothstep(0.025, 0.105, abs(radius - (0.06 + 0.38 * life)));
+            let ripple = ring * (1.0 - life) * g.precipitation.x;
+            paved = mix(paved, broken_sky * (1.0 + ripple * 0.47), puddle * (0.50 + 0.16 * dust));
         }
         return paved;
     }
@@ -564,6 +580,9 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
     if (near(base, 128.0, 104.0, 84.0) || near(base, 198.0, 194.0, 186.0)) {
         let grains = hash2(vec2<i32>(floor(w * 6.0)));
         return col * (0.92 + 0.14 * vnoise(w * 1.2) + (grains - 0.5) * 0.24 * aggregate);
+    }
+    if (near(base, 83.0, 69.0, 58.0)) {
+        return col * (0.89 + 0.22 * vnoise(w * vec2<f32>(5.0, 1.4)));
     }
     if (!object || !cel || px > 0.49) {
         return col;
@@ -656,11 +675,18 @@ fn fs_main(v: VOut) -> FOut {
     }
     let pstep = patch_step(col);
     if (pstep >= 0) {
-        if (season == 1 && g.look.z < 0.5 && g.look.y < 0.5) {
-            col = autumn_leaf(pstep, pstep >= 2) * 0.94;
-        } else {
+        let litter = select(0.0, g.shade.z, season == 1);
+        let tile = v.world.xy / 0.22;
+        let cell = vec2<i32>(floor(tile));
+        let chance = hash2(cell);
+        let tilt = hash2(cell + vec2<i32>(17, -3)) - 0.5;
+        let d = fract(tile) - vec2<f32>(0.5);
+        let leaf = vec2<f32>(d.x + tilt * d.y, d.y - tilt * d.x);
+        if (g.look.z > 0.5 || g.look.y > 0.5 || v.dist * g.screen.z > 0.45
+            || chance > 0.70 * litter || abs(leaf.x) * 1.3 + abs(leaf.y) > 0.45) {
             discard;
         }
+        col = autumn_leaf(pstep, pstep >= 2) * (0.70 + 0.21 * chance);
     }
     var is_cover = false;
     if (cel && !ground) {
@@ -943,5 +969,20 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
             acc = acc + textureLoad(colour_tex, p, s).rgb * ao;
         }
     }
-    return vec4<f32>(acc / f32(SAMPLE_COUNT), 1.0);
+    var col = acc / f32(SAMPLE_COUNT);
+    if (g.precipitation.x > 0.01 && g.look.z < 0.5) {
+        // Advect a sparse field of short streaks. Scale with screen height for portrait views.
+        let pixel = e.clip.xy * 900.0 / g.screen.y;
+        let lean = clamp(0.16 + 0.034 * g.wx.z, -0.55, 0.72);
+        let moving = vec2<f32>(pixel.x - lean * pixel.y, pixel.y - g.screen.w * 920.0);
+        let tile = vec2<i32>(floor(moving / vec2<f32>(13.0, 35.0)));
+        let chance = hash2(tile);
+        let jitter = vec2<f32>(hash2(tile + vec2<i32>(19, 31)), hash2(tile + vec2<i32>(5, 13)));
+        let delta = fract(moving / vec2<f32>(13.0, 35.0)) - (jitter * 0.60 + 0.20);
+        let streak = (1.0 - smoothstep(0.015, 0.086, abs(delta.x)))
+            * (1.0 - smoothstep(0.04, 0.23, abs(delta.y)));
+        let density = smoothstep(0.0, 0.09, g.precipitation.x * 0.68 - chance);
+        col = mix(col, vec3<f32>(0.70, 0.79, 0.88), streak * density * (0.18 + 0.19 * g.precipitation.x));
+    }
+    return vec4<f32>(col, 1.0);
 }

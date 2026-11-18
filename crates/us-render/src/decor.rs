@@ -234,7 +234,11 @@ fn street_trees(
         .map(|l| [l.pos[0], l.pos[1]])
         .collect();
     for (ri, r) in t.roads.iter().enumerate() {
-        if !matches!(r.class, RoadClass::Local | RoadClass::Collector) || r.points.len() < 2 {
+        if !matches!(
+            r.class,
+            RoadClass::Local | RoadClass::Collector | RoadClass::Arterial
+        ) || r.points.len() < 2
+        {
             continue;
         }
         let hw = r.class.half_width();
@@ -257,7 +261,13 @@ fn street_trees(
                 let (p, d) = along(&r.points, &acc, s);
                 let n = pt(-d.y * side, d.x * side);
                 let at_core = core.has(p);
-                let (off, step) = if at_core { (1.6, 10.5) } else { (3.1, 11.5) };
+                let (off, step) = if r.class == RoadClass::Arterial {
+                    (4.2, 9.5)
+                } else if at_core {
+                    (1.6, 8.5)
+                } else {
+                    (3.1, 9.5)
+                };
                 s += step + rng.range(-1.0, 1.0) as f64;
                 let q = pt(p.x + n.x * (hw + off), p.y + n.y * (hw + off));
                 let blocked = roads.edge_dist(q, Some(ri)).0 < 5.0
@@ -808,9 +818,9 @@ pub(crate) fn paving(g: &mut crate::ground::Ground, t: &Town) {
     }
 }
 
-/// Planter trees and benches in open downtown ground, on a loose 15 m grid.
+/// Planter trees and benches in open downtown ground.
 fn plaza(t: &Town, land: &Land, roads: &Roads, circles: &Circles, out: &mut Vec<Placed>) {
-    const SZ: f64 = 15.0;
+    const SZ: f64 = 10.5;
     for (ai, a) in t
         .additions
         .iter()
@@ -842,10 +852,14 @@ fn plaza(t: &Town, land: &Land, roads: &Roads, circles: &Circles, out: &mut Vec<
                 }
                 let (x, y) = (q.x as f32, q.y as f32);
                 let mut o = Obj::new();
-                if pick < 0.45 {
+                if pick < 0.55 {
                     let tr = street_tree(true, &mut rng, x, y);
                     o.add_placed(&tr, 0.0, 0.0, 0.0);
-                    o.bx_top(-1.1, -1.1, 0.0, 1.1, 1.1, 0.45, [150, 130, 108], SOIL);
+                    o.bx_top(-1.75, -1.4, 0.0, 1.75, 1.4, 0.38, [150, 130, 108], SOIL);
+                    for (sx, sy) in [(-1.1, -0.75), (1.05, -0.6), (0.9, 0.85)] {
+                        let tone = rng.pick(&[[96, 150, 66], [112, 158, 78], [78, 126, 77]]);
+                        o.pyramid(sx, sy, 0.38, 0.43, rng.range(0.46, 0.75), tone, 6, 0.15);
+                    }
                 } else {
                     // a bench pair with a bin
                     for dy in [-1.4f32, 1.4] {

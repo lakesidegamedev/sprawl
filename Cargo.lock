@@ -3634,6 +3634,7 @@ dependencies = [
  "pollster",
  "raw-window-handle",
  "us-gen",
+ "us-traffic",
  "wgpu",
 ]
 

@@ -189,6 +189,8 @@ struct Globals {
     look: [f32; 4],
     /// snow cover, wet ground, wind east and north
     wx: [f32; 4],
+    /// precipitation intensity and reserved channels
+    precipitation: [f32; 4],
     /// rock look rows, see `rock::RockLook::rows`
     rock: [[f32; 4]; 8],
 }
@@ -1265,6 +1267,7 @@ impl Renderer {
             tone: [tone[0], tone[1], tone[2], lit_windows],
             look: [season_code, snow as u8 as f32, map_view as u8 as f32, lamps],
             wx: [snow_cover, wl.wet.clamp(0.0, 1.0), wl.wind[0], wl.wind[1]],
+            precipitation: [wl.rain.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
             rock: scene
                 .land
                 .rock()
