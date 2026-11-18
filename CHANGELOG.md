@@ -2,10 +2,23 @@
 
 ## Unreleased
 
-- Clouds drift across the city and change shape as their edges develop, with translucent fringes around one overhead volume. Fog still rolls close to the terrain at street zoom.
-- Storm lighting uses local flashes and softer cloud shade. Fog and lighting use less rendering work, and Balanced world resolution is the default. Native and Detailed remain available in graphics settings where supported.
-- Water swells in irregular patterns. Small ripples fade into the surface as the camera pulls back.
-- Tap the semicircle gauges for water, power, schools and health to build or upgrade a service. Phone sheets stay between the top controls and bottom dock and scroll independently.
+## 1.4.3 (2026-11-18)
+
+<!-- Release coverage starts after TestFlight 1.4.2 (8042afe) and includes #62 (023b018). -->
+
+### For players
+
+- Clouds drift across the city and change shape as they move. Light passes through their thinner edges, and ground fog stays visible when you zoom into the streets.
+- Water rolls in irregular swells. Small ripples soften into the surface as you zoom out, reducing the stripes and shimmer on distant water.
+- Storms use local lightning and softer shade. Fog and lighting cost less to render, and Balanced world resolution is now the default. Graphics settings include Native and, on desktop, Detailed.
+- Tap a semicircle gauge to build or upgrade water, power, schools or health services. Each mobile sheet remembers its own scroll position and fits above the dock with a fixed close button.
+
+### For developers
+
+- Advect a tiled 3D cellular density field with integrated wind and separate flow for wisps. Remove the duplicate sky projection, weight light at the visible density, and filter fine detail and sample spacing for shallow rays.
+- Reuse adjacent density samples, reconstruct the half-resolution atmosphere against scene depth, and cap the cost of fallback rays along building edges. Reduce terrain history in thick weather and keep lightning local to the strike.
+- Cull instances outside the camera and shadow bounds, select simpler meshes at wide standard-quality zoom, and skip negligible sun-shadow work. Filter distant water normals by their screen footprint and upscale the Balanced world beneath the native UI.
+- Measure rendered frames against wall time, keep weather animation responsive during slow frames, and cover cloud travel at constant cover in a renderer regression test. This release uses the existing save format.
 
 ## 1.4.2 (2026-11-18)
 
