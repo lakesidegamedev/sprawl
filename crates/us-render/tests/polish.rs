@@ -97,7 +97,17 @@ fn downtown_towers_are_taller_and_still_fit_their_lots() {
                 "28-storey or taller downtown plan: {height}"
             );
             assert!(height > us_render::levels::top_of(&midrise) * 1.6);
-            assert!(tower.polys.len() > 160);
+            assert!(
+                tower.polys.len() < 300,
+                "procedural windows should not add a quad to every room"
+            );
+            assert!(tower.polys.iter().any(|face| matches!(
+                face.finish,
+                us_render::obj::Finish::CurtainWall
+                    | us_render::obj::Finish::Deco
+                    | us_render::obj::Finish::Balconies
+                    | us_render::obj::Finish::RibbedGlass
+            )));
             for vertex in tower.polys.iter().flat_map(|p| &p.pts) {
                 assert!(vertex.iter().all(|v| v.is_finite()));
                 assert!(vertex[0].hypot(vertex[1]) < 17.0);
@@ -113,6 +123,9 @@ fn office_slabs_and_landmark_spires_have_distinct_heights() {
         let standard = top_of(&architecture::build(5, plan, 5));
         let landmark = top_of(&architecture::build(10, plan, 5));
         assert!((97.0..=105.0).contains(&standard));
-        assert!(landmark > standard * 2.4);
+        assert!(landmark > 300.0);
+        let atrium = top_of(&architecture::build(11, plan, 5));
+        let terrace = top_of(&architecture::build(12, plan, 5));
+        assert!(standard < terrace && terrace < atrium && atrium < landmark);
     }
 }

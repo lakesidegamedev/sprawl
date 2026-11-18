@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Downtown gets taller landmarks, offset atrium towers, and stepped residential terraces. Their façades show different window patterns, and smaller buildings pick up more distinct brick, siding, roof seams, and shingles.
+- Tall buildings use fewer triangles for their windows. Large, well-served City Planning districts can reach the same skyline tier as established Town Growth centers.
+
 ## 1.4.3 (2026-11-18)
 
 <!-- Release coverage starts after TestFlight 1.4.2 (8042afe) and includes #62 (023b018). -->

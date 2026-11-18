@@ -463,11 +463,10 @@ impl Sim {
         let value = self.lot_value.get(i).copied().unwrap_or(0.0);
         let cover = self.services_avg(i);
         let neighbors = self.taller_neighbours(i, 1);
-        let core = self.town.lots.get(l.src).map_or(0.0, |lot| lot.density);
         if value < 0.58 || cover < 0.23 || neighbors < 2 || population < 3_000 {
             return 3;
         }
-        if core < 0.72
+        if d < 0.72
             || value < 0.69
             || cover < 0.42
             || self.taller_neighbours(i, 2) < 3

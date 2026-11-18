@@ -759,7 +759,6 @@ fn emit_chunk(
 ) -> (Mesh, Mesh, Vec3, Vec3) {
     let mut mesh = Mesh::default();
     let mut far = Mesh::default();
-    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
     let mut next_id = ordinal as u32 * IDS_PER_CHUNK + 1;
     for &pi in members {
         let p = &placements[pi];
@@ -767,19 +766,8 @@ fn emit_chunk(
         p.obj
             .emit_on(&mut mesh, &mut next_id, p.x, p.y, p.theta, 1.0, sit);
         p.obj.emit_far_on(&mut far, p.x, p.y, p.theta, sit);
-        let b = p.obj.footprint();
-        let reach = b[0].abs().max(b[1].abs()).max(b[2].abs()).max(b[3].abs()) * 1.5 + 1.0;
-        lo = lo.min(Vec3::new(
-            p.x - reach,
-            p.y - reach,
-            land.min_height().min(0.0),
-        ));
-        hi = hi.max(Vec3::new(
-            p.x + reach,
-            p.y + reach,
-            land.max_height() + 90.0,
-        ));
     }
+    let (lo, hi) = mesh.bounds().unwrap_or((Vec3::ZERO, Vec3::ZERO));
     (mesh, far, lo, hi)
 }
 

@@ -567,6 +567,7 @@ pub fn construction(obj: &Obj, progress: f32) -> Obj {
             v[2] *= h;
         }
         p.color = mix(p.color, [204, 178, 120], 0.55);
+        p.finish = p.finish.dark();
     }
     for s in &mut o.solids {
         s.centre[2] *= h;
@@ -594,6 +595,7 @@ pub fn grown(obj: &Obj, k: f32) -> Obj {
 pub fn abandoned(obj: &Obj) -> Obj {
     let mut o = obj.clone();
     for p in &mut o.polys {
+        p.finish = p.finish.dark();
         if p.flat {
             // windows and doors go dark
             p.color = [52, 54, 62];

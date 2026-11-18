@@ -2409,7 +2409,14 @@ fn light_matrix(scene: &Scene, view: &View, sun: Vec3, size: u32) -> (Mat4, f32,
         .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.z), b.max(p.z)));
     // on hills the ground between the sampled points can bulge a little either way
     let slack = if scene.land.is_flat() { 0.0 } else { 8.0 };
-    let (zlo, zhi) = (hmin - slack, hmax + slack + 70.0);
+    let zlo = hmin - slack;
+    let camera = ClipVolume::new(view.view_proj);
+    let typical_top = hmax + slack + 70.0;
+    let zhi = scene
+        .chunks
+        .iter()
+        .filter(|chunk| chunk.hi.z > typical_top && camera.intersects(chunk.lo, chunk.hi))
+        .fold(typical_top, |height, chunk| height.max(chunk.hi.z));
     let mut corners = Vec::new();
     for p in &pts {
         corners.push(Vec3::new(p.x, p.y, zlo));

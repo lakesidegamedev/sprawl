@@ -794,6 +794,94 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
     return col;
 }
 
+// Finish codes come from Obj::Finish. These materials are projected in metres
+// so masonry and windows keep their scale across camera movement.
+fn dressed_surface(col: vec3<f32>, finish: u32, world: vec3<f32>, anchor: vec3<f32>,
+    normal: vec3<f32>, px: f32) -> vec3<f32> {
+    if (px >= 0.65) { return col; }
+    let roof = finish >= 247u && finish <= 249u;
+    let offset = world - anchor;
+    let tangent = normalize(vec2<f32>(-normal.y, normal.x) + vec2<f32>(0.00001, 0.0));
+    let wall = vec2<f32>(dot(offset.xy, tangent), offset.z);
+    let uv = select(wall, offset.xy, roof);
+    let fade = 1.0 - smoothstep(0.10, 0.65, px);
+    let mottling = vnoise(uv * 0.76 + anchor.xy * 0.17);
+    var pattern = 0.91 + 0.15 * mottling;
+    if (finish == 240u || finish == 247u) {
+        let batten = select(uv.y / 0.22, uv.x / 0.58, roof);
+        let seam = 1.0 - smoothstep(0.02, 0.12, fract(batten));
+        pattern -= seam * 0.20 * (1.0 - smoothstep(0.05, 0.26, px));
+    } else if (finish == 241u || finish == 248u) {
+        let scale = select(vec2<f32>(0.50, 0.25), vec2<f32>(0.37, 0.24), roof);
+        let row = uv.y / scale.y;
+        let block = vec2<f32>(uv.x / scale.x + 0.5 * (floor(row) % 2.0), row);
+        let f = fract(block);
+        let edge = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y));
+        let mortar = (1.0 - smoothstep(0.013, 0.10, edge)) * (1.0 - smoothstep(0.05, 0.26, px));
+        let piece = hash2(vec2<i32>(floor(block))) - 0.5;
+        pattern = pattern * (1.0 + piece * 0.22) - mortar * 0.19;
+    } else if (finish == 249u) {
+        let seam = 1.0 - smoothstep(0.01, 0.075, fract(uv.y / 2.1));
+        pattern -= seam * 0.16;
+    }
+    return col * mix(1.0, pattern, fade);
+}
+
+struct FacadeLook {
+    colour: vec3<f32>,
+    glass: f32,
+    glow: f32,
+};
+
+fn facing_facade(col: vec3<f32>, finish: u32, world: vec3<f32>, anchor: vec3<f32>,
+    normal: vec3<f32>, px: f32) -> FacadeLook {
+    let warm = finish == 244u || finish == 246u;
+    let dark = finish == 251u;
+    let glass_base = mix(select(vec3<f32>(0.22, 0.35, 0.45), vec3<f32>(0.13, 0.15, 0.18), dark), col, 0.42);
+    let detail = 1.0 - smoothstep(0.63, 1.55, px);
+    let average = mix(col, glass_base, select(0.45, 0.26, warm));
+    if (detail <= 0.0) {
+        return FacadeLook(average, 0.0, 0.0);
+    }
+    let tangent = vec2<f32>(-normal.y, normal.x);
+    let offset = world - anchor;
+    let storey = select(3.5, 3.9, finish == 244u);
+    let ribbon = finish == 250u;
+    let balcony = finish == 245u;
+    let spacing = select(select(2.55, 2.05, ribbon || finish == 244u), 3.15, finish == 246u || balcony);
+    let uv = vec2<f32>(dot(offset.xy, tangent) / spacing, offset.z / storey);
+    let cell = floor(uv);
+    let part = fract(uv);
+    let reveal = select(select(0.10, 0.22, warm || balcony), 0.048, ribbon);
+    let border = max(0.014, px / spacing * 0.36);
+    let jamb = min(part.x, 1.0 - part.x);
+    let sill = select(select(0.15, 0.31, ribbon), 0.37, balcony);
+    let head = select(0.93, 0.83, ribbon || balcony);
+    let glazing = smoothstep(reveal - border, reveal + border, jamb)
+        * smoothstep(sill - border, sill + border, part.y)
+        * (1.0 - smoothstep(head - border, head + border, part.y));
+    var frame = 1.0;
+    if (finish == 244u || finish == 246u) {
+        frame -= (1.0 - smoothstep(0.012, 0.04 + border, abs(part.x - 0.5))) * 0.50;
+    }
+    let glass = glazing * frame;
+    let seed_cell = cell + floor(anchor.xy * 1.7 + anchor.z * vec2<f32>(0.53, 1.07));
+    let pane_seed = hash2(vec2<i32>(seed_cell));
+    let tint = glass_base * (0.83 + 0.33 * pane_seed);
+    let ledge = 1.0 - smoothstep(0.018, 0.077 + border * 0.3, min(part.y, 1.0 - part.y));
+    let ribs = select(0.08, 0.20, finish == 244u || balcony);
+    let rail = (1.0 - smoothstep(0.028, 0.078, abs(part.y - 0.22))) * select(0.0, 0.20, balcony);
+    let fin = (1.0 - smoothstep(0.06, 0.16, jamb)) * select(0.0, 0.18, finish == 244u);
+    let cladding = col * (0.94 + 0.09 * pane_seed + ledge * ribs + rail + fin);
+    var glow = 0.0;
+    if (!dark && g.tone.w > 0.0 && glass > 0.01) {
+        let room_offset = tangent * ((cell.x + 0.5) * spacing);
+        let room = anchor + vec3<f32>(room_offset, (cell.y + 0.5) * storey);
+        glow = window_glow(room, finish == 246u) * glass * detail;
+    }
+    return FacadeLook(mix(average, mix(cladding, tint, glass), detail), glass * detail, glow);
+}
+
 fn previous_season(season: i32) -> i32 {
     switch (season) {
         case 0: { return 1; }
@@ -868,8 +956,10 @@ fn fs_main(v: VOut) -> FOut {
     }
     var col = v.color.rgb;
     let a = v.color.a;
+    let code = u32(round(a * 255.0));
+    let finish = select(0u, code, code >= 240u && code <= 251u);
     let cel = a > 0.5;
-    let keep = a > 0.001 && a < 0.999;
+    let keep = finish == 0u && a > 0.001 && a < 0.999;
     let ground = v.id == 0u;
     let exempt = v.id == 16777215u;
     let coastal_rock = !ground && near(col, 143.0, 138.0, 129.0);
@@ -1044,8 +1134,22 @@ fn fs_main(v: VOut) -> FOut {
             col = grass_soil(col, v.world, n, g.screen.z * v.dist);
         }
     }
+    var facade_glass = 0.0;
     if (!emissive && g.look.z < 0.5 && v.tint == 0u && wkind == 0) {
-        col = textured_surface(col, v.color.rgb, v.world, n, g.screen.z * v.dist, cel, !ground && !exempt);
+        if (finish == 0u) {
+            col = textured_surface(col, v.color.rgb, v.world, n, g.screen.z * v.dist, cel, !ground && !exempt);
+        } else {
+            let footprint = sqrt(max(dot(world_dx, world_dx), dot(world_dy, world_dy)));
+            if ((finish >= 243u && finish <= 246u) || finish >= 250u) {
+                let facade = facing_facade(col, finish, v.world, v.room_anchor, n, footprint);
+                col = facade.colour;
+                facade_glass = facade.glass;
+                glow = vec3<f32>(1.0, 0.85, 0.58);
+                glow_amount = facade.glow;
+            } else {
+                col = dressed_surface(col, finish, v.world, v.room_anchor, n, footprint);
+            }
+        }
     }
     var k = 1.0;
     if (cel && (ground || coastal_rock) && wkind == 0) {
@@ -1109,7 +1213,8 @@ fn fs_main(v: VOut) -> FOut {
     let raw_colour = v.color.rgb;
     let wet_road = g.wx.y > 0.10 && near(raw_colour, 108.0, 108.0, 120.0);
     let glazing = glow_amount < 0.12 && n.z < 0.68 && !emissive
-        && raw_colour.b > raw_colour.r + 0.10 && raw_colour.g > raw_colour.r + 0.045;
+        && (facade_glass > 0.45 || (finish == 0u
+            && raw_colour.b > raw_colour.r + 0.10 && raw_colour.g > raw_colour.r + 0.045));
     let material = select(select(select(0u, 3u, glazing), 2u, wet_road), 1u, wkind > 0);
     o.colour = vec4<f32>(col, 1.0);
     o.aux = vec4<u32>(bitcast<u32>(v.dist), (v.id & 0x00ffffffu) | packed_surface(n, material), 0u, 1u);

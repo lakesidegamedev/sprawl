@@ -1661,16 +1661,7 @@ impl LiveScene {
             }
         }
         self.deco_drawn.insert(cell, shown);
-        let lo = Vec3::new(
-            cell.0 as f32 * CELL - 60.0,
-            cell.1 as f32 * CELL - 60.0,
-            self.z_range(70.0).0,
-        );
-        let hi = Vec3::new(
-            (cell.0 + 1) as f32 * CELL + 60.0,
-            (cell.1 + 1) as f32 * CELL + 60.0,
-            self.z_range(70.0).1,
-        );
+        let (lo, hi) = mesh.bounds().unwrap_or((Vec3::ZERO, Vec3::ZERO));
         self.rev += 1;
         let chunk = Chunk {
             rev: self.rev,

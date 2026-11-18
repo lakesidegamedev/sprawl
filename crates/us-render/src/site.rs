@@ -130,6 +130,7 @@ pub fn site(new: &Obj, spec: Spec, progress: f32) -> Obj {
         let mut gone = clip_height(old, cut);
         for q in &mut gone.polys {
             q.color = shade(q.color, 0.8);
+            q.finish = q.finish.dark();
         }
         let base = o.solids.len() as u32;
         o.solids.extend(gone.solids.iter().cloned());

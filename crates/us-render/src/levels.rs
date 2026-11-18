@@ -260,10 +260,11 @@ pub fn build_lot_level_dense(
         return kit::fit_to_lot(model, radius);
     }
     let tall = (density - 0.75).max(0.0) / 0.25;
-    if let Some(o) = crate::kit_more::variant(region, kind, level, density, rng) {
+    if let Some(mut o) = crate::kit_more::variant(region, kind, level, density, rng) {
+        crate::architecture::finish_low_rise(&mut o, kind);
         return kit::fit_to_lot(o, radius);
     }
-    let obj = match kind {
+    let mut obj = match kind {
         LotKind::Office if level >= 4 && tall > 0.0 => {
             let base = if level == 4 { 10.0 } else { 14.0 };
             let floors = (base + tall.min(1.0) * if level == 4 { 4.0 } else { 10.0 }) as usize;
@@ -284,6 +285,7 @@ pub fn build_lot_level_dense(
         }
         _ => build_lot_level_in(region, kind, level, rng),
     };
+    crate::architecture::finish_low_rise(&mut obj, kind);
     kit::fit_to_lot(obj, radius)
 }
 
