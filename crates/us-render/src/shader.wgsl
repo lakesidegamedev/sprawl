@@ -258,8 +258,12 @@ fn cloud_density(point: vec3<f32>, detail: bool) -> f32 {
     let field = cloud_field(point.xy, layer);
     var threshold = cloud_threshold();
     if (g.weather_flow.z > 0.02) {
-        let gaps = 1.0 - storm_cell(point.xy);
+        let cell = storm_cell(point.xy);
+        let gaps = 1.0 - cell;
         threshold += gaps * gaps * 0.34 * g.weather_flow.z;
+        // Even the strongest storms have breaks between precipitation cells.
+        threshold += (1.0 - smoothstep(0.40, 0.82, cell)) * 0.16
+            * smoothstep(0.65, 1.0, g.weather_flow.z);
     }
     var shape = field;
     if (detail && field > threshold - 0.10 && field < threshold + 0.27) {
@@ -1379,6 +1383,12 @@ fn atmosphere(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
         if (surface && g.weather_flow.z > 0.02) {
             let city_readability = mix(0.63, 0.92, smoothstep(550.0, 1400.0, depth));
             cloud *= mix(1.0, city_readability, g.weather_flow.z);
+            let peak_storm = smoothstep(0.65, 0.99, g.weather_flow.z) * smoothstep(0.82, 0.99, g.shade.w);
+            // Preserve contrast across the playable map when the camera is above a storm.
+            // Leave distant scenery and sky rays free to show the volume at full opacity.
+            let town_view = 1.0 - smoothstep(130.0, 270.0, g.eye.w);
+            let distant = smoothstep(1550.0, 2800.0, limit);
+            cloud *= 1.0 - 0.40 * peak_storm * town_view * (1.0 - distant);
         }
     }
     return vec3<f32>(fog.x, fog.y * (1.0 - cloud.x) * 0.68 + cloud.y * 1.37, cloud.x);

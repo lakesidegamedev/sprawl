@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Fog and cloud detail holds up better at shallow viewing angles, with finer volume sampling and more stable edges around the city.
+- Fog and cloud detail holds up better at shallow viewing angles. Breaks in stronger storms keep more of the city visible at planning zoom.
 
 ## 1.4.1 (2026-11-18)
 
