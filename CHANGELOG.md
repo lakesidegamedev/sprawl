@@ -8,7 +8,7 @@
 
 ### For players
 
-- Traffic is busier in the morning and evening. Cars queue upstream of heavily used junctions, travel in separate lanes, and spread back out after rush hour. Closed, flooded and unfinished roads stay clear of traffic.
+- Traffic builds in the morning and reverses for the evening commute. Cars slow, queue and move through busy junctions in separate lanes, then spread back out after rush hour. Closed, flooded and unfinished roads stay clear of traffic.
 - Streets have clearer arterial markings, textured asphalt and paving, larger tree canopies, more roadside planting and more detailed grass, roofs and brick. Rail crossings show sleepers and brighter railheads.
 - Season colours change over four game weeks. Rain follows the wind and ripples in puddles. Roads stay wet as the sky clears.
 - Civic buildings snap beside open streets. The placement preview shows where the building will go before you pay.

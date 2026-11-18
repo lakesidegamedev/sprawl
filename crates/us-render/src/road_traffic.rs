@@ -29,25 +29,27 @@ struct Lane {
     start: f32,
     extent: f32,
     side: f32,
-    rate: f32,
+    rate: [f32; 2],
+    capacity: f32,
     speed: f32,
     // Calculated only for oversaturated approaches.
     queue: Option<Box<[f32; SLOTS + 1]>>,
 }
 
-fn daily_demand(hour: f32) -> f32 {
+fn daily_demand(hour: f32) -> [f32; 2] {
     fn peak(hour: f32, center: f32, width: f32) -> f32 {
         let x = (1.0 - (hour - center).abs() / width).max(0.0);
         x * x * (3.0 - 2.0 * x)
     }
     let day = peak(hour, 13.0, 8.0);
-    let rush = peak(hour, 8.0, 2.75).max(peak(hour, 17.0, 2.9));
-    let base = 0.12 + 0.32 * day;
-    base + (1.0 - base) * rush
+    let morning = peak(hour, 8.0, 2.75);
+    let evening = peak(hour, 17.0, 2.9);
+    let base = (0.12 + 0.32 * day) * (1.0 - morning.max(evening)) / 2.0;
+    [base + morning, base + evening]
 }
 
-fn queue_profile(rate: f32, capacity: f32, storage: f32) -> Option<Box<[f32; SLOTS + 1]>> {
-    if rate <= capacity {
+fn queue_profile(rate: [f32; 2], capacity: f32, storage: f32) -> Option<Box<[f32; SLOTS + 1]>> {
+    if rate[0].max(rate[1]) <= capacity {
         return None;
     }
     let mut queue = Box::new([0.0; SLOTS + 1]);
@@ -58,7 +60,8 @@ fn queue_profile(rate: f32, capacity: f32, storage: f32) -> Option<Box<[f32; SLO
         queue[0] = waiting;
         for i in 0..SLOTS {
             let hour = (i as f32 + 0.5) * step;
-            let arrivals = rate * daily_demand(hour);
+            let [am, pm] = daily_demand(hour);
+            let arrivals = rate[0] * am + rate[1] * pm;
             waiting = (waiting + (arrivals - capacity) * step).clamp(0.0, storage);
             queue[i + 1] = waiting;
         }
@@ -83,7 +86,8 @@ impl Traffic {
             };
             let width = p.class.half_width() as f32;
             for (direction, a) in demand.iter().enumerate() {
-                if a.rate <= 0.0 || a.capacity <= 0.0 {
+                let opposite = demand[1 - direction].rate;
+                if a.rate.max(opposite) <= 0.0 || a.capacity <= 0.0 {
                     continue;
                 }
                 let reverse = direction == 1;
@@ -94,7 +98,7 @@ impl Traffic {
                     continue;
                 }
                 let split = lanes_per_direction as f32;
-                let rate = a.rate / split;
+                let rate = [a.rate / split, opposite / split];
                 let capacity = a.capacity / split;
                 for lane in 0..lanes_per_direction {
                     let side = width * (lane as f32 + 0.5) / split;
@@ -105,6 +109,7 @@ impl Traffic {
                         extent,
                         side: if reverse { side } else { -side },
                         rate,
+                        capacity,
                         speed,
                         queue: queue_profile(rate, capacity, (extent / BUMPER_SPACING).floor()),
                     });
@@ -118,7 +123,8 @@ impl Traffic {
                             start: after,
                             extent: remainder,
                             side: if reverse { side } else { -side },
-                            rate: rate.min(capacity),
+                            rate: rate.map(|r| r.min(capacity)),
+                            capacity,
                             speed,
                             queue: None,
                         });
@@ -131,7 +137,7 @@ impl Traffic {
 
     pub(crate) fn instances(&self, paths: &[Path], time: f32, hour: f32) -> Vec<Instance> {
         let hour = hour.rem_euclid(24.0);
-        let demand = daily_demand(hour);
+        let [am, pm] = daily_demand(hour);
         let sample = hour * SLOTS as f32 / 24.0;
         let i = (sample as usize).min(SLOTS - 1);
         let t = sample - i as f32;
@@ -147,9 +153,13 @@ impl Traffic {
                 let path = &paths[lane.path];
                 if phase {
                     let count = waiting.round() as usize;
+                    let discharge = time * lane.capacity / 3600.0 + (n as f32 * 0.618_034).fract();
+                    let tick = discharge as usize;
+                    let t = discharge.fract();
+                    let advance = t * t * (3.0 - 2.0 * t);
                     for car in 0..count {
-                        let d = lane.extent - (car as f32 + 0.5) * BUMPER_SPACING;
-                        if !place(&mut out, path, lane, d, n, car) {
+                        let d = lane.extent - (car as f32 + 1.0 - advance) * BUMPER_SPACING;
+                        if !place(&mut out, path, lane, d, n, car.wrapping_add(tick)) {
                             return out;
                         }
                     }
@@ -159,7 +169,11 @@ impl Traffic {
                     } else {
                         lane.speed
                     };
-                    let spacing = (3600.0 * speed / (lane.rate * demand)).max(BUMPER_SPACING);
+                    let arrival_rate = lane.rate[0] * am + lane.rate[1] * pm;
+                    if arrival_rate <= 0.0 {
+                        continue;
+                    }
+                    let spacing = (3600.0 * speed / arrival_rate).max(BUMPER_SPACING);
                     let offset = ((n as f32 * 0.618_034).fract() * spacing + time * speed)
                         .rem_euclid(spacing);
                     let mut d = offset;
@@ -234,7 +248,10 @@ mod tests {
         let q = model.lanes[0].queue.as_ref().unwrap();
         assert!(q[8 * 4] > 15.0);
         assert_eq!(q[13 * 4], 0.0);
-        assert!(model.lanes[1].queue.is_none());
+        let inbound = model.lanes[1].queue.as_ref().unwrap();
+        assert_eq!(inbound[8 * 4], 0.0);
+        assert!(inbound[17 * 4] > 15.0);
+        assert_eq!(q[17 * 4], 0.0);
         let cars = model.instances(&paths, 0.0, 8.0);
         let queued: Vec<_> = cars.iter().filter(|c| c.pos[1] < 0.0).collect();
         assert!(queued.len() > 15);

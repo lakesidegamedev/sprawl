@@ -582,7 +582,7 @@ fn run_traffic(town: Town, runs: Vec<(RoadClass, Vec<Pt>)>, visible: Vec<bool>) 
                 let arc = &plan.eval.net.arcs[2 * i + j];
                 let candidate = plan.eval.assignment.arc_flow[2 * i + j] as f32;
                 let a = &mut rt[r].approaches[j ^ usize::from(reversed)];
-                if candidate > a.rate {
+                if a.capacity == 0.0 || candidate > a.rate {
                     let stop = plan.eval.net.streets.nodes[arc.to as usize];
                     *a = TrafficApproach {
                         rate: candidate,
