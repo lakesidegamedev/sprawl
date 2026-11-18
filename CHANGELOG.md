@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Weather fades between rain, snow, clouds and clear skies. Snow cover melts gradually and seasonal changes spread across the map over nine game weeks.
+- Desktop settings offer detailed surface grain and full-resolution fog with more volume samples. Grass is less saturated, with meadow and soil variations, and cliffs use textured stone with softer, broken layers.
+- New building styles range from manufactured homes and warehouse lofts to 28-story office slabs, stepped glass blocks, Art Deco towers and rare landmark spires. Towers need high land value, coverage and taller neighbors before they can grow.
+- Expand civic buildings in place through three tiers. The service bar shows committed water, power, school and health demand and opens the relevant service.
+- Three shorter setup pages include rendered map previews, play style, difficulty, name and seed. Taller mobile menus make room for their controls.
+- The mayor campaign adds service, expansion and city-growth goals across three chapters.
+
 ## 1.4.0 (2026-11-18)
 
 <!-- Release coverage starts after the 1.3.2 TestFlight source 5561e3c. -->

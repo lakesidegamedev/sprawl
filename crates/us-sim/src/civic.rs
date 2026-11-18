@@ -5,7 +5,56 @@ use crate::*;
 /// How far from a revealed road a civic building may stand, metres.
 const ROAD_REACH: f64 = 45.0;
 
+/// Amount of service each built tier provides relative to tier one.
+pub fn civic_capacity_pct(tier: u8) -> i64 {
+    match tier {
+        3.. => 290,
+        2 => 180,
+        _ => 100,
+    }
+}
+
+/// Additional road-distance coverage from expanding on the same lot.
+pub fn civic_reach_multiplier(tier: u8) -> f64 {
+    match tier {
+        3.. => 1.75,
+        2 => 1.35,
+        _ => 1.0,
+    }
+}
+
 impl Sim {
+    /// Cost and next tier of an operating civic building.
+    pub fn civic_upgrade(&self, i: usize) -> Option<(u8, i64)> {
+        let lot = self.lots.get(i)?;
+        let kind = lot.civic?;
+        if lot.level >= 3 || !matches!(lot.phase, Phase::Built { .. }) || lot.fire.is_some() {
+            return None;
+        }
+        let cost = kind.cost() * if lot.level == 1 { 65 } else { 95 } / 100;
+        Some((lot.level + 1, cost))
+    }
+
+    /// Expand an existing service in place while keeping it in operation.
+    pub fn upgrade_civic(&mut self, i: usize) -> Result<u8, PlaceError> {
+        let (tier, cost) = self.civic_upgrade(i).ok_or(PlaceError::Occupied)?;
+        if !self.can_afford(cost) {
+            return Err(PlaceError::TooPoor { cost });
+        }
+        self.charge(cost);
+        let lot = &mut self.lots[i];
+        lot.level = tier;
+        let at = lot.pos;
+        self.changed_lots.push(i);
+        self.recompute_values();
+        self.log(
+            EventKind::Civic,
+            format!("Civic building expanded to tier {tier}."),
+            Some(at),
+        );
+        Ok(tier)
+    }
+
     /// Place a civic building with its centre at `p`. It takes empty land beside a road the
     /// town already has: unbuilt lots under it are given up. It pays its price now, goes up over
     /// 40 to 70 days, and then covers lots within its reach by road.
@@ -186,6 +235,47 @@ fn nearest_on_seg(p: Pt, a: Pt, b: Pt) -> Pt {
 mod tests {
     use super::*;
     use us_gen::{Preset, generate};
+
+    #[test]
+    fn service_upgrades_expand_capacity_and_survive_reload() {
+        let town = generate(Preset::Grid, 23);
+        let mut sim = Sim::new_with_rules(
+            &town,
+            hall_sites(&town)[0],
+            23,
+            2,
+            Rules::sandbox_unlimited(),
+        );
+        let kind = CivicKind::Water;
+        let site = sim
+            .runs
+            .iter()
+            .filter(|run| sim.civic_frontage(run))
+            .flat_map(|run| run.points.windows(2).map(|seg| seg[0].lerp(seg[1], 0.5)))
+            .map(|p| sim.snap_civic_site(kind, p))
+            .find(|&p| sim.check_civic(kind, p).is_ok())
+            .expect("valid roadside site");
+        let i = sim.place_civic(kind, site).unwrap();
+        assert!(sim.civic_upgrade(i).is_none());
+        sim.lots[i].phase = Phase::Built {
+            since: 0,
+            tax_x10: TAX_DEFAULT_X10,
+        };
+        let tier_one = sim.capacity(Capacity::Water).supply;
+        let treasury = sim.treasury;
+        assert_eq!(sim.upgrade_civic(i), Ok(2));
+        assert_eq!(sim.capacity(Capacity::Water).supply - tier_one, 1600);
+        assert_eq!(sim.upgrade_civic(i), Ok(3));
+        assert_eq!(sim.capacity(Capacity::Water).supply - tier_one, 3800);
+        assert_eq!(sim.treasury, treasury);
+        assert!(sim.civic_upgrade(i).is_none());
+        let loaded = Sim::load(&sim.save()).unwrap();
+        assert_eq!(loaded.lots()[i].level, 3);
+        assert_eq!(
+            loaded.capacity(Capacity::Water),
+            sim.capacity(Capacity::Water)
+        );
+    }
 
     #[test]
     fn roadside_snap_previews_the_same_point_that_is_built() {

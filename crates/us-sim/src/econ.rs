@@ -228,7 +228,10 @@ impl Sim {
                 continue;
             }
             let (service, upkeep) = match l.civic {
-                Some(c) => (Some(c.service()), c.upkeep()),
+                Some(c) => (
+                    Some(c.service()),
+                    c.upkeep() * (70 + 30 * i64::from(l.level)) / 100,
+                ),
                 None => (service_of_kind(l.kind), kind_upkeep(l.kind)),
             };
             match service.and_then(Service::dept) {

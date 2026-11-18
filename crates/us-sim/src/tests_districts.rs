@@ -120,9 +120,9 @@ fn upzoning_lets_central_lots_go_higher() {
     let Some(i) = i else { return };
     let d = whole_town(&mut s);
     let k = s.lots()[i].kind;
-    let before = s.lot_cap(i);
+    let before = s.lot_cap(i, s.population());
     s.set_ordinance_district(d, Ordinance::Upzoning, true);
-    let after = s.lot_cap(i);
+    let after = s.lot_cap(i, s.population());
     if s.lot_density(i) >= 0.35 && before < growth::max_level(k) {
         assert_eq!(after, before + 1);
     } else {

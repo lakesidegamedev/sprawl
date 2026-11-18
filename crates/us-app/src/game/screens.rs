@@ -103,19 +103,17 @@ impl Mode {
 
     pub fn label(self) -> &'static str {
         match self {
-            Mode::Standard => "Standard",
+            Mode::Standard => "Mayor campaign",
             Mode::Sandbox => "Sandbox",
-            Mode::SandboxUnlimited => "Sandbox, unlimited money",
+            Mode::SandboxUnlimited => "Unlimited money",
         }
     }
 
     pub fn blurb(self) -> &'static str {
         match self {
-            Mode::Standard => {
-                "Voters judge you every four years and the state takes over a town that stays broke."
-            }
-            Mode::Sandbox => "No elections and no bankruptcy. Build as long as you like.",
-            Mode::SandboxUnlimited => "A sandbox where the treasury never runs out. Try anything.",
+            Mode::Standard => "Campaign goals, elections and a limited budget.",
+            Mode::Sandbox => "A limited budget with no elections.",
+            Mode::SandboxUnlimited => "Build freely with unlimited funds.",
         }
     }
 }
@@ -189,72 +187,162 @@ impl State {
     }
 
     pub(super) fn new_town_ui(&mut self, ctx: &Context) {
-        theme::centered(ctx, "newtown", 20, |ui| {
-            let compact = theme::is_compact(ctx);
-            ui.set_width(if compact {
-                (ctx.content_rect().width() - 70.0).max(220.0)
-            } else {
-                600.0
-            });
-            ui.label(heading("New town", if compact { 24.0 } else { 32.0 }));
-            ui.horizontal_wrapped(|ui| {
-                if theme::button(ui, "Start").clicked() {
-                    self.screen = Screen::Generating;
-                    self.gen_wait = 0;
-                }
+        use egui::{Align, Layout};
+        let rect = ctx.content_rect();
+        let width = (rect.width() - 42.0).clamp(215.0, 610.0);
+        let titles = ["Choose a map", "Play style", "Found your town"];
+        theme::centered(ctx, "newtown", 14, |ui| {
+            ui.set_width(width);
+            ui.label(heading(titles[self.setup_step], 26.0));
+            label(ui, &format!("Step {} of 3", self.setup_step + 1), 12.0);
+            ui.add_space(5.0);
+            egui::ScrollArea::vertical()
+                .id_salt(("setup", self.setup_step))
+                .max_height((rect.height() - 159.0).max(95.0))
+                .show(ui, |ui| match self.setup_step {
+                    0 => self.select_map(ui, width),
+                    1 => {
+                        for (planning, title, desc) in [
+                            (
+                                false,
+                                "Town Growth",
+                                "Builders lay streets as demand grows.",
+                            ),
+                            (true, "City Planning", "Draw roads and zone land yourself."),
+                        ] {
+                            if choice(ui, self.city_planning == planning, title, desc) {
+                                self.city_planning = planning;
+                            }
+                        }
+                        label(ui, "Town rules", 14.0);
+                        for m in Mode::ALL {
+                            if choice(ui, self.mode == m, m.label(), m.blurb()) {
+                                self.mode = m;
+                            }
+                        }
+                    }
+                    _ => {
+                        label(ui, "Difficulty", 14.0);
+                        for d in Difficulty::ALL {
+                            let desc = match d {
+                                Difficulty::Easy => "Cheaper growth and more service capacity.",
+                                Difficulty::Normal => "Standard economy and growth.",
+                                Difficulty::Hard => "Tighter budgets and service limits.",
+                            };
+                            if choice(ui, self.difficulty == d, d.label(), desc) {
+                                self.difficulty = d;
+                            }
+                        }
+                        label(ui, "Town name", 14.0);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.setup_name).hint_text("Optional"),
+                        );
+                        label(ui, "Map seed", 14.0);
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.seed_text)
+                                    .desired_width(125.0),
+                            );
+                            if theme::button(ui, "Random").clicked() {
+                                self.seed_text = super::random_seed().to_string();
+                            }
+                        });
+                    }
+                });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
                 if theme::button(ui, "Back").clicked() {
-                    self.screen = Screen::Menu;
+                    if self.setup_step == 0 {
+                        self.screen = Screen::Menu;
+                    } else {
+                        self.setup_step -= 1;
+                    }
                 }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::button(
+                        ui,
+                        if self.setup_step == 2 {
+                            "Start town"
+                        } else {
+                            "Next"
+                        },
+                    )
+                    .clicked()
+                    {
+                        if self.setup_step == 2 {
+                            self.screen = Screen::Generating;
+                            self.gen_wait = 0;
+                        } else {
+                            self.setup_step += 1;
+                        }
+                    }
+                });
             });
-            label(ui, "How you play", 14.0);
-            if choice(
-                ui,
-                !self.city_planning,
-                "Town Growth",
-                "Start at a crossroads and let the town lay out its neighborhoods.",
-            ) {
-                self.city_planning = false;
+        });
+    }
+
+    fn select_map(&mut self, ui: &mut Ui, width: f32) {
+        if self
+            .map_preview
+            .as_ref()
+            .is_none_or(|(preset, _)| *preset != self.preset)
+        {
+            let png: &[u8] = match self.preset {
+                Preset::Grid => include_bytes!("../../assets/maps/grid.png"),
+                Preset::Winding => include_bytes!("../../assets/maps/winding.png"),
+                Preset::Sunbelt => include_bytes!("../../assets/maps/sunbelt.png"),
+                Preset::Crossroads => include_bytes!("../../assets/maps/crossroads.png"),
+                Preset::LakeTown => include_bytes!("../../assets/maps/lake.png"),
+                Preset::Gorge => include_bytes!("../../assets/maps/gorge.png"),
+                Preset::Mesa => include_bytes!("../../assets/maps/mesa.png"),
+                Preset::Valley => include_bytes!("../../assets/maps/valley.png"),
+                Preset::Coast => include_bytes!("../../assets/maps/coast.png"),
+            };
+            if let Ok(image) = image::load_from_memory_with_format(png, image::ImageFormat::Png) {
+                let image = image.to_rgba8();
+                let size = [image.width() as usize, image.height() as usize];
+                let pixels = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+                let texture =
+                    ui.ctx()
+                        .load_texture(self.preset.name(), pixels, egui::TextureOptions::LINEAR);
+                self.map_preview = Some((self.preset, texture));
             }
-            if choice(
-                ui,
-                self.city_planning,
-                "City Planning",
-                "Draw streets, then zone land for homes, shops, offices and industry.",
-            ) {
-                self.city_planning = true;
-            }
-            label(ui, "Town rules", 14.0);
-            for m in Mode::ALL {
-                if choice(ui, self.mode == m, m.label(), m.blurb()) {
-                    self.mode = m;
-                }
-            }
-            ui.add_space(4.0);
-            label(ui, "Difficulty", 14.0);
-            for d in Difficulty::ALL {
-                if choice(ui, self.difficulty == d, d.label(), d.blurb()) {
-                    self.difficulty = d;
-                }
-            }
-            ui.add_space(4.0);
-            label(ui, "Town type", 14.0);
+        }
+        if let Some((_, texture)) = &self.map_preview {
+            let display = width.min(500.0);
+            ui.add(egui::Image::new((
+                texture.id(),
+                vec2(display, display * 9.0 / 16.0),
+            )));
+        }
+        ui.label(
+            RichText::new(self.preset.label())
+                .font(ui_font(18.0))
+                .color(INK),
+        );
+        ui.add(egui::Label::new(self.preset.blurb()).wrap());
+        ui.label(
+            RichText::new("Example map")
+                .font(ui_font(11.0))
+                .color(MUTED),
+        );
+        ui.add_space(5.0);
+        ui.horizontal_wrapped(|ui| {
             for p in Preset::ALL {
-                if choice(ui, self.preset == p, &town_name(p.label()), p.blurb()) {
+                let button = egui::Button::new(p.label())
+                    .selected(self.preset == p)
+                    .min_size(vec2(
+                        0.0,
+                        if theme::is_compact(ui.ctx()) {
+                            theme::TOUCH
+                        } else {
+                            25.0
+                        },
+                    ));
+                if ui.add(button).clicked() {
                     self.preset = p;
                 }
             }
-            ui.add_space(4.0);
-            label(ui, "Seed", 14.0);
-            ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.seed_text)
-                        .desired_width(150.0)
-                        .font(ui_font(16.0)),
-                );
-                if small_button(ui, "Random").clicked() {
-                    self.seed_text = super::random_seed().to_string();
-                }
-            });
         });
     }
 

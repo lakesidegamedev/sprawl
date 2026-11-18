@@ -332,6 +332,20 @@ fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8, density: f32) -
         None if l.civic.is_some() => kit::build_lot_for(preset, l.kind, l.radius as f32, &mut rng),
         None => build_lot_level_dense(preset, l.kind, level, l.radius as f32, density, &mut rng),
     };
+    let building = if l.civic.is_some() && level >= 2 {
+        let tier = f32::from(level.min(3) - 1);
+        kit::fit_to_lot(
+            us_render::levels::scaled(
+                &building,
+                1.0 + 0.08 * tier,
+                1.0 + 0.08 * tier,
+                1.0 + 0.19 * tier,
+            ),
+            l.radius as f32,
+        )
+    } else {
+        building
+    };
     let (kind, radius) = (l.kind, l.radius);
     let n = trees_for(kind, &mut rng);
     let mut trees = Vec::new();

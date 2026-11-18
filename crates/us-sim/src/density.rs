@@ -99,7 +99,11 @@ impl Sim {
             v.iter()
                 .filter(|&&j| {
                     let m = &self.lots[j as usize];
-                    matches!(m.phase, Phase::Built { .. }) && m.level > level
+                    matches!(m.phase, Phase::Built { .. })
+                        && m.level > level
+                        && m.civic.is_none()
+                        && !m.exempt
+                        && class_of(m.kind).is_some()
                 })
                 .count()
         })
@@ -129,7 +133,7 @@ impl Sim {
         if d >= 0.85 && pop >= 8000 {
             lv += 1;
         }
-        let lv = lv.min(self.lot_cap(i)).max(1);
+        let lv = lv.min(self.lot_cap(i, pop)).max(1);
         let lv = if self.heritage_at(i) { 1 } else { lv };
         if lv > 1 && self.queue.get(class) < Sim::units_at(l.kind, lv) as f64 {
             return 1;

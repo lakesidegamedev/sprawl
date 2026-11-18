@@ -25,7 +25,7 @@ const UPGRADE_CHANCE: f64 = 0.12;
 const DECLINE_CHANCE: f64 = 0.06;
 
 impl Sim {
-    fn services_avg(&self, i: usize) -> f64 {
+    pub(crate) fn services_avg(&self, i: usize) -> f64 {
         let c = |s: Service| self.coverage[s.index()].get(i).copied().unwrap_or(0.0) as f64;
         (c(Service::Police) + c(Service::Fire) + c(Service::Schools) + c(Service::Health)) / 4.0
     }
@@ -41,6 +41,7 @@ impl Sim {
     /// buildings on poor land decline.
     pub(crate) fn evolve_buildings(&mut self) {
         let day = self.day;
+        let population = self.population();
         let (mut upgrades, mut declines) = (0u32, 0u32);
         let (mut up_at, mut down_at): (Option<Pt>, Option<Pt>) = (None, None);
         let mut room = self.start_room();
@@ -60,7 +61,7 @@ impl Sim {
             let roll_m = roll(self.seed ^ 0x1e7e1, i as u64, day as u64);
             let pull = self.upgrade_pull(i);
             let l = &self.lots[i];
-            if l.level < self.lot_cap(i)
+            if l.level < self.lot_cap(i, population)
                 && !self.heritage_at(i)
                 && lv >= up_lv
                 && self.class_demand.get(class) >= 0.2

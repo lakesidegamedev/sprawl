@@ -3814,6 +3814,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "glam",
+ "image",
  "objc2 0.5.3",
  "pollster",
  "rodio",

@@ -40,6 +40,7 @@ pub struct Settings {
     pub ui_scale: f32,
     pub high_shadows: bool,
     pub balanced_world_resolution: bool,
+    pub detailed_graphics: bool,
     pub(crate) audio: crate::audio::Preferences,
     /// Day and night cycle (true) or always day (false).
     pub day_night: bool,
@@ -163,6 +164,9 @@ pub struct State {
     pub settings: Settings,
     preset: Preset,
     seed_text: String,
+    setup_name: String,
+    setup_step: usize,
+    map_preview: Option<(Preset, egui::TextureHandle)>,
     game: Option<Game>,
     demo: Option<Demo>,
     gen_wait: u8,
@@ -266,12 +270,16 @@ impl State {
                 ui_scale: 1.0,
                 high_shadows: true,
                 balanced_world_resolution: false,
+                detailed_graphics: false,
                 audio: crate::audio::Preferences::load(),
                 day_night: true,
                 reduce_motion: std::env::var("URBAN_SPRAWL_REDUCE_MOTION").is_ok_and(|v| v == "1"),
             },
             preset: Preset::Grid,
             seed_text: random_seed().to_string(),
+            setup_name: String::new(),
+            setup_step: 0,
+            map_preview: None,
             game: None,
             demo: None,
             gen_wait: 0,
@@ -439,7 +447,10 @@ impl State {
         } else {
             2048
         };
-        self.style.window_world_scale = if self.settings.balanced_world_resolution {
+        self.style.high_detail = self.settings.detailed_graphics;
+        self.style.window_world_scale = if self.settings.detailed_graphics {
+            1.0
+        } else if self.settings.balanced_world_resolution {
             0.8
         } else {
             1.0
@@ -647,7 +658,12 @@ impl State {
         let mut live = LiveScene::new(town.clone(), &sim, false);
         live.sync(&mut sim, 1.0e9);
         let cam = CamCtl::overview(town.size as f32, 1.7);
-        let name = format!("{} {}", screens::town_name(self.preset.label()), seed);
+        let name: String = self.setup_name.trim().chars().take(48).collect();
+        let name = if name.is_empty() {
+            format!("{} {}", screens::town_name(self.preset.label()), seed)
+        } else {
+            name
+        };
         self.game = Some(Game::new(
             town,
             self.preset,
@@ -677,7 +693,13 @@ impl State {
         let mut cam = CamCtl::overview(town.size as f32, 1.7);
         cam.look_at(Vec2::new(sim.hall.x as f32, sim.hall.y as f32), 650.0);
         let rules = sim.rules();
-        let name = format!("{} {}", screens::town_name(preset.label()), seed);
+        let name = path
+            .as_ref()
+            .and_then(|path| self.saves.iter().find(|save| &save.path == path))
+            .map_or_else(
+                || format!("{} {}", screens::town_name(preset.label()), seed),
+                |save| save.name.clone(),
+            );
         let mut g = Game::new(
             town,
             preset,
@@ -930,6 +952,8 @@ impl State {
                     self.load_save(&c.path);
                 }
                 if theme::button(ui, "New town").clicked() {
+                    self.setup_step = 0;
+                    self.setup_name.clear();
                     self.screen = Screen::NewTown;
                 }
                 if theme::button(ui, "Load game").clicked() {
@@ -997,6 +1021,12 @@ impl State {
                     "Balanced",
                 );
             });
+            if !cfg!(any(target_os = "ios", target_os = "android")) {
+                ui.checkbox(
+                    &mut self.settings.detailed_graphics,
+                    "Detailed fog and surfaces",
+                );
+            }
             label(ui, "Day and night", 14.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(
@@ -1391,11 +1421,17 @@ impl State {
         if g.placed && compact {
             let dock = egui::Panel::bottom("dock")
                 .frame(theme::bar().inner_margin(egui::Margin::symmetric(4, 3)))
-                .show(ui, |ui| g.dock_ui(ui));
+                .show(ui, |ui| {
+                    g.capacity_strip(ui);
+                    g.dock_ui(ui);
+                });
             // sheets are placed from where the bar really is, so they never cover it
             panels::set_dock_top(ctx, dock.response.rect.top());
         } else if g.placed {
             g.rail_ui(ui);
+            egui::Panel::bottom("capacity-bar")
+                .frame(theme::bar().inner_margin(egui::Margin::symmetric(10, 3)))
+                .show(ui, |ui| g.capacity_strip(ui));
         }
 
         if g.placed {
@@ -1683,6 +1719,7 @@ impl State {
                             egui::Label::new(RichText::new(&reason).size(15.0).color(TEXT)).wrap(),
                         );
                         if let Sel::Lot(i) = sel {
+                            g.civic_upgrade_ui(ui, i);
                             g.why_extra(ui, i);
                         }
                     });
@@ -1708,12 +1745,7 @@ impl State {
         } else {
             "WASD pan   Q E rotate   right drag orbit   wheel zoom   0 1 2 3 speed   space pause   P K O B G J V I H R F panels   Y roads   M map view"
         };
-        let show_help = !compact
-            || (!g.placed
-                && !g.any_sheet()
-                && g.sel.is_none()
-                && g.ui.tool.is_none()
-                && g.ui.growth.height() <= 0.0);
+        let show_help = !g.placed && !g.any_sheet() && g.sel.is_none() && g.ui.tool.is_none();
         if show_help {
             egui::Area::new(egui::Id::new("help"))
                 .anchor(
@@ -1875,6 +1907,8 @@ impl State {
         match over_nav {
             Some(Nav::NewTown) => {
                 self.game = None;
+                self.setup_step = 0;
+                self.setup_name.clear();
                 self.screen = Screen::NewTown;
             }
             Some(Nav::Load) => {
@@ -1973,7 +2007,7 @@ impl Game {
             .scene
             .set_calendar(Some(Calendar::from_date(d.month, d.day, hour)));
         self.live.set_emergency(&self.sim, hour);
-        let look = self.weather_look(hour);
+        let look = self.weather_look(hour, dt);
         self.live.scene.set_weather(look);
     }
 

@@ -102,31 +102,32 @@ impl Sim {
             if !built {
                 continue;
             }
+            let capacity = civic_capacity_pct(l.level);
             match l.civic {
-                Some(CivicKind::Water) => water += 1,
-                Some(CivicKind::Power) => power += 1,
-                Some(CivicKind::School) => seats += 1,
-                Some(CivicKind::HighSchool) => seats += milestones::HIGH_SCHOOL_SEATS,
-                Some(CivicKind::Clinic) => clinics += 1,
-                Some(CivicKind::Hospital) => clinics += milestones::HOSPITAL_CLINICS,
+                Some(CivicKind::Water) => water += capacity,
+                Some(CivicKind::Power) => power += capacity,
+                Some(CivicKind::School) => seats += capacity,
+                Some(CivicKind::HighSchool) => seats += milestones::HIGH_SCHOOL_SEATS * capacity,
+                Some(CivicKind::Clinic) => clinics += capacity,
+                Some(CivicKind::Hospital) => clinics += milestones::HOSPITAL_CLINICS * capacity,
                 Some(_) => {}
                 None => match l.kind {
-                    LotKind::Water => water += 1,
-                    LotKind::School => seats += 1,
+                    LotKind::Water => water += 100,
+                    LotKind::School => seats += 100,
                     _ => {}
                 },
             }
         }
         let supply = match c {
-            Capacity::Water => self.scaled(WATER_FREE + WATER_PER_TOWER * water),
-            Capacity::Power => self.scaled(POWER_FREE + POWER_PER_PLANT * power),
+            Capacity::Water => self.scaled(WATER_FREE + WATER_PER_TOWER * water / 100),
+            Capacity::Power => self.scaled(POWER_FREE + POWER_PER_PLANT * power / 100),
             Capacity::Schools => {
                 let f = self.budget[Dept::Schools.index()].min(130) as i64;
-                SEATS_FREE + self.scaled(SEATS_PER_SCHOOL * seats) * f / 100
+                SEATS_FREE + self.scaled(SEATS_PER_SCHOOL * seats / 100) * f / 100
             }
             Capacity::Health => {
                 let f = self.budget[Dept::Health.index()].min(130) as i64;
-                HEALTH_FREE + self.scaled(CLINIC_SERVES * clinics) * f / 100
+                HEALTH_FREE + self.scaled(CLINIC_SERVES * clinics / 100) * f / 100
             }
         };
         (load, supply)

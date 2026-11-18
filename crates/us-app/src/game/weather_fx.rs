@@ -34,7 +34,7 @@ impl Game {
         a.max(b) * 0.8
     }
 
-    pub(super) fn weather_look(&self, visual_hour: f32) -> WeatherLook {
+    pub(super) fn weather_look(&self, visual_hour: f32, dt: f32) -> WeatherLook {
         let sim = &self.sim;
         let w = sim.wind();
         let mut flood: Vec<[f32; 3]> = Vec::new();
@@ -60,16 +60,27 @@ impl Game {
             }
         }
         flood.truncate(MAX_FLOOD_TILES);
+        let previous = &self.live.scene.weather;
+        let blend = |from: f32, target: f32, seconds: f32| {
+            if previous.active {
+                target + (from - target) * (-dt.max(0.0) / seconds).exp()
+            } else {
+                target
+            }
+        };
         WeatherLook {
             active: true,
-            snow: sim.snow_cover(),
-            wet: sim.ground_wet(),
-            rain: sim.rain(),
-            snowfall: sim.snowfall(),
-            overcast: sim.overcast(),
-            ground_fog: self.ground_fog(visual_hour),
+            snow: blend(previous.snow, sim.snow_cover(), 4.0),
+            wet: blend(previous.wet, sim.ground_wet(), 2.4),
+            rain: blend(previous.rain, sim.rain(), 1.9),
+            snowfall: blend(previous.snowfall, sim.snowfall(), 1.9),
+            overcast: blend(previous.overcast, sim.overcast(), 3.5),
+            ground_fog: blend(previous.ground_fog, self.ground_fog(visual_hour), 3.0),
             flash: self.lightning_flash(),
-            wind: [w.x as f32, w.y as f32],
+            wind: [
+                blend(previous.wind[0], w.x as f32, 3.0),
+                blend(previous.wind[1], w.y as f32, 3.0),
+            ],
             flood,
         }
     }

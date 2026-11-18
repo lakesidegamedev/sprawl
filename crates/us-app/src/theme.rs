@@ -283,7 +283,7 @@ pub fn wants_compact(ctx: &egui::Context) -> bool {
         _ => {}
     }
     let r = ctx.content_rect();
-    cfg!(target_os = "ios") || r.width() < 700.0 || r.height() < 520.0
+    cfg!(any(target_os = "ios", target_os = "android")) || r.width() < 700.0 || r.height() < 520.0
 }
 
 pub fn button(ui: &mut egui::Ui, text: &str) -> egui::Response {

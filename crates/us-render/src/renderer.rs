@@ -38,6 +38,8 @@ pub struct Style {
     pub lod: bool,
     /// Scale of world render targets on window surfaces. The UI stays native.
     pub window_world_scale: f32,
+    /// Full-resolution fog with finer volume sampling and surface detail.
+    pub high_detail: bool,
 }
 
 /// A chunk uses its far form when one metre of it spans less than this share of the frame height
@@ -59,6 +61,7 @@ impl Default for Style {
             shadow_tone: 0.72,
             lod: true,
             window_world_scale: 1.0,
+            high_detail: false,
         }
     }
 }
@@ -244,6 +247,7 @@ struct Targets {
     depth: wgpu::TextureView,
     readback: Option<Readback>,
     edge_group: wgpu::BindGroup,
+    fog_stride: u32,
     fog_view: wgpu::TextureView,
     fog_composite: wgpu::BindGroup,
 }
@@ -1099,12 +1103,11 @@ impl Renderer {
         });
     }
 
-    fn ensure_targets(&mut self, w: u32, h: u32, capture: bool) {
-        if self
-            .targets
-            .as_ref()
-            .is_some_and(|t| t.w == w && t.h == h && t.readback.is_some() == capture)
-        {
+    fn ensure_targets(&mut self, w: u32, h: u32, capture: bool, high_detail: bool) {
+        let fog_stride = if high_detail { 1 } else { 2 };
+        if self.targets.as_ref().is_some_and(|t| {
+            t.w == w && t.h == h && t.fog_stride == fog_stride && t.readback.is_some() == capture
+        }) {
             return;
         }
         self.targets = None;
@@ -1174,10 +1177,10 @@ impl Renderer {
         let fog_view = self
             .device
             .create_texture(&wgpu::TextureDescriptor {
-                label: Some("half resolution fog"),
+                label: Some("ground fog buffer"),
                 size: wgpu::Extent3d {
-                    width: w.div_ceil(2),
-                    height: h.div_ceil(2),
+                    width: w.div_ceil(fog_stride),
+                    height: h.div_ceil(fog_stride),
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -1204,6 +1207,7 @@ impl Renderer {
             depth,
             readback,
             edge_group,
+            fog_stride,
             fog_view,
             fog_composite,
         });
@@ -1229,7 +1233,7 @@ impl Renderer {
         let t0 = Instant::now();
         self.ensure_scene(scene);
         stats.upload = t0.elapsed();
-        self.ensure_targets(rw, rh, true);
+        self.ensure_targets(rw, rh, true, style.high_detail);
         let out_view = self
             .targets
             .as_ref()
@@ -1376,7 +1380,7 @@ impl Renderer {
         };
         self.ensure_scene(scene);
         let (rw, rh) = world_render_size(width, height, style.window_world_scale);
-        self.ensure_targets(rw, rh, false);
+        self.ensure_targets(rw, rh, false, style.high_detail);
         let view = frame.texture.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
         let one = Style {
@@ -1443,7 +1447,7 @@ impl Renderer {
             Season::Summer => 3.0,
             Season::Winter => 0.0,
         });
-        // Ground and vegetation have a six-week transition, staggered locally in the shader.
+        // Ground and vegetation have a nine-week transition, staggered locally in the shader.
         let season_blend = cal.map_or(1.0, |c| {
             let day = i32::from(c.day_of_year);
             let start = match c.season() {
@@ -1453,7 +1457,7 @@ impl Renderer {
                 Season::Summer => 151,
                 Season::Autumn => 243,
             };
-            let t = ((day - start) as f32 / 42.0).clamp(0.0, 1.0);
+            let t = ((day - start) as f32 / 63.0).clamp(0.0, 1.0);
             t * t * (3.0 - 2.0 * t)
         });
         let snow_cover = if wl.active {
@@ -1533,8 +1537,8 @@ impl Renderer {
             resolve: [
                 rw as f32 / present[0] as f32,
                 rh as f32 / present[1] as f32,
-                0.0,
-                0.0,
+                if style.high_detail { 1.0 } else { 2.0 },
+                style.high_detail as u8 as f32,
             ],
             sun: [sun.x, sun.y, sun.z, texel],
             ink: [
@@ -1901,7 +1905,7 @@ impl Renderer {
                 pass.set_bind_group(0, Some(&group0), &[]);
                 // Intensity controls
                 // visibility while the grid keeps sites anchored to the world.
-                pass.draw(0..6, 0..36 * 36 * 6);
+                pass.draw(0..6, 0..36 * 36 * 12);
             }
         }
         if fog_density > 0.005 {

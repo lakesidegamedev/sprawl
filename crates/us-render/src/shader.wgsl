@@ -213,27 +213,8 @@ fn ground_kind(c: vec3<f32>) -> i32 {
 
 // A small tuft in a jittered cell of size `cell`: a short upright stroke with a leaning twin.
 // Returns 1 inside a blade, 0 outside.
-fn tuft(w: vec2<f32>, cell: f32, seed: i32) -> f32 {
-    let q = w / cell;
-    let ci = vec2<i32>(floor(q));
-    let h1 = hash2(ci + vec2<i32>(seed, 3));
-    if (h1 < 0.55) {
-        return 0.0;
-    }
-    let h2 = hash2(ci + vec2<i32>(7, seed));
-    let c = vec2<f32>(0.3 + 0.4 * h1, 0.3 + 0.4 * h2);
-    let d = fract(q) - c;
-    // two blades leaning apart (a small V), width about a seventh of the cell
-    let up = d.y * 1.0;
-    let a = abs(d.x - up * 0.55);
-    let b = abs(d.x + up * 0.55);
-    let in_v = d.y > -0.05 && d.y < 0.3 && (a < 0.07 || b < 0.07);
-    return select(0.0, 1.0, in_v);
-}
-
-// Stepped tone multiplier and optional colour for natural ground at a world place and camera
-// distance. Fine detail fades into the mid-scale pattern with distance, never into flat colour.
-fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist: f32, snowy: bool, season: i32) -> vec3<f32> {
+// Terrain detail is filtered by the world-space footprint of a screen pixel.
+fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist: f32, snowy: bool) -> vec3<f32> {
     var c = col;
     let near_d = dist < 140.0;
     let mid_d = dist < 600.0;
@@ -263,46 +244,20 @@ fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist:
         return c * s;
     }
     if (kind == 1 || kind == 4) {
-        if (kind == 4) {
-            // mown stripes
-            let sp = floor((w.x + w.y * 0.35) / 5.0);
-            if ((i32(sp) & 1) == 0) {
-                k = k * 1.045;
-            } else {
-                k = k * 0.97;
-            }
-        }
-        // clumps a couple of metres across, darker
-        if (mid_d && vnoise(w / 1.9 + vec2<f32>(31.0, 4.0)) > 0.74) {
-            k = k * 0.95;
-        }
-        // broad patches of yellower and deeper green, big enough to read from the far view
-        let broad = vnoise(w / 150.0 + vec2<f32>(13.0, 2.0)) * 0.7 + vnoise(w / 55.0) * 0.3;
-        if (broad > 0.6) {
-            c = c * vec3<f32>(1.07, 1.03, 0.88);
-        } else if (broad < 0.4) {
-            c = c * vec3<f32>(0.9, 0.97, 1.0);
-        }
         let footprint = g.screen.z * dist;
-        let grass_detail = 1.0 - smoothstep(0.28, 0.85, footprint);
-        let clover = vnoise(w * 1.62 + vec2<f32>(11.0, 17.0));
-        let meadow = vnoise(w / 6.0);
-        c = c * (k + (clover - 0.5) * 0.26 * grass_detail + (meadow - 0.5) * 0.14);
-        let stems = 1.0 - smoothstep(0.10, 0.32, footprint);
-        if (stems > 0.0 && tuft(w, 0.74, 23) > 0.5) {
-            c = mix(c, c * vec3<f32>(0.81, 0.94, 0.79), stems);
-        }
-        if (near_d) {
-            let tf = tuft(w, 1.5, 1);
-            if (tf > 0.5) {
-                c = c * 0.9;
-            }
-            let tl = tuft(w + vec2<f32>(0.7, 0.4), 2.3, 5);
-            if (tl > 0.5) {
-                c = c * 1.1;
-            }
-        }
-        return c;
+        let large = vnoise(w / 163.0 + vec2<f32>(4.1, 22.8));
+        let meadow = large * 0.65 + vnoise(w / 39.0) * 0.35;
+        let damp_meadow = vec3<f32>(0.32, 0.43, 0.32);
+        let dry_meadow = vec3<f32>(0.52, 0.54, 0.36);
+        let seasonal = mix(damp_meadow, dry_meadow, smoothstep(0.19, 0.82, meadow));
+        let lush = mix(c, seasonal, select(0.57, 0.43, kind == 4));
+        let clump = vnoise(w * 0.29 + vec2<f32>(2.9, -8.1));
+        let fibre = vnoise(w * vec2<f32>(5.6, 2.8) + vec2<f32>(0.5, 13.0));
+        let detail = 1.0 - smoothstep(0.06, 0.32, footprint);
+        let tufts = 1.0 - smoothstep(0.15, 0.68, footprint);
+        let cut = 1.0 + select(0.0, 0.032 * sin((w.x + w.y * 0.22) * 0.64), kind == 4);
+        return lush * cut * (0.94 + 0.09 * meadow + (clump - 0.5) * 0.109 * tufts
+            + (fibre - 0.5) * 0.23 * detail);
     }
     if (kind == 2) {
         // crop rows: rows run one way per field colour, a broad band of tone per row
@@ -321,7 +276,9 @@ fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist:
                 k = k * 0.95;
             }
         }
-        return c * k;
+        let base_crop = mix(vec3<f32>(0.48, 0.49, 0.32), vec3<f32>(0.60, 0.53, 0.33),
+            smoothstep(0.28, 0.78, vnoise(w / 65.0)));
+        return mix(c, base_crop, 0.38) * k;
     }
     if (kind == 3) {
         // sand ripples: wavy lines
@@ -482,43 +439,26 @@ fn terrain_look(world: vec3<f32>, n: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
         }
         return vec3<f32>(66.0, 130.0, 70.0) / 255.0;
     }
-    if (s > rock_s) {
-        if (g.rock[7].x > 0.5) {
-            // fractured granite: irregular blocks and cracks, no stripes
-            let blk = vnoise(world.xy / 6.0 + vec2<f32>(z / 8.0, -z / 6.0));
-            let blk2 = vnoise(world.xy / 17.0 + vec2<f32>(-z / 21.0, z / 13.0));
-            var pick = 1u;
-            if (blk2 > 0.62) {
-                pick = 3u;
-            } else if (blk2 < 0.34) {
-                pick = 0u;
-            }
-            if (blk < 0.22) {
-                pick = 2u;
-            }
-            return g.rock[pick].rgb;
-        }
-        let bz = (z + (fine - 0.5) * 1.6) / g.rock[5].z;
-        let pick = hash_u(u32(i32(floor(bz)) + 65536)) % 4u;
-        var rc = g.rock[pick].rgb;
-        // a thin dark ledge at the top of each stratum, and a fainter line inside it
-        let lg = g.rock[7].w;
-        if (lg > 0.0) {
-            let fb = fract(bz);
-            if (fb > 0.95) {
-                rc = rc * (1.0 - lg);
-            } else if (fract(bz * 4.0) < 0.1) {
-                rc = rc * (1.0 - lg * 0.24);
-            }
-        }
-        return rc;
-    }
     if (s > talus_s) {
-        var tc = g.rock[4].rgb;
-        if (fine > 0.72) {
-            tc = tc * 0.9;
+        let tilt = world.x * 0.061 + world.y * 0.035;
+        let joint_axis = world.x * 0.56 + world.y * 0.82;
+        let cleavage = vnoise(vec2<f32>(joint_axis / 14.0, z / 55.0));
+        let lithology = vnoise(world.xy / 74.0 + vec2<f32>(z / 40.0, -z / 71.0));
+        let fragments = vnoise(vec2<f32>(joint_axis / 3.6, z / 7.8));
+        var colour = mix(g.rock[0].rgb, g.rock[3].rgb, smoothstep(0.12, 0.91, lithology));
+        if (g.rock[7].x < 0.5) {
+            let warp = (vnoise(world.xy / 60.0 + vec2<f32>(8.0, -1.0)) - 0.5) * 18.0;
+            let layer = (z + tilt + warp + (fragments - 0.5) * 2.1) / max(2.0, g.rock[5].z);
+            let seam = smoothstep(0.82, 1.0, fract(layer)) * smoothstep(0.30, 0.78, cleavage);
+            let bed = 0.5 + 0.5 * sin(layer * 1.9 + lithology * 2.8);
+            colour = mix(colour, g.rock[1].rgb, bed * 0.41) * (1.0 - seam * g.rock[7].w);
         }
-        return tc;
+        let fracture = 1.0 - smoothstep(0.055, 0.22, abs(cleavage - 0.48));
+        colour = colour * (0.88 + fragments * 0.20 - fracture * 0.09);
+        let talus = g.rock[4].rgb * (0.90 + fine * 0.16);
+        let exposure = smoothstep(talus_s - 0.04, rock_s + 0.15, s);
+        let gravel = smoothstep(talus_s, rock_s - 0.06, s);
+        return mix(mix(grass, talus, gravel), colour, exposure);
     }
     if (forest_s <= 0.0 && s > 0.16) {
         // a gorge slope too gentle to be rock: dry scrub with bare stone showing through, not a
@@ -681,6 +621,17 @@ fn season_phase(world: vec3<f32>) -> f32 {
     return clamp(progress + offset * progress * (1.0 - progress), 0.0, 1.0);
 }
 
+fn field_palette(step: i32, season: i32) -> vec3<f32> {
+    var colour = select(vec3<f32>(214.0, 178.0, 66.0), vec3<f32>(202.0, 164.0, 54.0), step == 1);
+    switch (season) {
+        case 0: { colour = vec3<f32>(150.0, 134.0, 100.0); }
+        case 1: { colour = vec3<f32>(178.0, 148.0, 88.0); }
+        case 2: { colour = vec3<f32>(130.0, 176.0, 84.0); }
+        default: {}
+    }
+    return colour / 255.0;
+}
+
 fn groundcover_palette(step: i32, season: i32) -> vec3<f32> {
     let summer = array<vec3<f32>, 4>(
         vec3<f32>(92.0, 158.0, 62.0), vec3<f32>(106.0, 172.0, 72.0),
@@ -789,25 +740,22 @@ fn fs_main(v: VOut) -> FOut {
         }
         if (ws >= 0) {
             is_cover = true;
-            var wc = vec3<f32>(214.0, 178.0, 66.0);
-            if (ws == 1) { wc = vec3<f32>(202.0, 164.0, 54.0); }
-            if (season == 2) { wc = vec3<f32>(130.0, 176.0, 84.0); }
-            if (season == 1) { wc = vec3<f32>(178.0, 148.0, 88.0); }
-            if (season == 0) { wc = vec3<f32>(150.0, 134.0, 100.0); }
-            col = wc / 255.0;
+            col = mix(field_palette(ws, previous), field_palette(ws, season), season_phase(v.world));
         }
         if (fs >= 0) {
-            if (season == 0) { discard; }
             var fc = vec3<f32>(250.0, 214.0, 70.0);
             if (fs == 1) { fc = vec3<f32>(250.0, 248.0, 238.0); }
             if (fs == 2) { fc = vec3<f32>(240.0, 128.0, 166.0); }
             if (fs == 3) { fc = vec3<f32>(156.0, 116.0, 208.0); }
-            if (season == 1) { fc = vec3<f32>(150.0, 110.0, 70.0); }
-            col = fc / 255.0;
+            let dormant = vec3<f32>(153.0, 132.0, 84.0);
+            let winter = mix(f32(previous == 0), f32(season == 0), season_phase(v.world));
+            let autumn = mix(f32(previous == 1), f32(season == 1), season_phase(v.world));
+            col = mix(fc, dormant, max(winter, autumn * 0.86)) / 255.0;
         }
         if (bs >= 0) {
-            if (season == 2 || season == 0) { discard; }
-            col = vec3<f32>(226.0, 192.0, 92.0) / 255.0;
+            let dormant = mix(f32(previous == 2 || previous == 0),
+                f32(season == 2 || season == 0), season_phase(v.world));
+            col = mix(vec3<f32>(226.0, 192.0, 92.0), vec3<f32>(139.0, 135.0, 88.0), dormant) / 255.0;
         }
     }
     if (ground && near(col, 247.0, 248.0, 253.0) && (g.look.y < 0.5 || g.look.z > 0.5)) {
@@ -853,20 +801,14 @@ fn fs_main(v: VOut) -> FOut {
                 if (col.g > col.b + 0.08 && col.g > col.r - 0.06) {
                     // drifts with rounded edges that join up as the cover deepens
                     let h = vnoise(v.world.xy / 16.0) * 0.7 + vnoise(v.world.xy / 5.0) * 0.3;
-                    if (h < reach) {
-                        col = vec3<f32>(236.0, 241.0, 247.0) / 255.0;
-                    }
+                    col = mix(col, vec3<f32>(236.0, 241.0, 247.0) / 255.0, smoothstep(h - 0.11, h + 0.11, reach));
                 }
             } else if (is_cover) {
                 let h = vnoise(v.world.xy / 16.0) * 0.7 + vnoise(v.world.xy / 5.0) * 0.3;
-                if (h < reach) {
-                    col = vec3<f32>(228.0, 235.0, 244.0) / 255.0;
-                }
+                col = mix(col, vec3<f32>(228.0, 235.0, 244.0) / 255.0, smoothstep(h - 0.11, h + 0.11, reach));
             } else if (cel && !exempt && v.tint == 0u && n.z > 0.35) {
                 let h = f32(hash_u(v.id / 16u) % 1000u) / 1000.0;
-                if (h < reach) {
-                    col = vec3<f32>(238.0, 242.0, 248.0) / 255.0;
-                }
+                col = mix(col, vec3<f32>(238.0, 242.0, 248.0) / 255.0, smoothstep(h - 0.13, h + 0.13, reach));
             }
         }
         // rain: wet roads and ground are darker and a little bluer, wet roofs slightly so
@@ -888,7 +830,7 @@ fn fs_main(v: VOut) -> FOut {
         col = water_colour(wkind, v.world, v.dist, n);
     } else if (gkind > 0) {
         let snowy = min(col.r, min(col.g, col.b)) > 0.88;
-        col = ground_detail(col, v.color.rgb, gkind, v.world.xy, v.dist, snowy, season);
+        col = ground_detail(col, v.color.rgb, gkind, v.world.xy, v.dist, snowy);
         if ((gkind == 1 || gkind == 4) && !snowy) {
             col = grass_soil(col, v.world, n, g.screen.z * v.dist);
         }
@@ -904,21 +846,8 @@ fn fs_main(v: VOut) -> FOut {
             // flat desert and sea flats must read flat: a faint swell of the land is not shaded
             d = d * (1.0 - 0.97 * smoothstep(0.9, 0.97, facet.z));
         }
-        if (d > 0.03) {
-            k = 1.1;
-        } else if (d > 0.012) {
-            k = 1.05;
-        } else if (d > -0.012) {
-            k = 1.0;
-        } else if (d > -0.03) {
-            k = 0.93;
-        } else if (d > -0.055) {
-            k = 0.86;
-        } else if (d > -0.09) {
-            k = 0.78;
-        } else {
-            k = 0.7;
-        }
+        let rock_grade = smoothstep(0.68, 0.95, n.z);
+        k = clamp(1.0 + d * mix(0.42, 1.25, rock_grade), 0.71, 1.12);
     } else if (cel && wkind == 0) {
         // top brightest, sun side, shade side: three steps
         if (n.z > 0.9) {
@@ -933,6 +862,12 @@ fn fs_main(v: VOut) -> FOut {
     }
     if (l > 0.02 && k > g.shade.x && wkind == 0) {
         k = mix(g.shade.x, k, lit(v.world, n));
+    }
+    if (g.resolve.w > 0.5 && g.look.z < 0.5) {
+        let footprint = v.dist * g.screen.z;
+        let grain = vnoise(v.world.xy * 6.4 + v.world.z * vec2<f32>(4.9, 8.1));
+        let detail = 1.0 - smoothstep(0.06, 0.23, footprint);
+        col *= 1.0 + (grain - 0.5) * 0.22 * detail;
     }
     let material_colour = col;
     col = col * k;
@@ -1005,13 +940,13 @@ struct Precipitation {
 
 @vertex
 fn vs_precipitation(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Precipitation {
-    let column = instance / 6u;
+    let column = instance / 12u;
     let cell = vec2<i32>(g.precipitation.zw) + vec2<i32>(i32(column % 36u), i32(column / 36u));
-    let slot = i32(instance % 6u);
-    let seed = cell * 6 + vec2<i32>(slot, slot * 17);
+    let slot = i32(instance % 12u);
+    let seed = cell * 12 + vec2<i32>(slot, slot * 17);
     let origin = (vec2<f32>(cell) + vec2<f32>(hash2(seed), hash2(seed + vec2<i32>(41, 29)))) * 12.0;
-    let is_snow = g.precipitation.y > g.precipitation.x;
-    let strength = max(g.precipitation.x, g.precipitation.y);
+    let is_snow = slot >= 6;
+    let strength = select(g.precipitation.x, g.precipitation.y, is_snow);
     let chance = hash2(seed + vec2<i32>(-52, 19));
     var o: Precipitation;
     o.clip = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
@@ -1098,11 +1033,12 @@ fn fog_opacity(pixel: vec2<f32>, depth: f32) -> f32 {
 
     // Short intervals resolve wisps at the ground. Increasing intervals reach the
     // tops of banks and keep the cost independent of zoom and map size.
-    let ends = array<f32, 6>(3.5, 8.0, 15.0, 26.0, 45.0, 77.0);
+    let sample_count = select(6, 14, g.resolve.w > 0.5);
     var start = 0.0;
     var extinction = 0.0;
-    for (var i = 0; i < 6; i++) {
-        let end = min(ends[i], limit);
+    for (var i = 0; i < sample_count; i++) {
+        let t = f32(i + 1) / f32(sample_count);
+        let end = min(2.0 * t + 75.0 * t * t, limit);
         let point = hit - dir * ((start + end) * 0.5);
         let above = point.z - terrain_height(point.xy);
         if (above >= 0.0 && above < 26.0) {
@@ -1124,7 +1060,7 @@ fn fog_opacity(pixel: vec2<f32>, depth: f32) -> f32 {
 
 @fragment
 fn fs_fog(e: EOut) -> @location(0) vec4<f32> {
-    let pixel = vec2<i32>(e.clip.xy) * 2;
+    let pixel = vec2<i32>(e.clip.xy) * i32(g.resolve.z);
     let depth = aux_at(pixel, 0).x;
     return vec4<f32>(fog_opacity(vec2<f32>(pixel) + 0.5, depth), min(depth, 65504.0), 0.0, 1.0);
 }
@@ -1133,7 +1069,10 @@ fn fog_at(pixel: vec2<f32>, depth: f32) -> f32 {
     if (depth > 100000.0) {
         return 0.0;
     }
-    let uv = (pixel - 0.5) * 0.5;
+    if (g.resolve.z == 1.0) {
+        return textureLoad(fog_tex, vec2<i32>(pixel), 0).r;
+    }
+    let uv = (pixel - 0.5) / g.resolve.z;
     let base = vec2<i32>(floor(uv));
     let f = fract(uv);
     let bound = vec2<i32>(textureDimensions(fog_tex)) - vec2<i32>(1);

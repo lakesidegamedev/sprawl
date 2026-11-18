@@ -133,14 +133,18 @@ impl Sim {
                                 | CivicKind::University
                         )
                     })
-                    .map(|c| (c, l.pos))
+                    .map(|c| (c, l.pos, l.level))
             })
             .collect();
     }
 
-    /// How many of this kind stand and work.
-    pub(crate) fn fx_count(&self, kind: CivicKind) -> usize {
-        self.fx_sites.iter().filter(|s| s.0 == kind).count()
+    /// Relative operating capacity of the built sites of this kind.
+    fn fx_capacity(&self, kind: CivicKind) -> f64 {
+        self.fx_sites
+            .iter()
+            .filter(|site| site.0 == kind)
+            .map(|site| civic_capacity_pct(site.2) as f64 / 100.0)
+            .sum()
     }
 
     /// What the new civic buildings do at `p`; `shop` says the lot is a shop or office.
@@ -150,24 +154,25 @@ impl Sim {
         let mut transit = 0.0f64;
         let mut stadium_traffic = 0.0f64;
         let mut stadium_shop = 0.0f64;
-        let mut univ = false;
-        for &(k, at) in &self.fx_sites {
+        let mut univ = 0.0f64;
+        for &(k, at, tier) in &self.fx_sites {
+            let reach = civic_reach_multiplier(tier);
             let d = p.dist(at);
             match k {
-                CivicKind::Library if d < LIBRARY_REACH => {
-                    library += 0.05 * (1.0 - d / LIBRARY_REACH);
+                CivicKind::Library if d < LIBRARY_REACH * reach => {
+                    library += 0.05 * (1.0 - d / (LIBRARY_REACH * reach));
                 }
-                CivicKind::Transit if d < TRANSIT_REACH => {
-                    transit = transit.max(1.0 - d / TRANSIT_REACH);
+                CivicKind::Transit if d < TRANSIT_REACH * reach => {
+                    transit = transit.max(1.0 - d / (TRANSIT_REACH * reach));
                 }
-                CivicKind::Stadium if d < STADIUM_TRAFFIC_REACH => {
-                    stadium_traffic += 0.3 * (1.0 - d / STADIUM_TRAFFIC_REACH);
+                CivicKind::Stadium if d < STADIUM_TRAFFIC_REACH * reach => {
+                    stadium_traffic += 0.3 * (1.0 - d / (STADIUM_TRAFFIC_REACH * reach));
                 }
-                CivicKind::University => univ = true,
+                CivicKind::University => univ = univ.max(0.04 * reach),
                 _ => {}
             }
-            if k == CivicKind::Stadium && shop && d < STADIUM_SHOP_REACH {
-                stadium_shop = stadium_shop.max(1.0 - d / STADIUM_SHOP_REACH);
+            if k == CivicKind::Stadium && shop && d < STADIUM_SHOP_REACH * reach {
+                stadium_shop = stadium_shop.max(1.0 - d / (STADIUM_SHOP_REACH * reach));
             }
         }
         if library > 0.0 {
@@ -201,10 +206,12 @@ impl Sim {
                 v * 100.0
             ));
         }
-        if univ {
-            n.value += 0.04;
-            n.notes
-                .push("The university adds 4 points of land value across town.".into());
+        if univ > 0.0 {
+            n.value += univ;
+            n.notes.push(format!(
+                "The university adds {:.0} points of land value across town.",
+                univ * 100.0
+            ));
         }
         n
     }
@@ -223,34 +230,33 @@ impl Sim {
 
     /// Extra demand for shops and offices from the high schools, stadiums and universities.
     pub(crate) fn shop_demand_bonus(&self) -> f64 {
-        let hs = (self.fx_count(CivicKind::HighSchool) as f64 * 0.025).min(0.075);
-        let st = (self.fx_count(CivicKind::Stadium) as f64 * 0.02).min(0.06);
-        let un = (self.fx_count(CivicKind::University) as f64 * 0.04).min(0.08);
+        let hs = (self.fx_capacity(CivicKind::HighSchool) * 0.025).min(0.075);
+        let st = (self.fx_capacity(CivicKind::Stadium) * 0.02).min(0.06);
+        let un = (self.fx_capacity(CivicKind::University) * 0.04).min(0.08);
         (hs + st + un).min(0.15) + self.tram_shop_demand()
     }
 
     /// Share more people arrive: transit stops and universities draw them.
     pub(crate) fn arrival_bonus(&self) -> f64 {
-        let t = (self.fx_count(CivicKind::Transit) as f64 * 0.02).min(0.08);
-        let u = (self.fx_count(CivicKind::University) as f64 * 0.06).min(0.12);
+        let t = (self.fx_capacity(CivicKind::Transit) * 0.02).min(0.08);
+        let u = (self.fx_capacity(CivicKind::University) * 0.06).min(0.12);
         1.0 + t + u + self.tram_arrival_bonus()
     }
 
     /// Share of the families that would leave who stay because there is a hospital.
     pub(crate) fn leaver_factor(&self) -> f64 {
-        (1.0 - 0.25 * self.fx_count(CivicKind::Hospital) as f64).max(0.5)
+        (1.0 - 0.25 * self.fx_capacity(CivicKind::Hospital)).max(0.5)
     }
 
     /// Approval points from stadiums, added to the services part.
     pub(crate) fn stadium_approval(&self) -> f64 {
-        (self.fx_count(CivicKind::Stadium) as f64 * 2.0).min(4.0)
+        (self.fx_capacity(CivicKind::Stadium) * 2.0).min(4.0)
     }
 
     /// Congestion town-wide after transit stops ease it and stadiums add to it.
     pub(crate) fn civic_adjusted_congestion(&self, avg: f64) -> f64 {
-        let relief =
-            (self.fx_count(CivicKind::Transit) as f64 * 0.05).min(0.2) + self.tram_relief();
-        let add = self.fx_count(CivicKind::Stadium) as f64 * 0.03;
+        let relief = (self.fx_capacity(CivicKind::Transit) * 0.05).min(0.2) + self.tram_relief();
+        let add = self.fx_capacity(CivicKind::Stadium) * 0.03;
         (avg * (1.0 - relief) + add + self.weather_congestion()).clamp(0.0, 1.0)
     }
 

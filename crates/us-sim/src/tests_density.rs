@@ -159,3 +159,61 @@ fn mountain_towns_grow_stay_solvent_and_floods_spare_the_high_ground() {
         assert!(lots > 3000, "{} has {lots} lots", preset.name());
     }
 }
+
+#[test]
+fn towers_require_a_mature_served_cluster() {
+    let town = generate(Preset::Grid, 3);
+    let mut sim = Sim::new_with_rules(&town, hall_sites(&town)[0], 7, 2, Rules::sandbox());
+    let i = sim
+        .lots
+        .iter()
+        .enumerate()
+        .find(|(i, lot)| {
+            lot.kind == LotKind::Office && sim.lot_density(*i) >= 0.78 && sim.near[*i].len() >= 3
+        })
+        .map(|(i, _)| i)
+        .expect("central office lot");
+    for lot in &mut sim.lots {
+        if class_of(lot.kind) == Some(Class::Homes) {
+            lot.phase = Phase::Built {
+                since: 0,
+                tax_x10: TAX_DEFAULT_X10,
+            };
+            lot.level = 3;
+        }
+    }
+    sim.lot_value[i] = 0.8;
+    for service in [
+        Service::Police,
+        Service::Fire,
+        Service::Schools,
+        Service::Health,
+    ] {
+        sim.coverage[service.index()][i] = 0.9;
+    }
+    let near = sim.near[i][..3].to_vec();
+    for &j in &near {
+        sim.lots[j as usize].phase = Phase::Vacant;
+    }
+    sim.near[i] = near.clone();
+    assert_eq!(sim.lot_cap(i, sim.population()), 3);
+    for j in near {
+        sim.lots[j as usize].phase = Phase::Built {
+            since: 0,
+            tax_x10: TAX_DEFAULT_X10,
+        };
+        sim.lots[j as usize].level = 3;
+    }
+    assert_eq!(sim.lot_cap(i, sim.population()), 5);
+    sim.lot_value[i] = 0.62;
+    assert_eq!(sim.lot_cap(i, sim.population()), 4);
+    for service in [
+        Service::Police,
+        Service::Fire,
+        Service::Schools,
+        Service::Health,
+    ] {
+        sim.coverage[service.index()][i] = 0.0;
+    }
+    assert_eq!(sim.lot_cap(i, sim.population()), 3);
+}

@@ -8,6 +8,7 @@
 //! Headless renders use whatever adapter wgpu finds; on a machine without a GPU that is the
 //! Mesa software Vulkan driver.
 
+pub mod architecture;
 mod calendar;
 mod camera;
 pub mod civic;
@@ -40,7 +41,6 @@ pub mod roadpaint;
 pub mod rock;
 mod scene;
 pub mod site;
-mod skyline;
 pub mod trains;
 pub mod trams;
 pub mod weather;

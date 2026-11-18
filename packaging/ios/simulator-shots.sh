@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs the simulator build on one simulator, launches it and takes screenshots. macOS only.
 #   simulator-shots.sh <iphone|ipad> <Urban Sprawl.app> <output dir>
-# Shots: menu, town, and the Budget sheet on a seeded River gorge town.
+# Shots: menu, map selector, town, and the Budget sheet.
 set -euo pipefail
 kind="${1:?iphone or ipad}"; app="${2:?app bundle}"; out="${3:?output dir}"
 bundle=net.lakesidegames.urbansprawl
@@ -54,6 +54,16 @@ step "screenshot menu"
 within 240 xcrun simctl io "$udid" screenshot "$out/$kind-1-menu.png"
 show_log
 xcrun simctl terminate "$udid" "$bundle"
+sleep 2
+
+# Map selector with its engine-rendered map example.
+step "launch map selector"
+SIMCTL_CHILD_URBAN_SPRAWL_SMOKE=600 SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_SCREEN=newtown \
+  within 240 xcrun simctl launch "$udid" "$bundle"
+sleep 8
+running || fail "app stopped while displaying the map selector"
+within 240 xcrun simctl io "$udid" screenshot "$out/$kind-4-map-selector.png"
+xcrun simctl terminate "$udid" "$bundle" || true
 sleep 2
 
 # town: the smoke autopilot starts a new town and places the hall, then runs for 10 minutes

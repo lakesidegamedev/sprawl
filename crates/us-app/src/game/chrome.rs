@@ -629,6 +629,7 @@ impl Game {
                             egui::Label::new(RichText::new(reason).size(14.5).color(TEXT)).wrap(),
                         );
                         if let Sel::Lot(i) = sel {
+                            self.civic_upgrade_ui(ui, i);
                             self.why_extra(ui, i);
                         }
                     });
