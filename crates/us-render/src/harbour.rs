@@ -160,10 +160,11 @@ pub fn rock_pillar(o: &mut Obj, p: &Pillar, bands: &[Rgb; 5], foot: Rgb, cap: Rg
 /// One eroded span, with an irregular cross section that changes through the opening.
 fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32) {
     let surfaces = o.polys.len();
+    let solids = o.solids.len();
     let foot = -3.0f32;
     let c = r * 0.66;
     let zs = foot + (h - foot) * 0.4;
-    let rise = (h * 0.86 - zs - h * 0.1).max(h * 0.2);
+    let rise = (h * 0.94 - zs - h * 0.1).max(h * 0.2);
     let leg_th = r * 0.3;
     let crown_th = (h * 0.1).clamp(r * 0.14, r * 0.26);
     let wx0 = r * 0.5;
@@ -254,8 +255,19 @@ fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32) {
         }
         prev = cur;
     }
+    let top = o.polys[surfaces..]
+        .iter()
+        .flat_map(|face| &face.pts)
+        .map(|point| point[2])
+        .fold(foot + 1.0, f32::max);
+    let height_scale = (h - foot) / (top - foot);
+    let fit_z = |point: &mut [f32; 3]| point[2] = foot + (point[2] - foot) * height_scale;
     for face in &mut o.polys[surfaces..] {
         face.outline = false;
+        face.pts.iter_mut().for_each(fit_z);
+    }
+    for solid in &mut o.solids[solids..] {
+        fit_z(&mut solid.centre);
     }
 }
 
