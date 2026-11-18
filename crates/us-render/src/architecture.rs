@@ -378,7 +378,7 @@ fn tower(family: usize, plan: usize, level: u8, wall: Rgb) -> Obj {
             );
         } else {
             crown_x = if family == 11 {
-                [0.0, -w * 0.17, w * 0.12][index] * if plan % 2 == 0 { 1.0 } else { -1.0 }
+                [0.0, -w * 0.17, w * 0.12][index] * if plan.is_multiple_of(2) { 1.0 } else { -1.0 }
             } else {
                 0.0
             };
