@@ -1657,7 +1657,7 @@ impl LiveScene {
 
 /// How many metres of the land the coarse ground skips per vertex (every fourth grid line).
 const COARSE_STRIDE: usize = 4;
-/// The coarse ground sits this far under the fine one so it never shows through roads or lots.
+/// Lower the coarse vertices to leave clearance under roads and lots on gentle terrain.
 const COARSE_SINK: f32 = 0.5;
 
 /// The land on every fourth grid line, lowered a little, for the far form of the ground.

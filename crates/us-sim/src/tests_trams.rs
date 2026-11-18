@@ -65,6 +65,7 @@ fn a_line_costs_money_is_built_in_stages_and_opens_with_news() {
     let mut s = grown();
     let (a, b) = with_stops(&mut s);
     s.take_events();
+    s.set_rules(Rules::sandbox());
     let before = s.treasury;
     let plan = s.check_tram(&[a, b]).unwrap();
     let i = s.build_tram(&[a, b]).unwrap();
