@@ -207,7 +207,46 @@ fn cloud_field(xy: vec2<f32>, height: f32) -> f32 {
 }
 
 fn cloud_threshold() -> f32 {
-    return mix(0.79, 0.27, g.shade.w);
+    return mix(0.82, 0.30, g.shade.w);
+}
+
+fn cloud_cell(p: vec3<i32>) -> f32 {
+    let key = bitcast<u32>(p.x) * 73856093u ^ bitcast<u32>(p.y) * 19349663u
+        ^ bitcast<u32>(p.z) * 83492791u;
+    return f32(hash_u(key) & 65535u) / 65535.0;
+}
+
+fn cloud_noise(p: vec3<f32>) -> f32 {
+    let cell = vec3<i32>(floor(p));
+    let f = fract(p);
+    let t = f * f * (3.0 - 2.0 * f);
+    let plane = mix(
+        mix(cloud_cell(cell), cloud_cell(cell + vec3<i32>(1, 0, 0)), t.x),
+        mix(cloud_cell(cell + vec3<i32>(0, 1, 0)), cloud_cell(cell + vec3<i32>(1, 1, 0)), t.x), t.y);
+    let next = cell + vec3<i32>(0, 0, 1);
+    let upper = mix(
+        mix(cloud_cell(next), cloud_cell(next + vec3<i32>(1, 0, 0)), t.x),
+        mix(cloud_cell(next + vec3<i32>(0, 1, 0)), cloud_cell(next + vec3<i32>(1, 1, 0)), t.x), t.y);
+    return mix(plane, upper, t.z);
+}
+
+fn cloud_density(point: vec3<f32>, detail: bool) -> f32 {
+    let layer = (point.z - cloud_base()) / cloud_thickness();
+    if (layer <= 0.0 || layer >= 1.0) {
+        return 0.0;
+    }
+    let field = cloud_field(point.xy, layer);
+    let threshold = cloud_threshold();
+    var shape = field;
+    if (detail && field > threshold - 0.11 && field < threshold + 0.27) {
+        let xyz = point - vec3<f32>(g.screen.w * vec2<f32>(2.1, 0.86), 0.0);
+        let cells = cloud_noise(xyz * 0.042);
+        let edges = cloud_noise(xyz * 0.106 + vec3<f32>(3.7, 2.4, -1.1));
+        shape += (0.74 * cells + 0.26 * edges - 0.5) * 0.31;
+    }
+    let deck = smoothstep(0.0, 0.24, layer) * (1.0 - smoothstep(0.56, 1.0, layer));
+    let mass = smoothstep(threshold - 0.035, threshold + 0.19, shape);
+    return mass * deck;
 }
 
 fn cloud_sunlight(world: vec3<f32>) -> f32 {
@@ -1134,23 +1173,36 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32) -> vec2<f32> {
     var transmission = 1.0;
     var sunlight = 0.0;
     let day = smoothstep(0.03, 0.37, g.sun.z);
-    let threshold = cloud_threshold();
+    let detailed = g.resolve.w > 0.5;
+    let sun_distance = min(60.0, thickness / max(0.36, g.sun.z));
+    let sun_step = sun_distance / 3.0;
+    let forward = pow(max(0.0, dot(dir, g.sun.xyz)), 4.0);
     for (var i = 0; i < count; i++) {
         let point = eye + dir * (start + step_size * (f32(i) + 0.5));
-        let z = clamp((point.z - base) / thickness, 0.0, 1.0);
-        let deck = smoothstep(0.0, 0.24, z) * (1.0 - smoothstep(0.54, 1.0, z));
-        let field = cloud_field(point.xy, z);
-        var fine = field;
-        if (g.resolve.w > 0.5 && field > threshold - 0.13 && field < threshold + 0.28) {
-            let p = (point.xy - g.screen.w * vec2<f32>(2.1, 0.86)) * 0.053;
-            let scallops = vnoise(p + vec2<f32>(2.2, -2.9) * z);
-            fine = field + (scallops - 0.5) * 0.21;
+        let density = cloud_density(point, detailed);
+        if (density < 0.004) {
+            continue;
         }
-        let mass = smoothstep(threshold - 0.075, threshold + 0.16, fine);
-        let scatter = transmission * (1.0 - exp(-mass * deck * step_size * 0.076));
+        let scatter = transmission * (1.0 - exp(-density * step_size * 0.082));
         transmission -= scatter;
-        let exposed = mix(0.64 * (1.0 - mass), 1.0, smoothstep(0.18, 0.87, z));
-        sunlight += scatter * exposed * day;
+        if (day > 0.0) {
+            // Sample settled cloud density toward the sun. Use the broad field here
+            // so fine edge detail does not introduce flicker in the lighting.
+            let toward_light = g.sun.xyz * sun_step;
+            var blockers = cloud_density(point + toward_light * 0.5, false);
+            if (detailed) {
+                blockers += cloud_density(point + toward_light * 1.5, false);
+                blockers += cloud_density(point + toward_light * 2.5, false);
+            } else {
+                blockers *= 2.1;
+            }
+            let direct = exp(-blockers * sun_step * 0.085);
+            let bounce = exp(-blockers * sun_step * 0.028);
+            sunlight += scatter * (direct * (0.68 + forward * 0.13) + bounce * 0.19) * day;
+        }
+        if (transmission < 0.012) {
+            break;
+        }
     }
     return vec2<f32>(1.0 - transmission, sunlight) * smoothstep(0.12, 0.36, g.shade.w);
 }
@@ -1171,7 +1223,7 @@ fn atmosphere(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
     if (g.shade.w > 0.12) {
         cloud = cloud_volume(g.eye.xyz, dir, limit);
     }
-    return vec3<f32>(fog.x, fog.y * (1.0 - cloud.x) + cloud.y * 1.20, cloud.x);
+    return vec3<f32>(fog.x, fog.y * (1.0 - cloud.x) * 0.68 + cloud.y * 1.37, cloud.x);
 }
 
 @fragment
@@ -1287,13 +1339,11 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
     var col = acc / f32(SAMPLE_COUNT);
     if (g.look.z < 0.5 && (g.fog.w > 0.005 || g.shade.w > 0.12)) {
         let volume = atmosphere_at(vec2<f32>(p) + 0.5, centre.x);
-        let sun_glow = vec3<f32>(0.34, 0.29, 0.21) * (1.0 - g.shade.w * 0.72);
+        let sun_glow = mix(vec3<f32>(0.43, 0.39, 0.34), vec3<f32>(0.35, 0.39, 0.44), g.shade.w);
         col = mix(col, g.fog.rgb * 0.82, volume.r);
         let daylight = smoothstep(0.02, 0.37, g.sun.z);
-        let underside = mix(vec3<f32>(0.16, 0.23, 0.32), vec3<f32>(0.60, 0.68, 0.76), daylight);
-        let cloud_light = mix(underside, g.fog.rgb * 1.10, 0.55 * (1.0 - g.shade.w));
-        let cloud_cover = select(1.0, 0.78, centre.x < 100000.0);
-        col = mix(col, cloud_light, volume.b * cloud_cover) + sun_glow * volume.g;
+        let ambient = mix(vec3<f32>(0.16, 0.23, 0.32), vec3<f32>(0.51, 0.57, 0.65), daylight);
+        col = mix(col, ambient, volume.b) + sun_glow * volume.g;
     }
     return vec4<f32>(col, 1.0);
 }
