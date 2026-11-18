@@ -799,6 +799,7 @@ impl Game {
         if let Some(panel) = hit {
             let was_open = *panel.active(self);
             self.close_sheets();
+            self.sel = None;
             *panel.active(self) = !was_open;
         }
     }
@@ -806,11 +807,7 @@ impl Game {
     pub(super) fn more_sheet(&mut self, ctx: &Context) {
         let mut next = None;
         let closed = super::panels::sheet(ctx, "More", |ui| {
-            let columns = if ctx.content_rect().width() >= 360.0 {
-                2
-            } else {
-                1
-            };
+            let columns = if ui.available_width() >= 300.0 { 2 } else { 1 };
             for row in MobilePanel::MORE.chunks(columns) {
                 ui.horizontal(|ui| {
                     let gap = ui.spacing().item_spacing.x;

@@ -269,8 +269,8 @@ impl State {
             settings: Settings {
                 fullscreen: false,
                 ui_scale: 1.0,
-                high_shadows: true,
-                balanced_world_resolution: false,
+                high_shadows: !cfg!(any(target_os = "ios", target_os = "android")),
+                balanced_world_resolution: true,
                 detailed_graphics: false,
                 tilt_shift: false,
                 audio: crate::audio::Preferences::load(),
@@ -443,7 +443,7 @@ impl State {
         self.keys.contains(&c) as u8 as f32
     }
 
-    pub fn update(&mut self, dt: f32, w: u32, h: u32) {
+    pub fn update(&mut self, dt: f32, visual_dt: f32, w: u32, h: u32) {
         self.style.shadow_size = if self.settings.high_shadows {
             4096
         } else {
@@ -571,7 +571,10 @@ impl State {
         }
         let Some(g) = self.game.as_mut() else { return };
         g.refresh_stats();
-        g.light_tick(dt, cycle, self.settings.reduce_motion);
+        // Give animation a real-time clock during slow frames. A separate cap
+        // keeps suspend/resume from advancing weather or traffic in one jump.
+        g.live.scene.set_time(g.live.scene.time + visual_dt);
+        g.light_tick(visual_dt, cycle, self.settings.reduce_motion);
         g.ui_tick(dt);
         if g.placed && !g.menu_open {
             g.coach_tick(dt);
@@ -641,9 +644,9 @@ impl State {
         }
     }
 
-    pub fn frame_done(&mut self, dt: f32, _drawn: bool) {
+    pub fn frame_done(&mut self, dt: f32, drawn: bool) {
         self.fps_acc.0 += dt;
-        self.fps_acc.1 += 1;
+        self.fps_acc.1 += u32::from(drawn);
         if self.fps_acc.0 >= 0.5 {
             self.fps = self.fps_acc.1 as f32 / self.fps_acc.0;
             self.fps_acc = (0.0, 0);
@@ -1436,6 +1439,7 @@ impl State {
         let top_y = hud.response.rect.bottom() + if compact { 6.0 } else { 12.0 };
 
         if g.placed && compact {
+            panels::set_hud_bottom(ctx, hud.response.rect.bottom());
             let dock = egui::Panel::bottom("dock")
                 .frame(theme::bar().inner_margin(egui::Margin::symmetric(4, 3)))
                 .show(ui, |ui| {

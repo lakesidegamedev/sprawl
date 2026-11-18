@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Clouds drift across the city and change shape as their edges develop, with translucent fringes around one overhead volume. Fog still rolls close to the terrain at street zoom.
+- Storm lighting uses local flashes and softer cloud shade. Fog and lighting use less rendering work, and Balanced world resolution is the default. Native and Detailed remain available in graphics settings where supported.
+- Water swells in irregular patterns. Small ripples fade into the surface as the camera pulls back.
+- Tap the semicircle gauges for water, power, schools and health to build or upgrade a service. Phone sheets stay between the top controls and bottom dock and scroll independently.
+
 ## 1.4.2 (2026-11-18)
 
 <!-- Release coverage starts after v1.4.1 (a577645). Atmosphere improvements are in #61. -->

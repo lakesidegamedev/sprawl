@@ -184,10 +184,9 @@ impl App {
             return;
         }
         let now = Instant::now();
-        let dt = now
-            .duration_since(self.last)
-            .as_secs_f32()
-            .clamp(0.0001, 0.1);
+        let elapsed = now.duration_since(self.last).as_secs_f32();
+        let dt = elapsed.clamp(0.0001, 0.1);
+        let visual_dt = elapsed.min(0.25);
         self.last = now;
 
         if (self.st.settings.ui_scale - self.applied_scale).abs() > 1e-3 {
@@ -206,7 +205,7 @@ impl App {
 
         let (w, h) = (size.width, size.height);
         self.st.touch_tick();
-        self.st.update(dt, w, h);
+        self.st.update(dt, visual_dt, w, h);
         #[cfg(target_os = "ios")]
         if audio::platform_output_changed() {
             self.audio = None;
@@ -347,7 +346,7 @@ impl App {
             }
             gfx.pending_tex.clear();
         }
-        self.st.frame_done(dt, stats.is_some());
+        self.st.frame_done(elapsed, stats.is_some());
         if self.st.quit {
             el.exit();
         }

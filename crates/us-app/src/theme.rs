@@ -113,19 +113,6 @@ pub fn ease_bool(
     )
 }
 
-/// 0..1 that restarts each time the thing named `id` appears after a gap, so panels slide in
-/// every time they open, not only the first.
-pub fn opening(ctx: &egui::Context, id: &str, secs: f32) -> f32 {
-    let key = egui::Id::new(("open-seen", id));
-    let pass = ctx.cumulative_pass_nr();
-    let (last, gen_) = ctx
-        .data(|d| d.get_temp::<(u64, u32)>(key))
-        .unwrap_or((0, 0));
-    let gen_ = if pass > last + 2 { gen_ + 1 } else { gen_ };
-    ctx.data_mut(|d| d.insert_temp(key, (pass, gen_)));
-    ease_bool(ctx, (id, gen_), true, secs)
-}
-
 /// A light-weight eased integer for the top bar (counts to the new value).
 pub fn count_to(
     ctx: &egui::Context,
