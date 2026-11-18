@@ -772,6 +772,23 @@ impl Game {
                 }
                 "low" => self.cam.set_angle(n as f32, 18.0),
                 "tilt" => self.cam.set_tilt(n as f32),
+                "pan" => {
+                    // look at a point east and north of the town hall in metres, `pan:E:N`
+                    // (a leading `m` makes a number negative), from 330 m
+                    let num = |t: &str| {
+                        t.strip_prefix('m').map_or_else(
+                            || t.parse::<f32>().ok(),
+                            |r| r.parse::<f32>().ok().map(|x| -x),
+                        )
+                    };
+                    if let Some((e, nn)) = v.split_once(':')
+                        && let (Some(e), Some(nn)) = (num(e), num(nn))
+                    {
+                        let h = self.town.hall;
+                        self.cam
+                            .look_at(Vec2::new(h.x as f32 + e, h.y as f32 + nn), 330.0);
+                    }
+                }
                 "storm" => {
                     for _ in 0..365 {
                         if self.sim.storm() {

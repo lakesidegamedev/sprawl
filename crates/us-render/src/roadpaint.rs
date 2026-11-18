@@ -691,6 +691,11 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
         if a.avail < 2.0 * d + 3.0 {
             continue;
         }
+        // a crossing belongs at the mouth of a compact junction. Where the paving runs far
+        // along an arm (roads parting at a narrow angle) it would sit out on its own.
+        if pad.cut[k] > a.hw * 1.5 + 13.0 {
+            continue;
+        }
         let across = pt(-a.dir.y, a.dir.x);
         let reach = a.hw - 0.9;
         let c = n.p + a.dir * d;
@@ -961,7 +966,24 @@ fn median(g: &mut Ground, road: usize, line: &[Pt], nodes: &[Node]) {
                     .map(|a| a.hw)
                     .fold(0.0, f64::max)
                     + 16.0;
-                cuts.push((s - gap, s + gap));
+                // the median stops short of the whole junction, however far its paving
+                // reaches along this road (a road joining at a narrow angle makes it long)
+                let mut pad = pad_of(n, true);
+                if crate::ground::signed_area(&pad.ring) <= 0.0 {
+                    pad = pad_of(n, false);
+                }
+                let (mut back, mut ahead) = (gap, gap);
+                for (k, a) in n.arms.iter().enumerate() {
+                    if a.road == road {
+                        let reach = pad.cut[k] + 9.0;
+                        if a.fwd {
+                            ahead = ahead.max(reach);
+                        } else {
+                            back = back.max(reach);
+                        }
+                    }
+                }
+                cuts.push((s - back, s + ahead));
             }
         }
     }
