@@ -1,8 +1,8 @@
 # Urban Sprawl
 
-A city game from Lakeside Games where the city builds itself. You found a town on an empty map,
-then run it as the mayor: taxes, the budget, schools, services, the big roads and bridges. Streets,
-neighbourhoods and shops grow on their own, in a cel-shaded 3D look.
+A city-building game from Lakeside Games. In Town Growth, run a town that builds its own streets.
+In City Planning, lay out roads and zone land yourself. Manage taxes, budgets and public services
+as neighborhoods grow in a 3D world with changing seasons, weather and traffic.
 
 Urban Sprawl is a paid game: the source is shown here so people can follow its development, but
 it is not free software and it is not for redistribution. See [LICENSE.md](LICENSE.md). Players
