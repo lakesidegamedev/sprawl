@@ -28,6 +28,7 @@ egui-wgpu = { version = "0.37.0", default-features = false }
 egui-winit = { version = "0.37.0", default-features = false, features = ["x11", "wayland"] }
 glam = "0.30"
 pollster = "1"
+rodio = { version = "0.21.1", default-features = false, features = ["playback", "vorbis"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging"] }

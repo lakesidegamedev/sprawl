@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Hear traffic, wind, rain and building cues. The original score shifts from a daytime theme to an evening theme. Settings offers independent music, ambience and effects controls.
+
 - Dense downtown blocks get taller, distinct office and apartment towers with setbacks, glazed podiums and rooftop details.
 - Water ripples respond to wind, sky and viewing angle, with shallows and foam at the shore. Grass and exposed ground blend along slopes.
 - Bridge approaches follow rises in the ground to keep the pavement visible.

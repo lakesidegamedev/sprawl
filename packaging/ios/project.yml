@@ -17,6 +17,7 @@ targets:
     platform: iOS
     sources:
       - path: main.c
+      - path: audio-session.m
       - path: Assets.xcassets
     preBuildScripts:
       - name: Build the Rust game
@@ -31,6 +32,7 @@ targets:
       - sdk: CoreFoundation.framework
       - sdk: Security.framework
       - sdk: AudioToolbox.framework
+      - sdk: AVFoundation.framework
       - sdk: CoreText.framework
     settings:
       base:

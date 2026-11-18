@@ -39,6 +39,7 @@ pub struct Settings {
     pub fullscreen: bool,
     pub ui_scale: f32,
     pub high_shadows: bool,
+    pub(crate) audio: crate::audio::Preferences,
     /// Day and night cycle (true) or always day (false).
     pub day_night: bool,
     /// Fewer animations: panels, figures and the camera jump instead of easing.
@@ -262,6 +263,7 @@ impl State {
                 fullscreen: false,
                 ui_scale: 1.0,
                 high_shadows: true,
+                audio: crate::audio::Preferences::load(),
                 day_night: true,
                 reduce_motion: std::env::var("URBAN_SPRAWL_REDUCE_MOTION").is_ok_and(|v| v == "1"),
             },
@@ -547,6 +549,56 @@ impl State {
         g.ui_tick(dt);
         if g.placed && !g.menu_open {
             g.coach_tick(dt);
+        }
+    }
+
+    pub(crate) fn sound_scene(&self) -> crate::audio::SoundScene {
+        let Some(game) = self.game.as_ref().filter(|g| g.placed) else {
+            return crate::audio::SoundScene::default();
+        };
+        let camera = game.cam.camera();
+        let focus = camera.target.truncate();
+        let fade = 1.0 - ((camera.distance - 175.0) / 620.0).clamp(0.0, 1.0);
+        let mut traffic: f32 = 0.0;
+        let mut pan: f32 = 0.0;
+        let mut weight: f32 = 0.0;
+        let yaw = camera.yaw_deg.to_radians();
+        let right = glam::Vec2::new(yaw.cos(), -yaw.sin());
+        if fade > 0.0 {
+            for (i, (road, flow)) in game
+                .sim
+                .road_runs()
+                .iter()
+                .zip(game.sim.road_traffic())
+                .enumerate()
+            {
+                if flow.volume < 1.0 || !game.sim.road_open(i) {
+                    continue;
+                }
+                for pair in road.points.windows(2) {
+                    let a = glam::Vec2::new(pair[0].x as f32, pair[0].y as f32);
+                    let b = glam::Vec2::new(pair[1].x as f32, pair[1].y as f32);
+                    let edge = b - a;
+                    let p = a + edge
+                        * ((focus - a).dot(edge) / edge.length_squared().max(0.1)).clamp(0.0, 1.0);
+                    let relative = p - focus;
+                    let near = (1.0 - relative.length() / 120.0).max(0.0);
+                    let level = (flow.volume.max(0.0) / 1900.0).sqrt().min(1.0) * near;
+                    traffic = traffic.max(level);
+                    pan += relative.dot(right) / 120.0 * level;
+                    weight += level;
+                }
+            }
+        }
+        let weather = game.sim.weather();
+        let night = game.live.scene.calendar.map_or(0.0, |c| c.darkness());
+        crate::audio::SoundScene {
+            night,
+            wind: (weather.wind_speed() / 16.0).clamp(0.0, 1.0) * 0.7 + 0.1,
+            rain: game.sim.rain(),
+            traffic: traffic * (1.0 - night * 0.58) * fade,
+            traffic_pan: (pan / weight.max(0.01)).clamp(-1.0, 1.0),
+            built: Some(game.stats.built),
         }
     }
 
@@ -943,6 +995,21 @@ impl State {
                     RichText::new("On").font(ui_font(16.0)),
                 );
             });
+            ui.add_space(8.0);
+            label(ui, "Audio", 14.0);
+            let prefs = &mut self.settings.audio;
+            let mut commit = ui.checkbox(&mut prefs.muted, "Mute").changed();
+            for (name, value) in [
+                ("Music", &mut prefs.music),
+                ("Ambience", &mut prefs.ambience),
+                ("Effects", &mut prefs.effects),
+            ] {
+                let slider = ui.add(egui::Slider::new(value, 0.0..=1.0).step_by(0.05).text(name));
+                commit |= (slider.changed() && !slider.dragged()) || slider.drag_stopped();
+            }
+            if commit && let Err(err) = prefs.save() {
+                crate::log(&format!("could not store audio preferences: {err}"));
+            }
             #[cfg(not(target_os = "ios"))]
             {
                 label(ui, "F11 toggles fullscreen in game", 12.0);
