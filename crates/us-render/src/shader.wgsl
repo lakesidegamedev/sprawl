@@ -213,7 +213,8 @@ fn cloud_base() -> f32 {
 }
 
 fn cloud_thickness() -> f32 {
-    return mix(36.0, 82.0, g.shade.w) + 48.0 * g.weather_flow.z;
+    let cumulus = smoothstep(0.22, 0.53, g.shade.w) * (1.0 - smoothstep(0.76, 1.0, g.shade.w));
+    return mix(36.0, 82.0, g.shade.w) + 63.0 * cumulus + 48.0 * g.weather_flow.z;
 }
 
 // The broad weather field stays shared by visible clouds and their ground shadows.
@@ -250,6 +251,26 @@ fn cloud_noise(p: vec3<f32>) -> f32 {
     return mix(plane, upper, t.z);
 }
 
+fn cloud_puffs(xy: vec2<f32>, layer: f32) -> f32 {
+    let p = xy / 152.0;
+    let cell = vec2<i32>(floor(p - 0.5));
+    var puff = 0.0;
+    for (var y = 0; y <= 1; y++) {
+        for (var x = 0; x <= 1; x++) {
+            let id = cell + vec2<i32>(x, y);
+            let variation = hash2(id + vec2<i32>(41, 19));
+            let offset = vec2<f32>(hash2(id), hash2(id + vec2<i32>(5, 29))) - 0.5;
+            let d = p - (vec2<f32>(id) + 0.5 + offset * 0.35);
+            let crown = (layer - (0.47 + variation * 0.18)) * 1.82;
+            let shoulder = vec3<f32>(d - offset * 0.16, (layer - 0.27) * 2.25);
+            let core = vec3<f32>(d * (1.05 + variation * 0.45), crown);
+            let shape = min(dot(core, core), dot(shoulder, shoulder) * 1.15);
+            puff = max(puff, 1.0 - smoothstep(0.14, 0.72, shape));
+        }
+    }
+    return puff;
+}
+
 fn cloud_density(point: vec3<f32>, detail: u32) -> f32 {
     let layer = (point.z - cloud_base()) / cloud_thickness();
     if (layer <= 0.0 || layer >= 1.0) {
@@ -265,19 +286,23 @@ fn cloud_density(point: vec3<f32>, detail: u32) -> f32 {
         threshold += (1.0 - smoothstep(0.40, 0.82, cell)) * 0.16
             * smoothstep(0.65, 1.0, g.weather_flow.z);
     }
-    var shape = field;
+    if (field < threshold - 0.16) {
+        return 0.0;
+    }
+    let xyz = point - vec3<f32>(g.screen.w * vec2<f32>(2.1, 0.86) + g.weather_flow.xy, 0.0);
+    let billow = cloud_puffs(xyz.xy - g.wx.zw * (3.0 + 4.0 * layer), layer);
+    var shape = field + (billow - 0.57) * mix(0.28, 0.15, g.weather_flow.z);
     if (detail > 0u && field > threshold - 0.10 && field < threshold + 0.27) {
-        let xyz = point - vec3<f32>(g.screen.w * vec2<f32>(2.1, 0.86) + g.weather_flow.xy, 0.0);
         let warped = vec3<f32>(xyz.xy + xyz.z * vec2<f32>(0.33, -0.21), xyz.z);
         let cells = cloud_noise(warped * vec3<f32>(0.034, 0.038, 0.055));
         let edge = 1.0 - smoothstep(threshold + 0.04, threshold + 0.27, field);
-        shape += (cells - 0.5) * 0.23 * edge;
+        shape += (cells - 0.5) * 0.19 * edge;
         if (detail > 1u) {
             let wisps = cloud_noise(warped * vec3<f32>(0.093, 0.093, 0.15) + vec3<f32>(3.7, 2.4, -1.1));
             shape += (wisps - 0.5) * 0.18 * edge;
         }
     }
-    let deck = smoothstep(0.0, 0.24, layer) * (1.0 - smoothstep(0.56, 1.0, layer));
+    let deck = smoothstep(0.0, 0.21, layer) * (1.0 - smoothstep(0.61 + 0.10 * billow, 1.0, layer));
     let mass = smoothstep(threshold - 0.035, threshold + 0.19, shape);
     return mass * deck;
 }
@@ -1330,7 +1355,7 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>) ->
     var transmission = 1.0;
     var sunlight = 0.0;
     let day = smoothstep(0.03, 0.37, g.sun.z);
-    let sun_distance = min(60.0, thickness / max(0.36, g.sun.z));
+    let sun_distance = min(105.0, thickness / max(0.36, g.sun.z));
     let sun_step = sun_distance / 3.0;
     let forward = pow(max(0.0, dot(dir, g.sun.xyz)), 4.0);
     for (var i = 0; i < budget; i++) {
@@ -1361,11 +1386,11 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>) ->
                 blockers += cloud_density(point + toward_light * 1.5, 0u);
                 blockers += cloud_density(point + toward_light * 2.5, 0u);
             } else {
-                blockers *= 2.1;
+                blockers += cloud_density(point + toward_light * 1.9, 0u) * 1.15;
             }
-            let direct = exp(-blockers * sun_step * 0.085);
-            let bounce = exp(-blockers * sun_step * 0.028);
-            sunlight += scatter * (direct * (0.68 + forward * 0.13) + bounce * 0.19) * day;
+            let direct = exp(-blockers * sun_step * 0.105);
+            let bounce = exp(-blockers * sun_step * 0.025);
+            sunlight += scatter * (direct * (0.82 + forward * 0.20) + bounce * 0.20) * day;
         }
         if (transmission < 0.012) {
             break;
@@ -1385,7 +1410,10 @@ fn atmosphere(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
         fog = low_fog(g.eye.xyz, dir, limit);
     }
     var cloud = vec2<f32>(0.0);
-    if (g.shade.w > 0.12) {
+    // For ground-facing rays, zoom through the deck while leaving low fog in place.
+    // Sky rays keep overhead clouds visible when the camera looks towards the horizon.
+    let cloud_view = select(1.0, smoothstep(9.0, 34.0, g.eye.w), surface);
+    if (g.shade.w > 0.12 && cloud_view > 0.0) {
         cloud = cloud_volume(g.eye.xyz, dir, limit, pixel);
         if (surface && g.weather_flow.z > 0.02) {
             let city_readability = mix(0.63, 0.92, smoothstep(550.0, 1400.0, depth));
@@ -1397,6 +1425,7 @@ fn atmosphere(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
             let distant = smoothstep(1550.0, 2800.0, limit);
             cloud *= 1.0 - 0.40 * peak_storm * town_view * (1.0 - distant);
         }
+        cloud *= cloud_view;
     }
     return vec3<f32>(fog.x, fog.y * (1.0 - cloud.x) * 0.68 + cloud.y * 1.37, cloud.x);
 }
@@ -1715,11 +1744,11 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
     }
     if (g.look.z < 0.5 && (g.fog.w > 0.005 || g.shade.w > 0.12)) {
         let volume = atmosphere_at(vec2<f32>(p) + 0.5, centre.x);
-        let sun_glow = mix(vec3<f32>(0.43, 0.39, 0.34), vec3<f32>(0.35, 0.39, 0.44), g.shade.w);
+        let sun_glow = mix(vec3<f32>(0.53, 0.48, 0.40), vec3<f32>(0.48, 0.51, 0.55), g.shade.w);
         col = mix(col, g.fog.rgb * 0.82, volume.r);
         let daylight = smoothstep(0.02, 0.37, g.sun.z);
-        let ambient = mix(vec3<f32>(0.16, 0.23, 0.32), vec3<f32>(0.51, 0.57, 0.65), daylight)
-            * (1.0 - 0.24 * g.weather_flow.z);
+        let ambient = mix(vec3<f32>(0.14, 0.21, 0.32), vec3<f32>(0.47, 0.53, 0.63), daylight)
+            * (1.0 - 0.16 * g.weather_flow.z);
         col = mix(col, ambient, volume.b) + sun_glow * volume.g;
     }
     if (g.lightning.z > 0.035 && g.look.z < 0.5) {

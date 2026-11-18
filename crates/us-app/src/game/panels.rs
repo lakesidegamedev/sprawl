@@ -770,7 +770,8 @@ impl Game {
                     self.hour = 16.8;
                     self.hour_frozen = true;
                     let hall = self.live.scene.hall.truncate();
-                    self.cam.look_at(hall, 1320.0);
+                    let distance = if n == 0 { 1320.0 } else { n.max(70) as f32 };
+                    self.cam.look_at(hall, distance);
                     self.cam.set_angle(41.0, 26.0);
                 }
                 "levers" => self.ui.levers_open = true,

@@ -2,7 +2,21 @@
 
 ## Unreleased
 
-- Fog and cloud detail holds up better at shallow viewing angles. Breaks in stronger storms keep more of the city visible at planning zoom.
+## 1.4.2 (2026-11-18)
+
+<!-- Release coverage starts after v1.4.1 (a577645). Atmosphere improvements are in #61. -->
+
+### For players
+
+- Zoom into the streets to clear the overhead cloud cover. Ground fog stays visible in foggy weather, and clouds still shade the city.
+- Clouds have rounded billows, brighter sunlit edges and cooler shadowed interiors. Their edges hold up better at shallow angles and on narrow screens.
+- Breaks in stronger storms keep streets and buildings easier to see at planning zoom.
+
+### For developers
+
+- Shape cloud density with rounded 3D volumes and use staggered ray samples with depth-aware reconstruction. Adjust direct and scattered light separately to define cloud interiors and sunlit edges.
+- Fade only the overhead cloud volume on ground-facing rays as the camera approaches street zoom. Keep the ground fog, weather state and cloud shadows independent of that fade.
+- Capture a seeded coastal storm through the normal game surface for simulator verification.
 
 ## 1.4.1 (2026-11-18)
 
