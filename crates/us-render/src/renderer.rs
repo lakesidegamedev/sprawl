@@ -15,6 +15,7 @@ const COLOUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const COMPACT_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Uint;
 const WIDE_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
 // the bits of 1.0e9_f32, the far distance that an empty pixel holds
+const FOG_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const AUX_FAR_BITS: f64 = 1_315_859_240.0;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -181,6 +182,13 @@ pub struct Frame {
 struct Globals {
     view_proj: [[f32; 4]; 4],
     light_vp: [[f32; 4]; 4],
+    inv_view_proj: [[f32; 4]; 4],
+    /// Eye position in metres, and the camera near plane.
+    eye: [f32; 4],
+    /// Fog colour and density.
+    fog: [f32; 4],
+    /// Terrain texture base height, height range, inverse map size, and inverse texture size.
+    terrain: [f32; 4],
     sun: [f32; 4],
     ink: [f32; 4],
     shade: [f32; 4],
@@ -189,7 +197,7 @@ struct Globals {
     look: [f32; 4],
     /// snow cover, wet ground, wind east and north
     wx: [f32; 4],
-    /// precipitation intensity and reserved channels
+    /// Rain, snowfall, and the origin of the active weather cells.
     precipitation: [f32; 4],
     /// rock look rows, see `rock::RockLook::rows`
     rock: [[f32; 4]; 8],
@@ -216,6 +224,8 @@ struct GpuScene {
     ground_rev: u64,
     ground: GpuMesh,
     chunks: Vec<GpuChunk>,
+    fog_terrain: wgpu::TextureView,
+    fog_land: crate::Land,
 }
 
 struct Targets {
@@ -229,6 +239,8 @@ struct Targets {
     readback: wgpu::Buffer,
     padded: u32,
     edge_group: wgpu::BindGroup,
+    fog_view: wgpu::TextureView,
+    fog_composite: wgpu::BindGroup,
 }
 
 struct ShadowMap {
@@ -254,6 +266,10 @@ pub struct Renderer {
     layout1: wgpu::BindGroupLayout,
     module: wgpu::ShaderModule,
     edge_layout: wgpu::PipelineLayout,
+    fog_composite_layout: wgpu::BindGroupLayout,
+    fog_sampler: wgpu::Sampler,
+    fog_pipeline: wgpu::RenderPipeline,
+    precipitation_pipeline: wgpu::RenderPipeline,
     main_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
     edge_pipelines: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
@@ -524,6 +540,20 @@ impl Renderer {
                     vf,
                     wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                 ),
+                entry(
+                    3,
+                    vf,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(
+                    4,
+                    vf,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                ),
             ],
         });
         let tex_unfilterable = wgpu::BindingType::Texture {
@@ -548,9 +578,34 @@ impl Renderer {
             bind_group_layouts: &[Some(&layout0)],
             immediate_size: 0,
         });
+        let fog_composite_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("fog composite"),
+                entries: &[entry(
+                    0,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                )],
+            });
+        let fog_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("fog terrain"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let fog_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("fog volume"),
+            bind_group_layouts: &[Some(&layout0), Some(&layout1)],
+            immediate_size: 0,
+        });
+        let fog_pipeline = fullscreen_pipeline(&device, &module, &fog_layout, "fs_fog", FOG_FORMAT);
         let edge_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("edge"),
-            bind_group_layouts: &[Some(&layout0), Some(&layout1)],
+            bind_group_layouts: &[Some(&layout0), Some(&layout1), Some(&fog_composite_layout)],
             immediate_size: 0,
         });
         let (vbl, _) = vertex_layout();
@@ -585,6 +640,46 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        let precipitation_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("world precipitation"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs_precipitation"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    depth_write_enabled: Some(false),
+                    ..depth_state(wgpu::DepthBiasState::default())
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: msaa,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs_precipitation"),
+                    compilation_options: Default::default(),
+                    targets: &[
+                        Some(wgpu::ColorTargetState {
+                            format: COLOUR_FORMAT,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        }),
+                        Some(wgpu::ColorTargetState {
+                            format: aux_format,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::empty(),
+                        }),
+                    ],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
         let main_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("main"),
             layout: Some(&pipeline_layout),
@@ -734,6 +829,10 @@ impl Renderer {
             layout1,
             module,
             edge_layout,
+            fog_composite_layout,
+            fog_sampler,
+            fog_pipeline,
+            precipitation_pipeline,
             main_pipeline,
             shadow_pipeline,
             edge_pipelines: Vec::new(),
@@ -800,33 +899,13 @@ impl Renderer {
         if let Some(i) = self.edge_pipelines.iter().position(|(f, _)| *f == format) {
             return i;
         }
-        let p = self
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("edge"),
-                layout: Some(&self.edge_layout),
-                vertex: wgpu::VertexState {
-                    module: &self.module,
-                    entry_point: Some("vs_full"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &self.module,
-                    entry_point: Some("fs_edge"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
+        let p = fullscreen_pipeline(
+            &self.device,
+            &self.module,
+            &self.edge_layout,
+            "fs_edge",
+            format,
+        );
         self.edge_pipelines.push((format, p));
         self.edge_pipelines.len() - 1
     }
@@ -859,6 +938,47 @@ impl Renderer {
         }
     }
 
+    fn upload_fog_terrain(&self, land: &crate::Land) -> wgpu::TextureView {
+        let n = land.n();
+        let base = land.min_height();
+        let range = (land.max_height() - base).max(1.0);
+        let size = wgpu::Extent3d {
+            width: n as u32,
+            height: n as u32,
+            depth_or_array_layers: 1,
+        };
+        // Two filterable UNORM channels preserve 16 bits of elevation on mobile GPUs.
+        let mut bytes = Vec::with_capacity(n * n * 2);
+        for y in 0..n {
+            for x in 0..n {
+                let h = land.height(x as f32 * land.step(), y as f32 * land.step());
+                let value = ((h - base) / range * 65535.0).round() as u16;
+                bytes.extend(value.to_be_bytes());
+            }
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("fog terrain elevation"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rg8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            texture.as_image_copy(),
+            &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size.width * 2),
+                rows_per_image: None,
+            },
+            size,
+        );
+        texture.create_view(&Default::default())
+    }
+
     fn ensure_scene(&mut self, scene: &Scene) {
         let same = self.scene.as_ref().is_some_and(|s| s.uid == scene.uid);
         if !same {
@@ -875,11 +995,14 @@ impl Renderer {
                     hi: c.hi,
                 })
                 .collect();
+            let fog_terrain = self.upload_fog_terrain(&scene.land);
             self.scene = Some(GpuScene {
                 uid: scene.uid,
                 ground_rev: scene.ground_rev,
                 ground,
                 chunks,
+                fog_terrain,
+                fog_land: scene.land.clone(),
             });
             return;
         }
@@ -888,6 +1011,10 @@ impl Renderer {
         if gpu.ground_rev != scene.ground_rev {
             gpu.ground = self.upload_mesh(&scene.ground, "ground");
             gpu.ground_rev = scene.ground_rev;
+        }
+        if !gpu.fog_land.shares_grid_with(&scene.land) {
+            gpu.fog_terrain = self.upload_fog_terrain(&scene.land);
+            gpu.fog_land = scene.land.clone();
         }
         gpu.chunks.truncate(scene.chunks.len());
         for (i, c) in scene.chunks.iter().enumerate() {
@@ -994,6 +1121,31 @@ impl Renderer {
                 },
             ],
         });
+        let fog_view = self
+            .device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("half resolution fog"),
+                size: wgpu::Extent3d {
+                    width: w.div_ceil(2),
+                    height: h.div_ceil(2),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: FOG_FORMAT,
+                usage: rt,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
+        let fog_composite = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("fog composite"),
+            layout: &self.fog_composite_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&fog_view),
+            }],
+        });
         self.targets = Some(Targets {
             w,
             h,
@@ -1005,6 +1157,8 @@ impl Renderer {
             readback,
             padded,
             edge_group,
+            fog_view,
+            fog_composite,
         });
     }
 
@@ -1222,7 +1376,7 @@ impl Renderer {
             Season::Summer => 3.0,
             Season::Winter => 0.0,
         });
-        // Prototype: ease each seasonal palette in over the first four weeks.
+        // Ground and vegetation have a six-week transition, staggered locally in the shader.
         let season_blend = cal.map_or(1.0, |c| {
             let day = i32::from(c.day_of_year);
             let start = match c.season() {
@@ -1232,7 +1386,7 @@ impl Renderer {
                 Season::Summer => 151,
                 Season::Autumn => 243,
             };
-            let t = ((day - start) as f32 / 28.0).clamp(0.0, 1.0);
+            let t = ((day - start) as f32 / 42.0).clamp(0.0, 1.0);
             t * t * (3.0 - 2.0 * t)
         });
         let snow_cover = if wl.active {
@@ -1247,9 +1401,36 @@ impl Renderer {
         let (light_vp, texel, range) = light_matrix(scene, &view, sun, style.shadow_size);
         self.ensure_shadow(style.shadow_size);
         let edge_i = self.edge_pipeline_index(final_format);
+        let fog_density = if map_view {
+            0.0
+        } else {
+            wl.ground_fog.clamp(0.0, 1.0)
+        };
+        let sky_glow = sun.z.clamp(0.0, 0.35) / 0.35;
+        let fog_tint = Vec3::new(0.53, 0.66, 0.78).lerp(Vec3::new(0.86, 0.89, 0.9), sky_glow)
+            * Vec3::from(tone).lerp(Vec3::ONE, 0.16);
+        let land = &scene.land;
+        let field_x = (camera.target.x / 12.0).floor() - 18.0;
+        let field_y = (camera.target.y / 12.0).floor() - 18.0;
+        let weather_fade = if map_view {
+            0.0
+        } else {
+            1.0 - ((camera.distance - 450.0) / 350.0).clamp(0.0, 1.0)
+        };
+        let rain = wl.rain.clamp(0.0, 1.0) * weather_fade;
+        let snowing = wl.snowfall.clamp(0.0, 1.0) * weather_fade;
         let globals = Globals {
             view_proj: view.view_proj.to_cols_array_2d(),
             light_vp: light_vp.to_cols_array_2d(),
+            inv_view_proj: view.inv_view_proj.to_cols_array_2d(),
+            eye: view.eye.extend(view.near).to_array(),
+            fog: fog_tint.extend(fog_density).to_array(),
+            terrain: [
+                land.min_height(),
+                (land.max_height() - land.min_height()).max(1.0),
+                land.size().max(1.0).recip(),
+                (land.n() as f32).recip(),
+            ],
             sun: [sun.x, sun.y, sun.z, texel],
             ink: [
                 style.ink[0] as f32 / 255.0,
@@ -1267,7 +1448,7 @@ impl Renderer {
             tone: [tone[0], tone[1], tone[2], lit_windows],
             look: [season_code, snow as u8 as f32, map_view as u8 as f32, lamps],
             wx: [snow_cover, wl.wet.clamp(0.0, 1.0), wl.wind[0], wl.wind[1]],
-            precipitation: [wl.rain.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
+            precipitation: [rain, snowing, field_x, field_y],
             rock: scene
                 .land
                 .rock()
@@ -1354,6 +1535,17 @@ impl Renderer {
         } else {
             &self.compare
         };
+        let gpu = self.scene.as_ref().unwrap();
+        let terrain_entries = [
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&gpu.fog_terrain),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(&self.fog_sampler),
+            },
+        ];
         let group0 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("globals"),
             layout: &self.layout0,
@@ -1370,6 +1562,8 @@ impl Renderer {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(compare),
                 },
+                terrain_entries[0].clone(),
+                terrain_entries[1].clone(),
             ],
         });
         // the shadow pass writes the shadow map, so it binds a stand-in for reading
@@ -1389,9 +1583,10 @@ impl Renderer {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.compare),
                 },
+                terrain_entries[0].clone(),
+                terrain_entries[1].clone(),
             ],
         });
-        let gpu = self.scene.as_ref().unwrap();
         let tg = self.targets.as_ref().unwrap();
         // per chunk: the far form when it is small on screen
         let is_far = |c: &GpuChunk| -> bool {
@@ -1596,6 +1791,35 @@ impl Renderer {
                     }
                 }
             }
+            if rain.max(snowing) > 0.01 {
+                pass.set_pipeline(&self.precipitation_pipeline);
+                pass.set_bind_group(0, Some(&group0), &[]);
+                // Intensity controls
+                // visibility while the grid keeps sites anchored to the world.
+                pass.draw(0..6, 0..36 * 36 * 6);
+            }
+        }
+        if fog_density > 0.005 {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ground fog volume"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &tg.fog_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.fog_pipeline);
+            pass.set_bind_group(0, Some(&group0), &[]);
+            pass.set_bind_group(1, Some(&tg.edge_group), &[]);
+            pass.draw(0..3, 0..1);
         }
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1617,9 +1841,44 @@ impl Renderer {
             pass.set_pipeline(&self.edge_pipelines[edge_i].1);
             pass.set_bind_group(0, Some(&group0), &[]);
             pass.set_bind_group(1, Some(&tg.edge_group), &[]);
+            pass.set_bind_group(2, Some(&tg.fog_composite), &[]);
             pass.draw(0..3, 0..1);
         }
     }
+}
+
+fn fullscreen_pipeline(
+    device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    fragment: &str,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(fragment),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some("vs_full"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some(fragment),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 /// World-space clip planes. Reject a chunk only when its entire bounds miss one plane.

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Rolling mist forms on damp, calm mornings and drifts along terrain. High roofs stay above the banks. Rain and snow fall in world space and disappear behind buildings and hills.
+- Vegetation and ground colours change over six in-game weeks, with nearby areas turning at different times.
+
 - Keep precise terrain where the distant ground mesh could cover roads.
 - Unlimited Money bypasses purchase limits and shows its funding status in the town interface. Existing sandbox towns can change it in the pause menu.
 

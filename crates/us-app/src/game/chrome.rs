@@ -15,7 +15,7 @@ pub const RAIL_W: f32 = 152.0;
 pub const INSPECTOR_W: f32 = 330.0;
 
 /// Weather as the top bar shows it: icon, short word, colour.
-fn weather(sim: &us_sim::Sim) -> (&'static str, &'static str, Color32) {
+fn weather(sim: &us_sim::Sim, fog: f32) -> (&'static str, &'static str, Color32) {
     let sky = Color32::from_rgb(120, 180, 230);
     let snow = Color32::from_rgb(200, 224, 245);
     let w = sim.wind();
@@ -25,6 +25,8 @@ fn weather(sim: &us_sim::Sim) -> (&'static str, &'static str, Color32) {
         (icon::SNOW, "Snow", snow)
     } else if sim.rain() > 0.05 {
         (icon::RAIN, "Rain", sky)
+    } else if fog > 0.24 {
+        (icon::CLOUD, "Ground fog", snow)
     } else if sim.dryness() > 0.8 {
         (icon::SUN, "Dry", Color32::from_rgb(240, 150, 80))
     } else if w.x.hypot(w.y) > 9.0 {
@@ -278,7 +280,7 @@ impl Game {
                         "Income minus spending, per month",
                     );
                     g.approval_chip(ui, false);
-                    let (gl, word, col) = weather(&g.sim);
+                    let (gl, word, col) = weather(&g.sim, g.live.scene.weather.ground_fog);
                     let r = ui
                         .horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 5.0;
