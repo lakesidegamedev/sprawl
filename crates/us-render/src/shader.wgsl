@@ -1894,6 +1894,68 @@ fn aerial_perspective(colour: vec3<f32>, p: vec2<i32>, depth: f32) -> vec3<f32> 
     return mix(colour, sky * mix(g.tone.rgb, vec3<f32>(1.0), 0.27), opacity);
 }
 
+// Whether the sun reaches a point in the air: the shadow map without any surface offset.
+fn sun_reaches(world: vec3<f32>) -> f32 {
+    let c = g.light_vp * vec4<f32>(world, 1.0);
+    let uv = vec2<f32>(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || c.z > 1.0) {
+        return 1.0;
+    }
+    return textureSampleCompareLevel(shadow_tex, shadow_cmp, uv, c.z - g.shade.y);
+}
+
+// Sun shafts: the air between the eye and the surface is lit where the sun reaches it and
+// dark behind buildings, trees, hills and clouds. Sunlit air glows a little and shaded air
+// dims a little, so beams show without a veil over the whole picture. Strongest with a low
+// sun and damp air.
+fn sun_shafts(colour: vec3<f32>, p: vec2<i32>, depth: f32) -> vec3<f32> {
+    let low = 1.0 - smoothstep(0.16, 0.66, g.sun.z);
+    let strength = (0.16 + 0.84 * low) * smoothstep(0.03, 0.12, g.sun.z)
+        * (1.0 - 0.75 * g.shade.w) * (1.0 + 1.6 * g.fog.w);
+    if (strength < 0.02) {
+        return colour;
+    }
+    let ray = ray_for_pixel(vec2<f32>(p) + 0.5);
+    let reach = min(depth, 2400.0);
+    // interleaved gradient noise spreads the steps so eight of them read as a smooth beam
+    let dither = fract(52.9829189 * fract(dot(vec2<f32>(p), vec2<f32>(0.06711056, 0.00583715))));
+    var lit_air = 0.0;
+    var weight = 0.0;
+    for (var i = 0; i < 8; i++) {
+        let t = (f32(i) + dither) / 8.0;
+        let at = g.eye.xyz + ray * (reach * t);
+        // the air is thicker near the ground
+        let thick = exp(-max(0.0, at.z - terrain_height(at.xy)) / 48.0);
+        lit_air += sun_reaches(at) * cloud_sunlight(at) * thick;
+        weight += thick;
+    }
+    let air = weight / 8.0;
+    let sunlit = lit_air / max(weight, 0.001);
+    let toward = max(0.0, dot(normalize(ray), g.sun.xyz));
+    let amount = (1.0 - exp(-reach * 0.0042 * air)) * strength * (0.40 + 1.2 * toward * toward);
+    let beam = mix(vec3<f32>(1.0, 0.93, 0.80), vec3<f32>(1.0, 0.74, 0.46), low);
+    let dimmed = colour * (1.0 - 0.62 * amount * (1.0 - sunlit));
+    return dimmed + beam * amount * sunlit * 0.42;
+}
+
+// The sky where no land is drawn: a gradient to a pale horizon, the sun and its glow.
+fn sky_dome(p: vec2<i32>) -> vec3<f32> {
+    let ray = normalize(ray_for_pixel(vec2<f32>(p) + 0.5));
+    let up = vec3<f32>(ray.xy, max(ray.z, 0.0));
+    var sky = sky_radiance(normalize(up + vec3<f32>(0.0, 0.0, 0.02)));
+    let day = smoothstep(-0.08, 0.3, g.sun.z);
+    let low = (1.0 - smoothstep(0.05, 0.5, g.sun.z)) * day;
+    let haze = mix(vec3<f32>(0.16, 0.20, 0.30), vec3<f32>(0.80, 0.85, 0.88), day)
+        + vec3<f32>(0.20, 0.06, -0.06) * low;
+    sky = mix(sky, haze, pow(1.0 - clamp(ray.z, 0.0, 1.0), 6.0) * 0.85);
+    let toward = max(0.0, dot(ray, g.sun.xyz));
+    let clear = 1.0 - 0.8 * g.shade.w;
+    sky += mix(vec3<f32>(1.0, 0.95, 0.85), vec3<f32>(1.0, 0.62, 0.30), low)
+        * (pow(toward, 14.0) * 0.14 + pow(toward, 180.0) * 0.35 + smoothstep(0.9993, 0.9997, toward) * 2.0)
+        * day * clear;
+    return sky * mix(g.tone.rgb, vec3<f32>(1.0), 0.4);
+}
+
 fn tilt_focus(colour: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     let y = (f32(p.y) + 0.5) / g.screen.y;
     let blur = smoothstep(0.24, 0.49, abs(y - 0.48));
@@ -1955,8 +2017,14 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
     if (g.look.z < 0.5 && g.resolve.w > 0.5) {
         col = screen_reflection(col, p, centre.x);
     }
+    if (g.look.z < 0.5 && centre.x > 100000.0) {
+        col = sky_dome(p);
+    }
     if (g.look.z < 0.5 && (g.resolve.w > 0.5 || g.weather_flow.z > 0.02)) {
         col = aerial_perspective(col, p, centre.x);
+    }
+    if (g.look.z < 0.5 && g.resolve.w > 0.5) {
+        col = sun_shafts(col, p, centre.x);
     }
     if (g.look.z < 0.5 && g.weather_flow.w > 0.5) {
         col = tilt_focus(col, p);

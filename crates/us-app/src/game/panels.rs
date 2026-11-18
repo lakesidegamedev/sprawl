@@ -771,6 +771,7 @@ impl Game {
                     }
                 }
                 "low" => self.cam.set_angle(n as f32, 18.0),
+                "tilt" => self.cam.set_tilt(n as f32),
                 "storm" => {
                     for _ in 0..365 {
                         if self.sim.storm() {
