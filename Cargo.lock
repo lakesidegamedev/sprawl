@@ -3808,7 +3808,7 @@ dependencies = [
 
 [[package]]
 name = "us-app"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "egui",
  "egui-wgpu",
@@ -3829,7 +3829,7 @@ dependencies = [
 
 [[package]]
 name = "us-gen"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "geo",
  "libm",
@@ -3837,7 +3837,7 @@ dependencies = [
 
 [[package]]
 name = "us-gen-cli"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "tiny-skia",
  "us-gen",
@@ -3845,7 +3845,7 @@ dependencies = [
 
 [[package]]
 name = "us-grow"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "libm",
  "us-gen",
@@ -3855,7 +3855,7 @@ dependencies = [
 
 [[package]]
 name = "us-grow-cli"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "serde_json",
  "tiny-skia",
@@ -3867,7 +3867,7 @@ dependencies = [
 
 [[package]]
 name = "us-lakeside"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "getrandom 0.3.4",
  "keyring",
@@ -3879,7 +3879,7 @@ dependencies = [
 
 [[package]]
 name = "us-metrics"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "flate2",
  "libm",
@@ -3889,7 +3889,7 @@ dependencies = [
 
 [[package]]
 name = "us-render"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "bytemuck",
  "glam",
@@ -3903,7 +3903,7 @@ dependencies = [
 
 [[package]]
 name = "us-sim"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "libm",
  "us-gen",
@@ -3914,7 +3914,7 @@ dependencies = [
 
 [[package]]
 name = "us-traffic"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "libm",
  "us-gen",
