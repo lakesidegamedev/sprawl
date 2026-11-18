@@ -26,6 +26,7 @@ pub mod kit_more;
 pub mod land;
 pub mod levels;
 pub mod live;
+mod local_light;
 mod mesh;
 pub mod obj;
 pub mod overlay;

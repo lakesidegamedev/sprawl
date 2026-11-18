@@ -1,5 +1,5 @@
 use us_gen::{Preset, generate};
-use us_render::instances::{LAMP_POOL, lamp_instances, lamp_mesh};
+use us_render::instances::{LAMP_LENS, lamp_instances, lamp_mesh};
 use us_render::{ALL_CIVIC, Rng, Scene, build_civic};
 
 #[test]
@@ -37,9 +37,13 @@ fn lamps_stand_beside_streets_and_are_stable() {
 }
 
 #[test]
-fn lamp_mesh_has_a_pool_marker_and_lens() {
+fn lamp_mesh_has_a_lens_on_its_arm() {
     let m = lamp_mesh();
-    assert!(m.vertices.iter().any(|v| v.color[..3] == LAMP_POOL));
+    assert!(
+        m.vertices
+            .iter()
+            .any(|v| v.color[..3] == LAMP_LENS && v.pos[2] > 5.5)
+    );
     assert!(m.triangles() < 40);
     assert!(lamp_instances(&[]).is_empty());
 }

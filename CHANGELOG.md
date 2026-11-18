@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Windows brighten gradually across neighborhoods and hold a steady pattern while the town grows. Streetlights and vehicle beams light nearby roads and buildings.
+
 - Rolling mist forms on damp, calm mornings and drifts along terrain. High roofs stay above the banks. Rain and snow fall in world space and disappear behind buildings and hills.
 - Vegetation and ground colours change over six in-game weeks, with nearby areas turning at different times.
 

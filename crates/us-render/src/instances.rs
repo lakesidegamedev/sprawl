@@ -107,12 +107,8 @@ pub fn person_mesh() -> Mesh {
 
 /// Colour of a street lamp's lit quad (it glows at dusk, night and dawn).
 pub const LAMP_LENS: Rgb = HEADLIGHT;
-/// Marker colour of the pool of light a lamp throws on the street. The shader draws it only at
-/// night, as a hard edged flat patch, and discards it by day.
-pub const LAMP_POOL: Rgb = [250, 232, 150];
-
-/// A street lamp: a pole, a short arm toward +x and a lit quad on the arm, with a small flat disc of
-/// light on the ground under it. The arm points at the road.
+/// A pole and a short arm toward the street. Local lighting is evaluated on
+/// the actual surfaces around the bulb.
 pub fn lamp_mesh() -> Mesh {
     let mut o = Obj::new();
     let steel = [74, 78, 88];
@@ -130,14 +126,6 @@ pub fn lamp_mesh() -> Mesh {
         false,
         true,
     );
-    // a small round pool: 16 sides and a 2.3 m radius, so it reads as a crisp spot, not a blob
-    let pool: Vec<[f32; 3]> = (0..16)
-        .map(|i| {
-            let a = (i as f32 + 0.5) * std::f32::consts::TAU / 16.0;
-            [1.4 + 2.3 * libm::cosf(a), 2.3 * libm::sinf(a), 0.4]
-        })
-        .collect();
-    o.poly(&pool, LAMP_POOL, false, false, true);
     emit(&o)
 }
 

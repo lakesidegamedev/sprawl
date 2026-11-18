@@ -7,6 +7,7 @@ struct Globals {
     eye: vec4<f32>,     // xyz camera position, w near plane
     fog: vec4<f32>,     // rgb atmospheric light, w mist density
     terrain: vec4<f32>, // elevation base and range, inverse map size and texture size
+    local_lights: vec4<f32>, // world tile origin, streetlight and headlight strength
     sun: vec4<f32>,    // xyz toward the sun, w shadow texel size in metres
     ink: vec4<f32>,    // rgb ink colour, a ink width in pixels (1 or 2)
     shade: vec4<f32>,  // x multiplier for a shadowed face, y shadow depth bias, z seasonal blend, w overcast
@@ -21,6 +22,7 @@ struct Globals {
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var shadow_tex: texture_depth_2d;
 @group(0) @binding(2) var shadow_cmp: sampler_comparison;
+@group(0) @binding(5) var lights_tex: texture_2d<f32>;
 
 struct VIn {
     @location(0) pos: vec3<f32>,
@@ -37,6 +39,7 @@ struct VOut {
     @location(3) @interpolate(flat) id: u32,
     @location(4) dist: f32,
     @location(5) @interpolate(flat) tint: u32,
+    @location(6) @interpolate(flat) room_anchor: vec3<f32>,
 };
 
 // Tree crowns lean downwind and sway with the wind's strength. Only leaf-coloured vertices move.
@@ -64,6 +67,7 @@ fn vs_main(v: VIn) -> VOut {
     o.id = v.id;
     o.dist = o.clip.w;
     o.tint = 0u;
+    o.room_anchor = v.pos;
     return o;
 }
 
@@ -98,6 +102,7 @@ fn vs_inst(v: VIn, i: Inst) -> VOut {
     }
     o.dist = o.clip.w;
     o.tint = i.tint;
+    o.room_anchor = w;
     return o;
 }
 
@@ -534,16 +539,51 @@ fn terrain_look(world: vec3<f32>, n: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
     return grass;
 }
 
-// ---- building facades: which windows are lit. Flat colour only, no glow. One building's
-// windows (a run of consecutive ids) share a habit: some buildings keep many lights on, some
-// few. Dark shop glass is lit more often than house glass, so shop fronts read at night.
-fn window_lit(id: u32, shop: bool) -> bool {
-    let habit = 0.45 + 1.1 * f32(hash_u(id / 48u) % 1000u) / 1000.0;
-    var share = g.tone.w * habit;
-    if (shop) {
-        share = g.tone.w * 1.4 + 0.1;
+// World-space phase offsets spread activity across blocks. Each polygon also
+// has a stable room anchor, independent of outline IDs assigned during rebuilds.
+fn window_glow(anchor: vec3<f32>, shop: bool) -> f32 {
+    let block = vnoise(anchor.xy / 145.0);
+    let quantized = vec3<i32>(floor(anchor * 16.0 + 0.5));
+    let room = hash_u(bitcast<u32>(quantized.x) ^ (bitcast<u32>(quantized.y) * 165557u)
+        ^ (bitcast<u32>(quantized.z) * 224171u));
+    let choice = f32(room % 1000u) / 1000.0;
+    let schedule = clamp(g.tone.w * (0.87 + block * 0.36) + select(0.0, 0.16, shop), 0.0, 1.0);
+    // Individual rooms fade over several simulation minutes rather than crossing a binary cutoff.
+    let onset = mix(0.10, 1.04, choice);
+    let awake = smoothstep(onset - 0.062, onset + 0.062, schedule);
+    return awake * smoothstep(0.015, 0.18, g.tone.w);
+}
+
+fn night_illumination(world: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    var light = vec3<f32>(0.0);
+    let cell = vec2<i32>(floor(world.xy / 24.0) - g.local_lights.xy);
+    if (any(cell < vec2<i32>(0)) || any(cell >= vec2<i32>(32))) {
+        return light;
     }
-    return f32(hash_u(id) % 1000u) < share * 1000.0;
+    for (var i = 0; i < 6; i++) {
+        let x = (cell.x * 6 + i) * 2;
+        let source = textureLoad(lights_tex, vec2<i32>(x, cell.y), 0);
+        if (source.w <= 0.0) {
+            continue;
+        }
+        let beam = textureLoad(lights_tex, vec2<i32>(x + 1, cell.y), 0).xyz;
+        let d = source.xyz - world;
+        let distance2 = dot(d, d);
+        if (distance2 >= beam.z * beam.z) {
+            continue;
+        }
+        let to_light = d * inverseSqrt(max(distance2, 0.05));
+        let aimed = dot(beam.xy, beam.xy) > 0.5;
+        let axis = select(vec3<f32>(0.0, 0.0, -1.0), normalize(vec3<f32>(beam.xy, -0.16)), aimed);
+        let cosine = dot(axis, -to_light);
+        let cone = select(smoothstep(0.1, 0.62, cosine), smoothstep(0.68, 0.96, cosine), aimed);
+        let angle = max(0.0, dot(normal, to_light));
+        let reach = 1.0 - smoothstep(0.36, 1.0, sqrt(distance2) / beam.z);
+        let intensity = source.w * cone * angle * reach / (distance2 + 7.0);
+        let tint = select(vec3<f32>(1.0, 0.75, 0.43), vec3<f32>(0.74, 0.83, 1.0), aimed);
+        light += tint * intensity;
+    }
+    return light * g.local_lights.z;
 }
 
 // Surface studies in world metres. Filter the grain and seams against the pixel footprint.
@@ -765,13 +805,8 @@ fn fs_main(v: VOut) -> FOut {
     if (ground && near(col, 247.0, 248.0, 253.0) && (g.look.y < 0.5 || g.look.z > 0.5)) {
         discard;
     }
-    if (!cel && near(col, 250.0, 232.0, 150.0)) {
-        if (f32(hash_u(v.id) % 1000u) >= g.look.w * 1000.0 || g.look.z > 0.5) {
-            discard;
-        }
-        col = vec3<f32>(214.0, 194.0, 120.0) / 255.0;
-        emissive = true;
-    }
+    var glow = vec3<f32>(0.0);
+    var glow_amount = 0.0;
     if (g.look.z < 0.5) {
         // Seasonal palettes ease from the previous season.
         if (ground && is_green(col)) {
@@ -788,23 +823,19 @@ fn fs_main(v: VOut) -> FOut {
                 col = col * (0.86 + foliage * 0.29);
             }
         }
-        // lit windows and headlights
+        // Buildings brighten in neighborhoods, followed by continuously lit
+        // lamps and vehicles. A window or paired set of lights never samples an outline id.
         if (!cel && g.tone.w > 0.0 && (near(col, 98.0, 156.0, 204.0) || near(col, 64.0, 88.0, 118.0))) {
-            if (window_lit(v.id, near(col, 64.0, 88.0, 118.0))) {
-                col = vec3<f32>(255.0, 218.0, 112.0) / 255.0;
-                emissive = true;
-            }
+            glow = vec3<f32>(1.0, 0.84, 0.52);
+            glow_amount = window_glow(v.room_anchor, near(col, 64.0, 88.0, 118.0));
         }
-        if (!cel && g.look.w > 0.0 && near(col, 255.0, 236.0, 150.0)) {
-            if (f32(hash_u(v.id) % 1000u) < g.look.w * 1000.0) {
-                emissive = true;
-            }
+        if (!cel && near(col, 255.0, 236.0, 150.0)) {
+            glow = vec3<f32>(1.0, 0.95, 0.76);
+            glow_amount = g.look.w;
         }
-        if (!cel && g.look.w > 0.0 && near(col, 222.0, 36.0, 44.0)) {
-            if (f32(hash_u(v.id) % 1000u) < g.look.w * 1000.0) {
-                col = vec3<f32>(255.0, 52.0, 52.0) / 255.0;
-                emissive = true;
-            }
+        if (!cel && near(col, 222.0, 36.0, 44.0)) {
+            glow = vec3<f32>(1.0, 0.18, 0.15);
+            glow_amount = g.look.w;
         }
         // snow
         if (g.look.y > 0.5) {
@@ -891,6 +922,7 @@ fn fs_main(v: VOut) -> FOut {
     if (l > 0.02 && k > g.shade.x) {
         k = mix(g.shade.x, k, lit(v.world, n));
     }
+    let material_colour = col;
     col = col * k;
     if (k < 0.97 && !emissive && g.look.z < 0.5) {
         // cool sky fill in shade: shadowed colour leans blue instead of just darker
@@ -900,6 +932,13 @@ fn fs_main(v: VOut) -> FOut {
     if (!emissive) {
         col = col * g.tone.rgb;
     }
+    if (g.local_lights.z > 0.01 && g.look.z < 0.5 && !emissive) {
+        let incoming = night_illumination(v.world, n);
+        // Approximate direct light in linear space while the existing art palette
+        // remains in display space. Materials keep their colour in the lit area.
+        col = sqrt(col * col + material_colour * material_colour * incoming);
+    }
+    col = mix(col, glow, glow_amount);
     var o: FOut;
     o.colour = vec4<f32>(col, 1.0);
     o.aux = vec4<u32>(bitcast<u32>(v.dist), v.id, 0u, 1u);
