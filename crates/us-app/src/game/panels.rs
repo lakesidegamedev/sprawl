@@ -1393,7 +1393,7 @@ impl Game {
                             }
                         });
                     let first = self.sim.loans()[0].principal_left;
-                    let can = self.sim.treasury >= first;
+                    let can = self.sim.can_afford(first);
                     let b = ui.add_enabled(
                         can,
                         egui::Button::new(
@@ -1497,7 +1497,7 @@ impl Game {
                     });
                     continue;
                 }
-                let can = self.sim.treasury >= k.cost();
+                let can = self.sim.can_afford(k.cost());
                 ui.horizontal(|ui| {
                     let b = ui.add(
                         egui::Button::new(

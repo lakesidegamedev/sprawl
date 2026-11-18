@@ -355,7 +355,7 @@ impl Sim {
         let attended = arrive_s >= 0;
         let cost = if lost { 2500 * level } else { 500 * level };
         let relief = if lost && attended { cost / 2 } else { 0 };
-        self.treasury -= cost - relief;
+        self.charge(cost - relief);
         self.fx.lost_total += cost;
         self.fx.relief_total += relief;
         if !lost {
@@ -662,7 +662,7 @@ impl Sim {
                 self.fx.rigs.push(r);
                 if mins > 12.0 {
                     let cost = 200 * level;
-                    self.treasury -= cost;
+                    self.charge(cost);
                     self.fx.lost_total += cost;
                     self.log(
                         EventKind::Fire,
@@ -676,7 +676,7 @@ impl Sim {
             }
             None => {
                 let cost = 300 * level;
-                self.treasury -= cost;
+                self.charge(cost);
                 self.fx.lost_total += cost;
                 self.log(
                     EventKind::Fire,

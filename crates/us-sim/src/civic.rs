@@ -15,7 +15,7 @@ impl Sim {
         let (at, give_up) = self.civic_plan(kind, p)?;
         let r = kind.radius();
         let cost = kind.cost();
-        self.treasury -= cost;
+        self.charge(cost);
         for i in give_up {
             // never revealed or built: the land is now taken
             self.lots[i].phase = Phase::Hidden;
@@ -164,7 +164,7 @@ impl Sim {
             }
         }
         let cost = kind.cost();
-        if self.treasury < cost {
+        if !self.can_afford(cost) {
             return Err(PlaceError::TooPoor { cost });
         }
         Ok((at, give_up))

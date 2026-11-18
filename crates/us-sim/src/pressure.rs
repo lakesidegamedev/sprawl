@@ -7,8 +7,6 @@ use crate::*;
 pub const ELECTION_PERIOD_DAYS: i32 = 1461;
 /// Months with an overdrawn treasury and no credit left before the state takes over.
 pub const BANKRUPT_MONTHS: u32 = 6;
-/// The treasury an unlimited-money game keeps.
-pub const UNLIMITED_TREASURY: i64 = 1_000_000_000_000;
 /// Share of the vote needed to stay in office, percent.
 pub const WIN_SHARE: i32 = 50;
 
@@ -197,9 +195,6 @@ impl Sim {
 
     pub fn set_rules(&mut self, rules: Rules) {
         self.rules = rules;
-        if rules.unlimited_money {
-            self.treasury = self.treasury.max(UNLIMITED_TREASURY);
-        }
         if !rules.bankruptcy {
             self.broke_months = 0;
         }
@@ -265,7 +260,7 @@ impl Sim {
     }
 
     pub(crate) fn check_bankruptcy(&mut self) {
-        if !self.rules.bankruptcy {
+        if !self.rules.bankruptcy || self.rules.unlimited_money {
             self.broke_months = 0;
             return;
         }
@@ -363,7 +358,7 @@ impl Sim {
         let traffic = -self.civic_adjusted_congestion(self.avg_cong as f64) * 25.0 + ord_traffic;
         let limit = self.credit_limit().max(1);
         let mut debt = -(self.debt() as f64 / limit as f64) * 15.0;
-        if self.treasury < 0 {
+        if !self.rules.unlimited_money && self.treasury < 0 {
             debt -= 8.0;
         }
         let recent = self
@@ -483,9 +478,6 @@ impl Sim {
         let day = self.day;
         self.fire_days.retain(|&d| day - d <= 400);
         self.approval = self.compute_approval();
-        if self.rules.unlimited_money {
-            self.treasury = self.treasury.max(UNLIMITED_TREASURY);
-        }
         self.check_bankruptcy();
         if self.game_over.is_none() {
             self.hold_election_if_due();

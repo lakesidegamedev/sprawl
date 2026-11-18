@@ -311,7 +311,7 @@ impl Sim {
         };
         // the town pays for the street now; the taxes it brings come later
         let cost = self.street_cost(s);
-        self.treasury -= cost;
+        self.charge(cost);
         self.growth_spent += cost;
         self.roads_version += 1;
     }

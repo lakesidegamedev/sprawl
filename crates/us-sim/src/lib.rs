@@ -909,7 +909,7 @@ impl Sim {
         }
         if class_of(kind).is_some() {
             let cost = self.hookup_cost(kind);
-            self.treasury -= cost;
+            self.charge(cost);
             self.growth_spent += cost;
         }
         let days = self.codes_build_days(

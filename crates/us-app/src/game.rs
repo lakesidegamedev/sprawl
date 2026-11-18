@@ -1159,8 +1159,16 @@ impl State {
                             ));
                             ui.label(small(format!("Pop {}", g.stats.pop), INK));
                             ui.label(small(
-                                format!("${}", short_money(g.sim.treasury)),
-                                if g.sim.treasury < 0 { BAD } else { INK },
+                                if g.rules.unlimited_money {
+                                    "Unlimited".into()
+                                } else {
+                                    format!("${}", short_money(g.sim.treasury))
+                                },
+                                if !g.rules.unlimited_money && g.sim.treasury < 0 {
+                                    BAD
+                                } else {
+                                    INK
+                                },
                             ));
                             let net = g.stats.income - g.stats.expense;
                             ui.label(small(
@@ -1658,15 +1666,11 @@ impl State {
                     12.0,
                 );
                 if g.rules.is_sandbox() {
-                    label(
-                        ui,
-                        if g.rules.unlimited_money {
-                            "Sandbox, unlimited money"
-                        } else {
-                            "Sandbox"
-                        },
-                        12.0,
-                    );
+                    let mut unlimited = g.rules.unlimited_money;
+                    if ui.checkbox(&mut unlimited, "Unlimited money").changed() {
+                        g.rules.unlimited_money = unlimited;
+                        g.sim.set_rules(g.rules);
+                    }
                 }
                 if let Some(n) = &who {
                     label(ui, &format!("Signed in as {}", n), 12.0);
@@ -1945,6 +1949,9 @@ impl Game {
         }
 
         // money
+        if self.rules.unlimited_money {
+            return;
+        }
         let net = self.stats.income - self.stats.expense;
         if self.sim.treasury < 0 {
             if !self.coach.neg_flagged {

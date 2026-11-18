@@ -426,7 +426,7 @@ impl Sim {
             }
         }
         let cost = (cost as i64) * self.rules.difficulty.cost_pct() / 100;
-        if self.treasury < cost {
+        if !self.can_afford(cost) {
             return Err(RoadError::TooPoor { cost });
         }
         let upkeep = ((length - bridge_m) * road_cost_per_m(class) * 6.0
@@ -448,7 +448,7 @@ impl Sim {
     /// road's index in `road_runs()`.
     pub fn build_road(&mut self, class: RoadClass, pts: &[Pt]) -> Result<usize, RoadError> {
         let plan = self.check_road(class, pts)?;
-        self.treasury -= plan.cost;
+        self.charge(plan.cost);
         let path = self.join_road(&plan.points);
         for &i in &plan.give_up {
             self.retire_lot(i);
@@ -655,7 +655,7 @@ impl Sim {
         }
         let cost =
             (length * upgrade_cost_per_m(to)) as i64 * self.rules.difficulty.cost_pct() / 100;
-        if self.treasury < cost {
+        if !self.can_afford(cost) {
             return Err(RoadError::TooPoor { cost });
         }
         Ok(UpgradePlan {
@@ -672,7 +672,7 @@ impl Sim {
     /// Upgrade the street under `p`. It is drawn as roadworks and keeps carrying traffic.
     pub fn upgrade_street(&mut self, p: Pt) -> Result<usize, RoadError> {
         let plan = self.check_upgrade(p)?;
-        self.treasury -= plan.cost;
+        self.charge(plan.cost);
         for &i in &plan.give_up {
             self.retire_lot(i);
         }

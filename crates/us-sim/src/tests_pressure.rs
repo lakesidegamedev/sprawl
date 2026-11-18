@@ -72,16 +72,28 @@ fn sandbox_cannot_be_lost() {
 }
 
 #[test]
-fn unlimited_money_never_runs_out() {
+fn unlimited_money_ignores_cash_for_purchases_and_running_costs() {
     let mut s = new_sim(Rules::sandbox_unlimited());
+    s.treasury = 0;
+    let kind = CivicKind::Park;
+    let spot = s
+        .lots()
+        .iter()
+        .find(|lot| s.check_civic(kind, lot.pos).is_ok())
+        .expect("buildable site despite the zero balance")
+        .pos;
+    s.place_civic(kind, spot).expect("the purchase is funded");
+    assert_eq!(s.treasury, 0);
+    assert!(s.can_afford(i64::MAX));
     s.set_tax_x10(0);
-    for _ in 0..365 * 3 {
+    for _ in 0..365 {
         s.step_day();
     }
-    assert!(s.treasury >= UNLIMITED_TREASURY - 10_000_000_000);
-    let mut s = new_sim(Rules::standard());
-    s.set_rules(Rules::sandbox_unlimited());
-    assert!(s.treasury >= UNLIMITED_TREASURY);
+    assert_eq!(s.treasury, 0);
+    let mut loaded = Sim::load(&s.save()).expect("reopen the sandbox");
+    assert!(loaded.can_afford(i64::MAX));
+    loaded.set_rules(Rules::sandbox());
+    assert!(!loaded.can_afford(1));
 }
 
 #[test]

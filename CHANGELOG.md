@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep precise terrain where the distant ground mesh could cover roads.
+- Unlimited Money bypasses purchase limits and shows its funding status in the town interface. Existing sandbox towns can change it in the pause menu.
+
 - TestFlight builds reuse an existing distribution identity and the app’s provisioning profile.
 
 ## 1.3.2 (2026-11-18)

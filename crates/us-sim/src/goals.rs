@@ -299,7 +299,7 @@ impl Sim {
                 build,
                 cost,
                 under_construction,
-                can_afford: self.treasury >= cost,
+                can_afford: self.can_afford(cost),
                 headline,
                 advice,
             });

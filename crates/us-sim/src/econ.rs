@@ -146,6 +146,17 @@ impl Sim {
             .count()
     }
 
+    /// Unlimited funding bypasses affordability checks for the existing balance.
+    pub fn can_afford(&self, cost: i64) -> bool {
+        self.rules.unlimited_money || self.treasury >= cost
+    }
+
+    pub(crate) fn charge(&mut self, cost: i64) {
+        if !self.rules.unlimited_money {
+            self.treasury -= cost;
+        }
+    }
+
     /// Take one bond of $100,000: cash now, interest and equal principal each month for 48
     /// months.
     pub fn take_loan(&mut self) -> Result<(), LoanError> {
@@ -170,10 +181,10 @@ impl Sim {
         let Some(l) = self.loans.first().copied() else {
             return Err(LoanError::NothingToRepay);
         };
-        if self.treasury < l.principal_left {
+        if !self.can_afford(l.principal_left) {
             return Err(LoanError::NotEnoughCash);
         }
-        self.treasury -= l.principal_left;
+        self.charge(l.principal_left);
         self.loans.remove(0);
         self.log(
             EventKind::Loan,
@@ -288,7 +299,9 @@ impl Sim {
         let wx_cost = self.take_weather_costs();
         let (income, expense) = (lg.income_total(), lg.expense_total() + ord_cost + wx_cost);
         let grants = self.take_goal_grants();
-        self.treasury += income - expense + grants;
+        if !self.rules.unlimited_money {
+            self.treasury += income - expense + grants;
+        }
         self.last_income = income;
         self.last_expense = expense;
         for l in self.loans.iter_mut() {
@@ -326,7 +339,9 @@ impl Sim {
         self.history.push(sample);
         // budget warnings, once on entering each state
         let net = income - expense;
-        let state = if self.treasury < 0 {
+        let state = if self.rules.unlimited_money {
+            0
+        } else if self.treasury < 0 {
             2
         } else if net < 0 && self.treasury < -net * 6 {
             1
