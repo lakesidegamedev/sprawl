@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- TestFlight builds reuse an existing distribution identity and the app’s provisioning profile.
+
 ## 1.3.2 (2026-11-18)
 
 <!-- Release coverage starts after the 1.3.1 TestFlight source ca827a4. Includes civic placement and opening balance from 2937362. -->

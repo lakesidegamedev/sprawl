@@ -20,6 +20,9 @@ on:
 permissions:
   contents: read
 
+env:
+  APP_BUNDLE_ID: net.lakesidegames.urbansprawl
+
 concurrency:
   group: ios-testflight
   cancel-in-progress: false
@@ -46,12 +49,18 @@ jobs:
           KEY_ID: ${{ secrets.APPLE_API_KEY }}
           KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
           TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
         run: |
           missing=()
           [[ -n "$ISSUER" ]] || missing+=("APPLE_API_ISSUER")
           [[ -n "$KEY_ID" ]] || missing+=("APPLE_API_KEY")
           [[ -n "$KEY_CONTENT" ]] || missing+=("APPLE_API_KEY_CONTENT")
           [[ -n "$TEAM" ]] || missing+=("APPLE_DEVELOPMENT_TEAM")
+          [[ -n "$CERTIFICATE" ]] || missing+=("APPLE_CERTIFICATE")
+          [[ -n "$CERTIFICATE_PASSWORD" ]] || missing+=("APPLE_CERTIFICATE_PASSWORD")
+          [[ -n "$PROFILE" ]] || missing+=("APPLE_PROVISIONING_PROFILE")
           if (( ${#missing[@]} )); then
             printf 'blocked: missing signing secrets: %s\n' "${missing[*]}" >&2
             echo "This is an explicit blocked outcome, not an upload." >&2
@@ -89,11 +98,46 @@ jobs:
           printf '%s' "$KEY_CONTENT" > "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8"
           chmod 600 "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8"
 
-      - name: Archive (automatic signing)
+      - name: Install the existing distribution identity and provisioning profile
         env:
           TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
-          KEY_ID: ${{ secrets.APPLE_API_KEY }}
-          ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          signing="$RUNNER_TEMP/distribution-signing"
+          mkdir -p "$signing"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$signing/distribution.p12"
+          printf '%s' "$PROFILE" | base64 --decode > "$signing/app-store.mobileprovision"
+          security cms -D -i "$signing/app-store.mobileprovision" -o "$signing/profile.plist"
+          profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print UUID' "$signing/profile.plist")"
+          app_id="$(/usr/libexec/PlistBuddy -c 'Print Entitlements:application-identifier' "$signing/profile.plist")"
+          [[ "$app_id" == "$TEAM.$APP_BUNDLE_ID" ]]
+          [[ "$profile_uuid" =~ ^[0-9a-fA-F-]{36}$ ]]
+          printf 'PROFILE_UUID=%s\n' "$profile_uuid" >> "$GITHUB_ENV"
+
+          keychain="$signing/distribution.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          curl --fail --silent --show-error --retry 2 --max-time 30 \
+            https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer -o "$signing/wwdr.cer"
+          security import "$signing/wwdr.cer" -k "$keychain"
+          security import "$signing/distribution.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          security find-identity -v -p codesigning "$keychain" | grep -q '"Apple Distribution:'
+          profiles="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          mkdir -p "$profiles"
+          cp "$signing/app-store.mobileprovision" "$profiles/$profile_uuid.mobileprovision"
+          rm -f "$signing/distribution.p12"
+
+      - name: Archive with the App Store profile
+        env:
+          TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
           VERSION_INPUT: ${{ inputs.version }}
           BUILD_INPUT: ${{ inputs.build }}
         run: |
@@ -106,28 +150,22 @@ jobs:
             MARKETING_VERSION="$VERSION_INPUT" \
             CURRENT_PROJECT_VERSION="$BUILD_INPUT" \
             DEVELOPMENT_TEAM="$TEAM" \
-            CODE_SIGN_STYLE=Automatic \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8" \
-            -authenticationKeyID "$KEY_ID" \
-            -authenticationKeyIssuerID "$ISSUER" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY='Apple Distribution' \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" \
             archive
 
       - name: Export for App Store Connect
         env:
           TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
-          KEY_ID: ${{ secrets.APPLE_API_KEY }}
-          ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
-          sed "s/__TEAM_ID__/$TEAM/" packaging/ios/ExportOptions.plist.in > "$RUNNER_TEMP/ExportOptions.plist"
+          set -euo pipefail
+          sed -e "s/__TEAM_ID__/$TEAM/" -e "s/__PROFILE_UUID__/$PROFILE_UUID/" \
+            packaging/ios/ExportOptions.plist.in > "$RUNNER_TEMP/ExportOptions.plist"
           xcodebuild -exportArchive \
             -archivePath build/UrbanSprawl.xcarchive \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            -exportPath "$RUNNER_TEMP/export" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8" \
-            -authenticationKeyID "$KEY_ID" \
-            -authenticationKeyIssuerID "$ISSUER"
+            -exportPath "$RUNNER_TEMP/export"
           ls -l "$RUNNER_TEMP/export"
 
       - name: Record provenance
@@ -149,10 +187,17 @@ jobs:
             --apiIssuer "$ISSUER" \
             --verbose
 
-      - name: Remove the key
+      - name: Remove signing material
         if: always()
         run: |
-          rm -rf "$RUNNER_TEMP/private_keys" "$HOME/.appstoreconnect/private_keys"
+          keychain="$RUNNER_TEMP/distribution-signing/distribution.keychain-db"
+          if [[ -f "$keychain" ]]; then
+            security delete-keychain "$keychain" || true
+          fi
+          if [[ -n "${PROFILE_UUID:-}" ]]; then
+            rm -f "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+          fi
+          rm -rf "$RUNNER_TEMP/distribution-signing" "$RUNNER_TEMP/private_keys" "$HOME/.appstoreconnect/private_keys"
 
       - uses: actions/upload-artifact@v4
         with:
