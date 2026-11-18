@@ -1041,6 +1041,7 @@ impl Sim {
             bankruptcy: r.bool()?,
             elections: r.bool()?,
             unlimited_money: r.bool()?,
+            city_planning: false,
             difficulty: decode(&Difficulty::ALL, r.u8()?, "difficulty")?,
         };
         s.game_over = if r.bool()? {
@@ -1138,7 +1139,7 @@ impl Sim {
                 .filter(|r| s.street_open(r.street))
                 .map(|r| (r.class, r.points.clone()))
                 .collect();
-            s.roadnet = Some(roadnet::RoadNet::build(&roads));
+            s.roadnet = Some(roadnet::RoadNet::build(&s.town, &roads));
         }
         Ok(s)
     }

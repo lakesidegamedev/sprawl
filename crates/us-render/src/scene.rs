@@ -280,9 +280,19 @@ impl Scene {
     /// Tell the scene about the lots and roads of a hand-built scene, so map views, traffic and
     /// smoke work on it. (`from_town` does this itself.)
     pub fn set_geometry(&mut self, lots: Vec<LotInfo>, roads: Vec<RoadInfo>) {
+        let highways: Vec<_> = roads
+            .iter()
+            .filter_map(|road| (road.class == RoadClass::Highway).then_some(road.points.as_slice()))
+            .collect();
         self.x.paths = roads
             .iter()
-            .map(|r| Path::new_on(r.class, &r.points, &self.land))
+            .map(|r| {
+                let mut path = Path::new_on(r.class, &r.points, &self.land);
+                if r.class == RoadClass::Collector {
+                    path.one_way = us_gen::slip_lane_forward(&r.points, &highways);
+                }
+                path
+            })
             .collect();
         self.x.lot_active = vec![true; lots.len()];
         self.x.lots = lots;
@@ -567,7 +577,11 @@ impl Scene {
             if r.class != class || r.works != works {
                 r.class = class;
                 r.works = works;
+                let travel = self.x.paths[i]
+                    .one_way
+                    .filter(|_| class == RoadClass::Collector);
                 self.x.paths[i] = Path::new_on(class, &r.points, &self.land);
+                self.x.paths[i].one_way = travel;
                 any = true;
             }
         }

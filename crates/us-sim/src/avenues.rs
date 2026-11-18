@@ -185,6 +185,7 @@ pub struct UpgradePlan {
 fn build_cost_per_m(c: RoadClass) -> f64 {
     match c {
         RoadClass::Arterial => 420.0,
+        RoadClass::Local => 135.0,
         _ => 240.0,
     }
 }
@@ -241,10 +242,10 @@ impl Sim {
 
     /// Check a road drawn through `pts` (the first on an open road) without building it.
     pub fn check_road(&self, class: RoadClass, pts: &[Pt]) -> Result<RoadPlan, RoadError> {
-        let class = if class == RoadClass::Arterial {
-            class
-        } else {
-            RoadClass::Collector
+        let class = match class {
+            RoadClass::Arterial => class,
+            RoadClass::Local if self.rules.city_planning => class,
+            _ => RoadClass::Collector,
         };
         if pts.len() < 2 {
             return Err(RoadError::NeedsPoints);
@@ -493,10 +494,10 @@ impl Sim {
             EventKind::Road,
             format!(
                 "Work started on a new {}{bridge} ({:.0} m).",
-                if plan.class == RoadClass::Arterial {
-                    "avenue"
-                } else {
-                    "collector road"
+                match plan.class {
+                    RoadClass::Arterial => "avenue",
+                    RoadClass::Local => "local street",
+                    _ => "collector road",
                 },
                 plan.length
             ),

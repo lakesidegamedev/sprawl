@@ -528,13 +528,6 @@ fn house_yard(lot: &Lot, i: usize, obj: &Obj, cx: &Ctx, drives: &mut Vec<Pt>) ->
             [lx - 0.2, ly - 0.21, 1.35],
         ];
         o.poly(&lens, instances::LAMP_LENS, false, false, true);
-        let pool: Vec<V3> = (0..10)
-            .map(|k| {
-                let a = (k as f32 + 0.5) * std::f32::consts::TAU / 10.0;
-                [lx + 1.3 * libm::cosf(a), ly + 1.3 * libm::sinf(a), 0.11]
-            })
-            .collect();
-        o.poly(&pool, instances::LAMP_POOL, false, false, true);
     }
     let _ = cx.core;
     (!o.polys.is_empty()).then_some(o)

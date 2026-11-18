@@ -38,6 +38,8 @@ pub struct Rules {
     pub elections: bool,
     /// The treasury never runs out.
     pub unlimited_money: bool,
+    /// Land is explicitly zoned and the mayor draws the new streets.
+    pub city_planning: bool,
     /// How hard growth is.
     pub difficulty: Difficulty,
 }
@@ -48,6 +50,7 @@ impl Rules {
             bankruptcy: true,
             elections: true,
             unlimited_money: false,
+            city_planning: false,
             difficulty: Difficulty::Normal,
         }
     }
@@ -58,6 +61,7 @@ impl Rules {
             bankruptcy: false,
             elections: false,
             unlimited_money: false,
+            city_planning: false,
             difficulty: Difficulty::Normal,
         }
     }
@@ -67,6 +71,14 @@ impl Rules {
         Rules {
             unlimited_money: true,
             ..Rules::sandbox()
+        }
+    }
+
+    /// Choose manual or automatic development while keeping the funding rules.
+    pub fn with_city_planning(self, city_planning: bool) -> Rules {
+        Rules {
+            city_planning,
+            ..self
         }
     }
 
@@ -208,8 +220,20 @@ impl Sim {
         initial_reveals: usize,
         rules: Rules,
     ) -> Sim {
-        let mut s = Sim::new_with(town, hall, seed, initial_reveals);
+        let reveals = if rules.city_planning {
+            0
+        } else {
+            initial_reveals
+        };
+        let mut s = Sim::new_with(town, hall, seed, reveals);
         s.set_rules(rules);
+        if rules.city_planning {
+            s.lots.retain(|l| l.exempt);
+            s.near = crate::density::neighbours(&s.lots);
+            s.build_streets();
+            s.net_dirty = true;
+            s.recompute_values();
+        }
         s
     }
 

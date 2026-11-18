@@ -4,7 +4,7 @@ use glam::Vec3;
 use us_gen::{Preset, generate};
 use us_render::kit::{self, ALL_KINDS};
 use us_render::obj::newell;
-use us_render::{Camera, Mesh, Renderer, Rng, Scene, Style};
+use us_render::{Calendar, Camera, Land, Mesh, Renderer, Rng, Scene, Style, WeatherLook};
 
 fn renderer() -> Option<Renderer> {
     match Renderer::new() {
@@ -63,6 +63,187 @@ fn rendering_is_repeatable() {
     let a = r.render_to_rgba(&scene, &cam, &style, 96, 60);
     let b = r.render_to_rgba(&scene, &cam, &style, 96, 60);
     assert_eq!(a.rgba, b.rgba);
+}
+
+#[test]
+fn fog_moves_over_ground_and_stays_below_high_roofs() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let mut mesh = Mesh::default();
+    mesh.push_poly(
+        &[
+            [0., 0., 0.],
+            [200., 0., 0.],
+            [200., 200., 0.],
+            [0., 200., 0.],
+        ],
+        [70, 66, 54],
+        true,
+        false,
+        0,
+    );
+    let roof = [
+        [80., 80., 32.],
+        [120., 80., 32.],
+        [120., 120., 32.],
+        [80., 120., 32.],
+    ];
+    mesh.push_poly(&roof, [180, 70, 55], true, false, 6);
+    let target = Vec3::new(100.0, 100.0, 0.0);
+    let mut scene = Scene::dynamic(200.0, mesh, target);
+    let camera = Camera::framing(target, 160.0, 1.0, 0.0, 90.0);
+    let style = Style {
+        shadow_size: 128,
+        supersample: 1,
+        ..Style::default()
+    };
+    let dry = renderer.render_to_rgba(&scene, &camera, &style, 128, 128);
+    scene.set_weather(WeatherLook {
+        ground_fog: 1.0,
+        wind: [2.0, 0.5],
+        ..WeatherLook::default()
+    });
+    let still = renderer.render_to_rgba(&scene, &camera, &style, 128, 128);
+    let offset = (64 * 128 + 64) * 4;
+    assert_eq!(
+        &dry.rgba[offset..offset + 4],
+        &still.rgba[offset..offset + 4]
+    );
+    let changed_pixels = dry
+        .rgba
+        .chunks_exact(4)
+        .zip(still.rgba.chunks_exact(4))
+        .filter(|(a, b)| a[0].abs_diff(b[0]) > 15)
+        .count();
+    assert!(changed_pixels > 128 * 128 / 10);
+    scene.set_time(32.0);
+    let moving = renderer.render_to_rgba(&scene, &camera, &style, 128, 128);
+    assert_ne!(still.rgba, moving.rgba);
+}
+
+#[test]
+fn world_precipitation_is_occluded_by_a_high_roof() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let plane = |z| [[0., 0., z], [200., 0., z], [200., 200., z], [0., 200., z]];
+    let target = Vec3::new(100.0, 100.0, 0.0);
+    let mut covered = Mesh::default();
+    covered.push_poly(&plane(65.0), [90, 87, 81], true, false, 5);
+    let mut open = Mesh::default();
+    open.push_poly(&plane(0.0), [90, 87, 81], true, false, 0);
+    let camera = Camera::framing(target, 130.0, 1.0, 14.0, 82.0);
+    let style = Style {
+        shadow_size: 128,
+        supersample: 1,
+        ..Style::default()
+    };
+    let mut outside = Scene::dynamic(200.0, open, target);
+    let mut indoors = Scene::dynamic(200.0, covered, target);
+    for (scene, covered) in [(&mut outside, false), (&mut indoors, true)] {
+        let dry = renderer.render_to_rgba(scene, &camera, &style, 172, 172);
+        for (rain, snowfall) in [(1.0, 0.0), (0.0, 1.0)] {
+            scene.set_weather(WeatherLook {
+                rain,
+                snowfall,
+                ..WeatherLook::default()
+            });
+            let wet = renderer.render_to_rgba(scene, &camera, &style, 172, 172);
+            assert_eq!(dry.rgba == wet.rgba, covered, "rain {rain} snow {snowfall}");
+        }
+    }
+}
+
+#[test]
+fn night_windows_are_stable_when_outline_ids_change() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let target = Vec3::new(100.0, 100.0, 0.0);
+    let camera = Camera::framing(target, 130.0, 1.0, 0.0, 90.0);
+    let style = Style {
+        shadow_size: 128,
+        supersample: 1,
+        ..Style::default()
+    };
+    let mut draw = |start_id: u32, hour| {
+        let mut mesh = Mesh::default();
+        for i in 0..8 {
+            let x = i as f32 * 10.0 + 62.0;
+            let y = 100.0;
+            mesh.push_poly(
+                &[
+                    [x, y, 0.0],
+                    [x + 6.0, y, 0.0],
+                    [x + 6.0, y + 7.0, 0.0],
+                    [x, y + 7.0, 0.0],
+                ],
+                [98, 156, 204],
+                true,
+                false,
+                start_id + i,
+            );
+        }
+        let mut scene = Scene::dynamic(200.0, mesh, target);
+        scene.set_calendar(Some(Calendar::from_date(9, 12, hour)));
+        renderer
+            .render_to_rgba(&scene, &camera, &style, 160, 160)
+            .rgba
+    };
+    let evening = draw(20, 20.5);
+    assert_eq!(evening, draw(5199, 20.5));
+    assert!(
+        evening
+            .chunks_exact(4)
+            .any(|px| px[0] > 170 && px[0] > px[2])
+    );
+    let next = draw(20, 20.51);
+    assert!(evening.iter().zip(next).all(|(a, b)| a.abs_diff(b) < 12));
+}
+
+#[test]
+fn water_responds_to_depth_wind_and_view() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let mut mesh = Mesh::default();
+    mesh.push_poly(
+        &[
+            [0., 0., 0.],
+            [180., 0., 0.],
+            [180., 180., 0.],
+            [0., 180., 0.],
+        ],
+        [54, 108, 176],
+        false,
+        true,
+        0,
+    );
+    let mut scene = Scene::dynamic(180.0, mesh, Vec3::new(90.0, 90.0, 0.0));
+    scene.set_land(Land::from_grid(
+        2,
+        180.0,
+        vec![-0.35, -6.0, -0.35, -6.0],
+        Vec::new(),
+    ));
+    let camera = Camera::framing(Vec3::new(90.0, 90.0, 0.0), 130.0, 1.0, 0.0, 66.0);
+    let style = Style {
+        shadow_size: 128,
+        supersample: 1,
+        ..Style::default()
+    };
+    let base = renderer.render_to_rgba(&scene, &camera, &style, 128, 128);
+    let left = (64 * 128 + 32) * 4;
+    let right = (64 * 128 + 96) * 4;
+    assert!(base.rgba[left + 1].abs_diff(base.rgba[right + 1]) > 5);
+    scene.set_weather(WeatherLook {
+        wind: [7.0, -4.0],
+        ..WeatherLook::default()
+    });
+    scene.set_time(4.0);
+    let moved = renderer.render_to_rgba(&scene, &camera, &style, 128, 128);
+    assert_ne!(base.rgba, moved.rgba);
 }
 
 /// Every solid is watertight apart from its floor: the area-weighted normals sum to straight up.

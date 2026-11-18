@@ -188,6 +188,10 @@ impl Land {
     }
 
     /// Samples per side of the grid.
+    pub(crate) fn shares_grid_with(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     pub fn n(&self) -> usize {
         self.inner.n
     }
@@ -491,7 +495,9 @@ impl Bed {
         if w <= 0.0 {
             g
         } else {
-            g + (self.deck[i] - g) * w
+            // At an abutment the surveyed deck can sit slightly below a rise
+            // in the hillside. Drape the approach where the ground is higher.
+            g + (self.deck[i] - g).max(0.0) * w
         }
     }
 
@@ -529,6 +535,19 @@ mod tests {
             }
         }
         Land::from_grid(n, 160.0, d, Vec::new())
+    }
+
+    #[test]
+    fn bridge_approach_stays_above_a_high_abutment() {
+        let l = tilted();
+        let b = Bed {
+            pts: Vec::new(),
+            cum: Vec::new(),
+            weight: vec![0.5],
+            deck: vec![8.0],
+        };
+        assert_eq!(b.z(&l, 0, 100.0, 0.0), 10.0);
+        assert_eq!(b.z(&l, 0, 60.0, 0.0), 7.0);
     }
 
     #[test]

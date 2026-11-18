@@ -1,6 +1,7 @@
 //! Urban Sprawl app: window, menus, camera and the playable town. The desktop binary is a thin
 //! wrapper over [`run`]; other platforms start the game through their own entry point.
 
+mod audio;
 mod cam;
 pub(crate) mod game;
 mod platform;
@@ -43,6 +44,8 @@ fn pointer_over_ui(ctx: &egui::Context, pixels: (f32, f32), padding: f32) -> boo
 
 struct App {
     gfx: Option<Gfx>,
+    audio: Option<audio::Audio>,
+    tried_audio: bool,
     /// The window outlives the graphics: when the app goes to the background the graphics are
     /// dropped (iOS takes the surface away) and rebuilt on the way back.
     window: Option<Arc<Window>>,
@@ -204,6 +207,20 @@ impl App {
         let (w, h) = (size.width, size.height);
         self.st.touch_tick();
         self.st.update(dt, w, h);
+        #[cfg(target_os = "ios")]
+        if audio::platform_output_changed() {
+            self.audio = None;
+            self.tried_audio = false;
+        }
+        if !self.tried_audio && self.st.settings.audio.audible() {
+            self.tried_audio = true;
+            self.audio = audio::Audio::open()
+                .map_err(|err| log(&format!("audio unavailable: {err}")))
+                .ok();
+        }
+        if let Some(audio) = &mut self.audio {
+            audio.tick(dt, self.st.settings.audio, || self.st.sound_scene());
+        }
 
         let mut raw = gfx.egui_state.take_egui_input(&gfx.window);
         // egui-winit sizes the screen from `inner_size`; on iOS that is only the safe area, so
@@ -350,6 +367,12 @@ impl ApplicationHandler for App {
         // Backgrounded: stop drawing and let go of the graphics. The game stands still because
         // it only advances when a frame is drawn.
         self.gfx = None;
+        self.audio = None;
+        #[cfg(target_os = "ios")]
+        if self.tried_audio {
+            audio::pause_platform_audio();
+        }
+        self.tried_audio = false;
         self.st.release_all();
     }
 
@@ -457,6 +480,8 @@ pub fn run() {
     el.set_control_flow(ControlFlow::Poll);
     let mut app = App {
         gfx: None,
+        audio: None,
+        tried_audio: false,
         window: None,
         st: State::new(),
         last: Instant::now(),

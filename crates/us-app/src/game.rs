@@ -39,6 +39,8 @@ pub struct Settings {
     pub fullscreen: bool,
     pub ui_scale: f32,
     pub high_shadows: bool,
+    pub balanced_world_resolution: bool,
+    pub(crate) audio: crate::audio::Preferences,
     /// Day and night cycle (true) or always day (false).
     pub day_night: bool,
     /// Fewer animations: panels, figures and the camera jump instead of easing.
@@ -184,6 +186,7 @@ pub struct State {
     account_note: Arc<Mutex<String>>,
     account_busy: Arc<AtomicBool>,
     mode: Mode,
+    city_planning: bool,
     difficulty: Difficulty,
     saves: Vec<crate::saves::SaveInfo>,
     continue_info: Option<crate::saves::SaveInfo>,
@@ -262,6 +265,8 @@ impl State {
                 fullscreen: false,
                 ui_scale: 1.0,
                 high_shadows: true,
+                balanced_world_resolution: false,
+                audio: crate::audio::Preferences::load(),
                 day_night: true,
                 reduce_motion: std::env::var("URBAN_SPRAWL_REDUCE_MOTION").is_ok_and(|v| v == "1"),
             },
@@ -287,6 +292,7 @@ impl State {
             account_note: Arc::new(Mutex::new(String::new())),
             account_busy: Arc::new(AtomicBool::new(false)),
             mode: Mode::Standard,
+            city_planning: false,
             difficulty: Difficulty::Normal,
             saves: Vec::new(),
             continue_info: None,
@@ -408,6 +414,7 @@ impl State {
             KeyCode::Digit2 | KeyCode::Numpad2 => g.speed = 2,
             KeyCode::Digit3 | KeyCode::Numpad3 => g.speed = 3,
             KeyCode::Space => g.speed = if g.speed == 0 { 1 } else { 0 },
+            KeyCode::Escape if g.ui.zone.is_some() => g.ui.zone = None,
             KeyCode::Escape => g.menu_open = !g.menu_open,
             _ => {}
         }
@@ -431,6 +438,11 @@ impl State {
             4096
         } else {
             2048
+        };
+        self.style.window_world_scale = if self.settings.balanced_world_resolution {
+            0.8
+        } else {
+            1.0
         };
         self.autopilot();
         if self.screen == Screen::Load && self.saves.is_empty() && self.smoke.is_some() {
@@ -492,6 +504,8 @@ impl State {
                     } else {
                         g.place_tool(site);
                     }
+                } else if g.ui.zone.is_some() {
+                    g.zone_corner(pt(p.x as f64, p.y as f64));
                 } else if g.road_active().is_some() {
                     g.road_click(pt(p.x as f64, p.y as f64));
                 } else if g.ui.paint.is_some() {
@@ -550,6 +564,56 @@ impl State {
         }
     }
 
+    pub(crate) fn sound_scene(&self) -> crate::audio::SoundScene {
+        let Some(game) = self.game.as_ref().filter(|g| g.placed) else {
+            return crate::audio::SoundScene::default();
+        };
+        let camera = game.cam.camera();
+        let focus = camera.target.truncate();
+        let fade = 1.0 - ((camera.distance - 175.0) / 620.0).clamp(0.0, 1.0);
+        let mut traffic: f32 = 0.0;
+        let mut pan: f32 = 0.0;
+        let mut weight: f32 = 0.0;
+        let yaw = camera.yaw_deg.to_radians();
+        let right = glam::Vec2::new(yaw.cos(), -yaw.sin());
+        if fade > 0.0 {
+            for (i, (road, flow)) in game
+                .sim
+                .road_runs()
+                .iter()
+                .zip(game.sim.road_traffic())
+                .enumerate()
+            {
+                if flow.volume < 1.0 || !game.sim.road_open(i) {
+                    continue;
+                }
+                for pair in road.points.windows(2) {
+                    let a = glam::Vec2::new(pair[0].x as f32, pair[0].y as f32);
+                    let b = glam::Vec2::new(pair[1].x as f32, pair[1].y as f32);
+                    let edge = b - a;
+                    let p = a + edge
+                        * ((focus - a).dot(edge) / edge.length_squared().max(0.1)).clamp(0.0, 1.0);
+                    let relative = p - focus;
+                    let near = (1.0 - relative.length() / 120.0).max(0.0);
+                    let level = (flow.volume.max(0.0) / 1900.0).sqrt().min(1.0) * near;
+                    traffic = traffic.max(level);
+                    pan += relative.dot(right) / 120.0 * level;
+                    weight += level;
+                }
+            }
+        }
+        let weather = game.sim.weather();
+        let night = game.live.scene.calendar.map_or(0.0, |c| c.darkness());
+        crate::audio::SoundScene {
+            night,
+            wind: (weather.wind_speed() / 16.0).clamp(0.0, 1.0) * 0.7 + 0.1,
+            rain: game.sim.rain(),
+            traffic: traffic * (1.0 - night * 0.58) * fade,
+            traffic_pan: (pan / weight.max(0.01)).clamp(-1.0, 1.0),
+            built: Some(game.stats.built),
+        }
+    }
+
     pub fn frame_done(&mut self, dt: f32, _drawn: bool) {
         self.fps_acc.0 += dt;
         self.fps_acc.1 += 1;
@@ -593,7 +657,10 @@ impl State {
             false,
             sites,
             cam,
-            self.mode.rules().with_difficulty(self.difficulty),
+            self.mode
+                .rules()
+                .with_difficulty(self.difficulty)
+                .with_city_planning(self.city_planning),
             name,
         ));
         self.screen = Screen::Game;
@@ -917,6 +984,19 @@ impl State {
                     RichText::new("Fast").font(ui_font(16.0)),
                 );
             });
+            label(ui, "World resolution", 14.0);
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut self.settings.balanced_world_resolution,
+                    false,
+                    "Native",
+                );
+                ui.selectable_value(
+                    &mut self.settings.balanced_world_resolution,
+                    true,
+                    "Balanced",
+                );
+            });
             label(ui, "Day and night", 14.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(
@@ -943,6 +1023,31 @@ impl State {
                     RichText::new("On").font(ui_font(16.0)),
                 );
             });
+            ui.add_space(8.0);
+            if cfg!(target_os = "ios") || theme::is_compact(ctx) {
+                ui.collapsing("Map controls", |ui| {
+                    label(ui, "Drag to pan, pinch to zoom, and twist to rotate.", 13.0);
+                    label(
+                        ui,
+                        "Drag two fingers together to tilt. Tap to select or hold to inspect.",
+                        13.0,
+                    );
+                });
+            }
+            label(ui, "Audio", 14.0);
+            let prefs = &mut self.settings.audio;
+            let mut commit = ui.checkbox(&mut prefs.muted, "Mute").changed();
+            for (name, value) in [
+                ("Music", &mut prefs.music),
+                ("Ambience", &mut prefs.ambience),
+                ("Effects", &mut prefs.effects),
+            ] {
+                let slider = ui.add(egui::Slider::new(value, 0.0..=1.0).step_by(0.05).text(name));
+                commit |= (slider.changed() && !slider.dragged()) || slider.drag_stopped();
+            }
+            if commit && let Err(err) = prefs.save() {
+                crate::log(&format!("could not store audio preferences: {err}"));
+            }
             #[cfg(not(target_os = "ios"))]
             {
                 label(ui, "F11 toggles fullscreen in game", 12.0);
@@ -1531,6 +1636,9 @@ impl State {
             if g.ui.trams.open {
                 g.trams_ui(ctx, screen_w);
             }
+            if g.ui.zone.is_some() && g.map_input_available() {
+                g.zone_prompt(ctx);
+            }
             if compact && g.ui.more_open {
                 g.more_sheet(ctx);
             }
@@ -1589,9 +1697,6 @@ impl State {
                 g.views_popover(ctx);
             }
         }
-        // rain and snow over the map only: what the bars, rail and inspector left free
-        g.paint_weather(ctx, ui.available_rect_before_wrap());
-
         let help = if cfg!(target_os = "ios") {
             if compact {
                 "Drag pan   pinch zoom   twist rotate   tap select"
@@ -1603,12 +1708,13 @@ impl State {
         } else {
             "WASD pan   Q E rotate   right drag orbit   wheel zoom   0 1 2 3 speed   space pause   P K O B G J V I H R F panels   Y roads   M map view"
         };
-        if !(compact
-            && (g.any_sheet()
-                || g.sel.is_some()
-                || g.ui.tool.is_some()
-                || g.ui.growth.height() > 0.0))
-        {
+        let show_help = !compact
+            || (!g.placed
+                && !g.any_sheet()
+                && g.sel.is_none()
+                && g.ui.tool.is_none()
+                && g.ui.growth.height() <= 0.0);
+        if show_help {
             egui::Area::new(egui::Id::new("help"))
                 .anchor(
                     Align2::CENTER_BOTTOM,
@@ -1867,7 +1973,7 @@ impl Game {
             .scene
             .set_calendar(Some(Calendar::from_date(d.month, d.day, hour)));
         self.live.set_emergency(&self.sim, hour);
-        let look = self.weather_look();
+        let look = self.weather_look(hour);
         self.live.scene.set_weather(look);
     }
 

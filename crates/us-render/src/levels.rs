@@ -256,6 +256,10 @@ pub fn build_lot_level_dense(
 ) -> Obj {
     let region = Region::of(preset);
     let level = level.clamp(1, MAX_LEVEL);
+    if level >= 4 && density >= 0.78 && matches!(kind, LotKind::Office | LotKind::Apartments) {
+        let tower = crate::skyline::tower(region, kind == LotKind::Office, level, density, rng);
+        return kit::fit_to_lot(tower, radius);
+    }
     let tall = (density - 0.75).max(0.0) / 0.25;
     if let Some(o) = crate::kit_more::variant(region, kind, level, density, rng) {
         return kit::fit_to_lot(o, radius);

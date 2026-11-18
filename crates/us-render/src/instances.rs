@@ -107,12 +107,8 @@ pub fn person_mesh() -> Mesh {
 
 /// Colour of a street lamp's lit quad (it glows at dusk, night and dawn).
 pub const LAMP_LENS: Rgb = HEADLIGHT;
-/// Marker colour of the pool of light a lamp throws on the street. The shader draws it only at
-/// night, as a hard edged flat patch, and discards it by day.
-pub const LAMP_POOL: Rgb = [250, 232, 150];
-
-/// A street lamp: a pole, a short arm toward +x and a lit quad on the arm, with a small flat disc of
-/// light on the ground under it. The arm points at the road.
+/// A pole and a short arm toward the street. Local lighting is evaluated on
+/// the actual surfaces around the bulb.
 pub fn lamp_mesh() -> Mesh {
     let mut o = Obj::new();
     let steel = [74, 78, 88];
@@ -130,14 +126,6 @@ pub fn lamp_mesh() -> Mesh {
         false,
         true,
     );
-    // a small round pool: 16 sides and a 2.3 m radius, so it reads as a crisp spot, not a blob
-    let pool: Vec<[f32; 3]> = (0..16)
-        .map(|i| {
-            let a = (i as f32 + 0.5) * std::f32::consts::TAU / 16.0;
-            [1.4 + 2.3 * libm::cosf(a), 2.3 * libm::sinf(a), 0.4]
-        })
-        .collect();
-    o.poly(&pool, LAMP_POOL, false, false, true);
     emit(&o)
 }
 
@@ -178,6 +166,8 @@ pub fn lamp_instances(paths: &[Path]) -> Vec<Instance> {
 #[derive(Clone, Debug)]
 pub struct Path {
     pub class: RoadClass,
+    /// Allowed point order on a slip lane. None allows both directions.
+    pub one_way: Option<bool>,
     pub pts: Vec<[f32; 2]>,
     /// Distance along the road at each point.
     pub cum: Vec<f32>,
@@ -215,6 +205,7 @@ impl Path {
         }
         Path {
             class,
+            one_way: None,
             pts,
             cum,
             zs,
@@ -317,7 +308,11 @@ pub fn make_cars(paths: &[Path], volumes: &[f32]) -> Vec<Car> {
             cars.push(Car {
                 road: i as u32,
                 phase: (j as f32 + rng.range(0.1, 0.9)) / n as f32,
-                dir: if j % 2 == 0 { 1.0 } else { -1.0 },
+                dir: if p.one_way.unwrap_or(j % 2 == 0) {
+                    1.0
+                } else {
+                    -1.0
+                },
                 speed: cruise(p.class) * (1.0 - 0.55 * v) * rng.range(0.9, 1.1),
                 colour: rng.pick(&crate::kit::CAR_COLS),
             });
@@ -339,7 +334,11 @@ pub fn car_instances(paths: &[Path], cars: &[Car], time: f32) -> Vec<Instance> {
         let (pt, d) = p.at(s);
         let hw = p.class.half_width() as f32;
         // keep to the right of the direction of travel
-        let side = -c.dir * hw * 0.5;
+        let side = if p.one_way.is_some() {
+            0.0
+        } else {
+            -c.dir * hw * 0.5
+        };
         let (nx, ny) = (-d[1], d[0]);
         let heading = libm::atan2f(d[1] * c.dir, d[0] * c.dir);
         out.push(Instance {

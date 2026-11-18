@@ -14,7 +14,7 @@ use us_render::{Overlay, OverlayKind, View, project};
 use us_sim::{
     ABANDON_ABOVE_X10, BOND_MONTHS, BOND_RATE_X10, BOND_SIZE, BUDGET_MAX_PCT, BUDGET_MIN_PCT,
     CivicKind, Class, Date, Dept, Event, EventKind, LedgerNow, LoanError, MapKind, Phase,
-    RoadError, Service, TAX_MAX_X10, TAX_MIN_X10, class_of,
+    PlanningUse, RoadError, Service, TAX_MAX_X10, TAX_MIN_X10, class_of,
 };
 
 // Series colours: one fixed hue per meaning, readable on the dark navy panels.
@@ -423,6 +423,7 @@ const TABS: [&str; 9] = [
 /// What the road tool builds.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RoadMode {
+    Local,
     Avenue,
     Collector,
     /// Widen a street to the next class.
@@ -433,6 +434,7 @@ impl RoadMode {
     fn class(self) -> RoadClass {
         match self {
             RoadMode::Avenue => RoadClass::Arterial,
+            RoadMode::Local => RoadClass::Local,
             _ => RoadClass::Collector,
         }
     }
@@ -471,6 +473,8 @@ pub struct UiState {
     pub road: Option<RoadMode>,
     /// Points of the road being drawn.
     pub road_pts: Vec<Pt>,
+    /// Zoning land use and the first corner of the current area.
+    pub(super) zone: Option<(PlanningUse, Option<Pt>)>,
     /// Screenshot hook: hold the ghost at this spot instead of under the cursor.
     fixed_ghost: Option<Pt>,
     pub view: MapView,
@@ -520,6 +524,7 @@ impl Default for UiState {
             civic_site: None,
             road: None,
             road_pts: Vec::new(),
+            zone: None,
             fixed_ghost: None,
             view: MapView::Normal,
             tab: 0,
@@ -1439,6 +1444,7 @@ impl Game {
 
     pub(super) fn build_ui(&mut self, ctx: &Context, screen_w: f32) {
         let mut picked = None;
+        let mut zone = None;
         let compact = theme::is_compact(ctx);
         let pos = Pos2::new((screen_w - 340.0).max(10.0), 110.0);
         let closed = window(ctx, "build", "Build", 320.0, pos, |ui| {
@@ -1454,21 +1460,38 @@ impl Game {
             );
             ui.add_space(4.0);
             lab(ui, "Roads", 12.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 for (m, name) in [
+                    (RoadMode::Local, "Local"),
                     (RoadMode::Avenue, "Avenue"),
                     (RoadMode::Collector, "Collector"),
                     (RoadMode::Upgrade, "Upgrade"),
                 ] {
+                    if m == RoadMode::Local && !self.rules.city_planning {
+                        continue;
+                    }
                     let on = self.ui.road == Some(m);
                     if btn(ui, name, on, 11.0).clicked() {
                         self.ui.road = if on { None } else { Some(m) };
                         self.ui.tool = None;
                         self.ui.road_pts.clear();
+                        self.ui.zone = None;
                     }
                 }
             });
             self.road_panel(ui);
+            if self.rules.city_planning {
+                ui.add_space(6.0);
+                lab(ui, "Zoning", 12.0);
+                ui.horizontal_wrapped(|ui| {
+                    for kind in PlanningUse::ALL {
+                        let on = self.ui.zone.is_some_and(|(active, _)| active == kind);
+                        if btn(ui, kind.label(), on, 11.0).clicked() {
+                            zone = Some(kind);
+                        }
+                    }
+                });
+            }
             ui.add_space(6.0);
             lab(ui, "Buildings", 12.0);
             self.capacity_rows(ui);
@@ -1560,8 +1583,68 @@ impl Game {
             self.ui.build_open = false;
             self.ui.tool = None;
         } else if let Some(kind) = picked {
+            self.ui.zone = None;
             self.open_build_for(kind);
+        } else if let Some(kind) = zone {
+            self.close_sheets();
+            self.ui.road = None;
+            self.ui.road_pts.clear();
+            self.sel = None;
+            self.ui.zone = Some((kind, None));
         }
+    }
+
+    pub(super) fn zone_corner(&mut self, p: Pt) {
+        let Some((zone, first)) = self.ui.zone else {
+            return;
+        };
+        if let Some(first) = first {
+            match self.sim.paint_zone(zone, first, p) {
+                Ok(n) => {
+                    self.ui.zone = Some((zone, None));
+                    self.toast(
+                        format!("{n} {} parcels zoned", zone.label().to_lowercase()),
+                        false,
+                    );
+                }
+                Err(err) => self.toast(err.message(), true),
+            }
+        } else {
+            self.ui.zone = Some((zone, Some(p)));
+        }
+    }
+
+    pub(super) fn zone_prompt(&mut self, ctx: &Context) {
+        let Some((zone, first)) = self.ui.zone else {
+            return;
+        };
+        let y = if self.compact {
+            dock_top(ctx) - ctx.content_rect().bottom() - 7.0
+        } else {
+            -34.0
+        };
+        egui::Area::new(egui::Id::new("zone_prompt"))
+            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, y))
+            .show(ctx, |ui| {
+                theme::panel()
+                    .inner_margin(egui::Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            let hint = if first.is_some() {
+                                "Choose opposite corner"
+                            } else {
+                                "Choose first corner"
+                            };
+                            lab(ui, format!("{} · {hint}", zone.label()), 12.0);
+                            if first.is_some() && btn(ui, "Restart", false, 11.0).clicked() {
+                                self.ui.zone = Some((zone, None));
+                            }
+                            if btn(ui, "Done", false, 11.0).clicked() {
+                                self.ui.zone = None;
+                            }
+                        });
+                    });
+            });
     }
 
     fn capacity_rows(&self, ui: &mut Ui) {
@@ -1952,6 +2035,30 @@ impl Game {
         w: u32,
         h: u32,
     ) {
+        if let Some((_, anchor)) = self.ui.zone {
+            if let Some(a) = anchor {
+                let ppp = ctx.pixels_per_point();
+                let marker = ring_points(&self.live, view, a, 4.0, w, h, ppp);
+                if marker.len() > 2 {
+                    painter.add(egui::Shape::closed_line(marker, Stroke::new(2.0, ACCENT)));
+                }
+                if !ctx.egui_wants_pointer_input()
+                    && let Some(pos) = ctx.pointer_hover_pos()
+                    && let Some(b) = self.live.scene.pick(
+                        view,
+                        (
+                            pos.x * ppp / w as f32 * 2.0 - 1.0,
+                            1.0 - pos.y * ppp / h as f32 * 2.0,
+                        ),
+                    )
+                {
+                    let b = pt(f64::from(b.x), f64::from(b.y));
+                    let outline = [a, pt(a.x, b.y), b, pt(b.x, a.y), a];
+                    self.draw_path(painter, view, &outline, ACCENT, 2.0, w, h, ppp);
+                }
+            }
+            return;
+        }
         if self.road_active().is_some() {
             self.road_ghost_ui(ctx, painter, view, w, h);
             return;

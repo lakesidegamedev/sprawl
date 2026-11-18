@@ -2,10 +2,27 @@
 
 ## Unreleased
 
-- Keep precise terrain where the distant ground mesh could cover roads.
-- Unlimited Money bypasses purchase limits and shows its funding status in the town interface. Existing sandbox towns can change it in the pause menu.
+## 1.4.0 (2026-11-18)
 
-- TestFlight builds reuse an existing distribution identity and the app’s provisioning profile.
+<!-- Release coverage starts after the 1.3.2 TestFlight source 5561e3c. -->
+
+### For players
+
+- Choose Town Growth to run a town that builds its own streets, or City Planning to draw local roads, collectors and arterials yourself and zone roadside land.
+- Mist rolls along the ground on damp mornings. Rain and snow move through the world and pass behind buildings and hills. Seasonal colours change over six game weeks, with nearby areas turning at different times.
+- Windows light up gradually across neighborhoods at dusk and keep a steady pattern. Streetlights and headlights cast light on nearby roads and buildings.
+- Wind ripples the water, with shallows and foam along the shore. Grass blends into exposed ground on slopes, and dense downtowns get taller office and apartment towers with distinct silhouettes.
+- Hear traffic, wind, rain and building cues, with original day and evening music. Adjust music, ambience and effects separately.
+- Roads stay visible at a distance and on bridge approaches. Traffic on Gorge follows one-way ramps and keeps flyovers separate from the roads below.
+- Unlimited Money removes spending limits. Existing sandbox towns can toggle it from the pause menu.
+- Compact layouts give the map more space. Balanced world resolution reduces 3D rendering work while keeping the interface sharp.
+
+### For developers
+
+- Add terrain-relative, depth-aware fog and world-space precipitation with scene occlusion. Use stable anchors for window lighting and local lights for streetlights and headlights.
+- Preserve newer detail on water, slopes and dense buildings while retaining distance-based rendering for far geometry. Skip readbacks on the native window path.
+- Store manual road and zoning state in the optional PLAN save section. Preserve prior save defaults and keep road direction and grade consistent across assignment, traffic animation and service routing.
+- Use the existing TestFlight distribution identity and app provisioning profile. Windows packages use the matching workspace version.
 
 ## 1.3.2 (2026-11-18)
 

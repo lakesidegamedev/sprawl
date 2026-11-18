@@ -86,7 +86,15 @@ impl Traffic {
             };
             let width = p.class.half_width() as f32;
             for (direction, a) in demand.iter().enumerate() {
-                let opposite = demand[1 - direction].rate;
+                let forward = direction == 0;
+                if p.one_way.is_some_and(|allowed| allowed != forward) {
+                    continue;
+                }
+                let opposite = if p.one_way.is_some() {
+                    a.rate
+                } else {
+                    demand[1 - direction].rate
+                };
                 if a.rate.max(opposite) <= 0.0 || a.capacity <= 0.0 {
                     continue;
                 }
@@ -101,7 +109,11 @@ impl Traffic {
                 let rate = [a.rate / split, opposite / split];
                 let capacity = a.capacity / split;
                 for lane in 0..lanes_per_direction {
-                    let side = width * (lane as f32 + 0.5) / split;
+                    let side = if p.one_way.is_some() {
+                        0.0
+                    } else {
+                        width * (lane as f32 + 0.5) / split
+                    };
                     lanes.push(Lane {
                         path,
                         reverse,
@@ -290,5 +302,41 @@ mod tests {
                 .all(|c| c.pos[0] < 145.0 && c.pos[0] > 3.0)
         );
         assert!(cars[queued..].iter().any(|c| c.pos[0] > 155.0));
+    }
+}
+
+#[cfg(test)]
+mod slip_tests {
+    use super::*;
+
+    #[test]
+    fn one_way_ramp_keeps_vehicles_in_the_allowed_direction() {
+        let mut path = Path::new(
+            RoadClass::Collector,
+            &[us_gen::pt(0.0, 0.0), us_gen::pt(180.0, 0.0)],
+        );
+        path.one_way = Some(false);
+        let approach = Approach {
+            rate: 850.0,
+            capacity: 600.0,
+            stop: 0.95,
+        };
+        let traffic = Traffic::new(
+            &[path],
+            &[[
+                approach,
+                Approach {
+                    stop: 0.05,
+                    ..approach
+                },
+            ]],
+        );
+        assert!(!traffic.lanes.is_empty());
+        assert!(
+            traffic
+                .lanes
+                .iter()
+                .all(|lane| lane.reverse && lane.side == 0.0)
+        );
     }
 }
