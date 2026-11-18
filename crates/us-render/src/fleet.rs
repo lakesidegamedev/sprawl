@@ -792,12 +792,19 @@ pub fn fleet_instances(paths: &[Path], fleet: &[Veh], time: f32) -> [Vec<Instanc
         if l < 1.0 {
             continue;
         }
-        let s = (v.phase * l + v.dir * v.speed * time).rem_euclid(l);
+        let dir = p
+            .one_way
+            .map_or(v.dir, |forward| if forward { 1.0 } else { -1.0 });
+        let s = (v.phase * l + dir * v.speed * time).rem_euclid(l);
         let (pt, d) = p.at(s);
         let hw = p.class.half_width() as f32;
-        let side = -v.dir * hw * 0.5;
+        let side = if p.one_way.is_some() {
+            0.0
+        } else {
+            -dir * hw * 0.5
+        };
         let (nx, ny) = (-d[1], d[0]);
-        let heading = libm::atan2f(d[1] * v.dir, d[0] * v.dir);
+        let heading = libm::atan2f(d[1] * dir, d[0] * dir);
         out[v.kind.index()].push(Instance {
             pos: [pt[0] + nx * side, pt[1] + ny * side, p.z(s)],
             theta: heading,

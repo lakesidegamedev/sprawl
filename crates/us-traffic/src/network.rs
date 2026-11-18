@@ -56,6 +56,8 @@ pub struct Arc {
     pub t0: f64,
     /// Vehicles per hour.
     pub cap: f64,
+    /// Whether this direction is open to routing.
+    pub enabled: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -66,6 +68,9 @@ pub struct Network {
     /// CSR: arcs leaving node `n` are `out[off[n]..off[n + 1]]` (arc indices).
     pub off: Vec<u32>,
     pub out: Vec<u32>,
+    /// CSR of incoming arcs, used by dispatch to find routes toward an incident.
+    pub in_off: Vec<u32>,
+    pub incoming: Vec<u32>,
 }
 
 const CELL: f64 = 200.0;
@@ -88,6 +93,7 @@ impl Network {
                 street: i as u32,
                 t0,
                 cap,
+                enabled: e.travel.allows_forward(),
             });
             arcs.push(Arc {
                 from: e.b,
@@ -95,27 +101,35 @@ impl Network {
                 street: i as u32,
                 t0,
                 cap,
+                enabled: e.travel.reversed().allows_forward(),
             });
         }
-        let nn = streets.nodes.len();
-        let mut off = vec![0u32; nn + 1];
-        for a in &arcs {
-            off[a.from as usize + 1] += 1;
-        }
-        for i in 0..nn {
-            off[i + 1] += off[i];
-        }
-        let mut fill = off.clone();
-        let mut out = vec![0u32; arcs.len()];
-        for (i, a) in arcs.iter().enumerate() {
-            out[fill[a.from as usize] as usize] = i as u32;
-            fill[a.from as usize] += 1;
-        }
+        let adjacency = |node: fn(&Arc) -> u32| {
+            let mut off = vec![0u32; streets.nodes.len() + 1];
+            for a in arcs.iter().filter(|a| a.enabled) {
+                off[node(a) as usize + 1] += 1;
+            }
+            for i in 0..streets.nodes.len() {
+                off[i + 1] += off[i];
+            }
+            let mut fill = off.clone();
+            let mut edges = vec![0u32; off.last().copied().unwrap_or_default() as usize];
+            for (i, a) in arcs.iter().enumerate().filter(|(_, a)| a.enabled) {
+                let from = node(a) as usize;
+                edges[fill[from] as usize] = i as u32;
+                fill[from] += 1;
+            }
+            (off, edges)
+        };
+        let (off, out) = adjacency(|a| a.from);
+        let (in_off, incoming) = adjacency(|a| a.to);
         Network {
             streets,
             arcs,
             off,
             out,
+            in_off,
+            incoming,
         }
     }
 
@@ -185,5 +199,36 @@ impl NodeGrid {
             }
         }
         best.map(|(_, n)| n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_slip_lanes_disable_the_wrong_way_arc() {
+        let town = us_gen::generate(us_gen::Preset::Grid, 1);
+        let network = Network::from_town(&town);
+        let disabled: Vec<_> = network
+            .arcs
+            .iter()
+            .enumerate()
+            .filter(|(_, arc)| !arc.enabled)
+            .collect();
+        assert!(!disabled.is_empty());
+        for (index, arc) in disabled {
+            assert!(network.arcs[index ^ 1].enabled);
+            assert!(
+                !network.out[network.off[arc.from as usize] as usize
+                    ..network.off[arc.from as usize + 1] as usize]
+                    .contains(&(index as u32))
+            );
+            assert!(
+                !network.incoming[network.in_off[arc.to as usize] as usize
+                    ..network.in_off[arc.to as usize + 1] as usize]
+                    .contains(&(index as u32))
+            );
+        }
     }
 }
