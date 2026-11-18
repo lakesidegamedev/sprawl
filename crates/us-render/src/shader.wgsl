@@ -359,61 +359,68 @@ fn water_kind(c: vec3<f32>) -> i32 {
     return 0;
 }
 
-fn water_ripples(base: vec3<f32>, w: vec2<f32>, scale: f32, t: f32) -> vec3<f32> {
-    var c = base;
-    // Let wind alter the surface without moving the shoreline itself.
-    let gust = min(length(g.wx.zw), 24.0);
-    let drift = vec2<f32>(0.8, 0.45);
-    let ph = dot(w, drift) * scale + vnoise(w * scale / 3.5 + vec2<f32>(t * 0.05, 0.0)) * 2.2 - t * 1.2;
-    let r = sin(ph);
-    let r2 = sin(ph * 0.5 + 2.0 + vnoise(w * 0.12) * 4.0 + t * 0.4);
-    // crests are short segments of different lengths, staggered from one crest to the next
-    let ci = floor((ph + 1.5708) / 6.2832);
-    let along = w.x * -0.45 + w.y * 0.8;
-    let seg = vnoise(vec2<f32>(along * (0.12 + 0.1 * fract(ci * 0.37)) + ci * 5.7, ci * 1.9 + 3.0));
-    if (r > 0.93 && seg > 0.52) {
-        c = mix(c, vec3<f32>(0.86, 0.95, 1.0), 0.48 + gust * 0.009);
-    } else if (r > 0.75 && r2 > 0.3) {
-        c = c * 1.1 + vec3<f32>(0.02, 0.04, 0.05);
-    } else if (r < -0.9) {
-        c = c * 0.95;
-    }
-    return c;
+// Two wave bands follow the wind in world space. Filter the shorter band as it
+// falls below a pixel so moving water stays steady at town-scale zoom.
+fn wave_normal(w: vec2<f32>, px: f32, pond: bool) -> vec3<f32> {
+    let velocity = g.wx.zw;
+    let gust = min(length(velocity) / 13.0, 1.0);
+    let drift = velocity * 0.14 + vec2<f32>(0.88, 0.44);
+    let along = normalize(select(drift, vec2<f32>(0.88, 0.44), dot(drift, drift) < 0.001));
+    let across = vec2<f32>(along.x * 0.61 - along.y * 0.79, along.x * 0.79 + along.y * 0.61);
+    let t = g.screen.w;
+    let long = dot(w, along) * 0.31 - t * (1.5 + gust * 1.3);
+    let short = dot(w, across) * 1.73 - t * (3.1 + gust * 2.1);
+    let breaks = vnoise(w * 0.067 + vec2<f32>(t * 0.035, 0.0));
+    let fine = 1.0 - smoothstep(0.3, 1.35, px);
+    let wind_scale = mix(0.40, 1.0, gust) * select(1.0, 0.57, pond);
+    let slope = along * cos(long + breaks * 2.4) * 0.17
+        + across * cos(short + breaks * 3.7) * (0.01 + 0.095 * fine);
+    return normalize(vec3<f32>(-slope * wind_scale * (0.72 + breaks * 0.62), 1.0));
 }
 
-fn water_colour(kind: i32, w: vec2<f32>, dist: f32, t: f32) -> vec3<f32> {
-    let deep = vec3<f32>(52.0, 112.0, 186.0) / 255.0;
-    let far_sh = vec3<f32>(66.0, 138.0, 204.0) / 255.0;
-    let near_sh = vec3<f32>(96.0, 170.0, 222.0) / 255.0;
-    var c = deep;
-    if (kind == 2) { c = vec3<f32>(76.0, 142.0, 208.0) / 255.0; }
-    if (kind == 3) { c = far_sh; }
-    if (kind == 4) { c = near_sh; }
-    // Fade between two world-space patterns so zooming does not replace the entire surface at once.
-    let far_blend = smoothstep(155.0, 300.0, dist);
-    if (far_blend <= 0.0) {
-        c = water_ripples(c, w, 1.7, t);
-    } else if (far_blend >= 1.0) {
-        c = water_ripples(c, w, 0.3, t);
-    } else {
-        c = mix(water_ripples(c, w, 1.7, t), water_ripples(c, w, 0.3, t), far_blend);
+fn water_colour(kind: i32, world: vec3<f32>, dist: f32, normal: vec3<f32>) -> vec3<f32> {
+    let water_depth = max(0.0, world.z - terrain_height(world.xy));
+    let shore = kind >= 3;
+    let pond = kind == 2;
+    let bottom = vec3<f32>(0.30, 0.60, 0.54);
+    let deep = select(vec3<f32>(0.055, 0.23, 0.34), vec3<f32>(0.09, 0.31, 0.33), pond);
+    let depth = max(water_depth, select(6.0, 0.3, shore));
+    let transmitted = exp(-depth * select(0.32, 0.53, pond));
+    let base = mix(deep, bottom, transmitted);
+    let eye = normalize(g.eye.xyz - world);
+    let ray = reflect(-eye, normal);
+    let near_horizon = 1.0 - clamp(ray.z, 0.0, 1.0);
+    let blue = mix(vec3<f32>(0.30, 0.53, 0.71), vec3<f32>(0.68, 0.79, 0.83), near_horizon);
+    let sky = mix(blue, vec3<f32>(0.52, 0.59, 0.64), g.shade.w);
+    let facing = max(0.0, dot(normal, eye));
+    let fresnel = 0.055 + 0.945 * pow(1.0 - facing, 5.0);
+    let half_ray = normalize(eye + g.sun.xyz);
+    let spec = pow(max(0.0, dot(half_ray, normal)), mix(117.0, 54.0, g.shade.w));
+    let sparkle = spec * (0.27 + 0.55 * (1.0 - g.shade.w)) * lit(world, normal);
+    var result = mix(base, sky, fresnel) + vec3<f32>(1.0, 0.86, 0.65) * sparkle;
+    if (shore) {
+        let t = g.screen.w;
+        let foam = vnoise(world.xy * 0.43 + vec2<f32>(t * 0.22, -t * 0.14));
+        let fine = 1.0 - smoothstep(0.8, 2.0, g.screen.z * dist);
+        let bank = select((1.0 - smoothstep(0.28, 1.4, water_depth)) * 0.35, 0.88, kind == 5);
+        result = mix(result, vec3<f32>(0.79, 0.89, 0.90),
+            bank * smoothstep(0.38, 0.72, foam) * (0.60 + 0.40 * fine));
     }
-    if (kind == 5) {
-        // foam: edge moves in and out, broken into dashes
-        let n = vnoise(w * 0.8 + vec2<f32>(t * 0.3, -t * 0.22));
-        if (n > 0.38) {
-            c = vec3<f32>(0.95, 0.98, 1.0);
-        } else {
-            c = near_sh;
-        }
-    } else if (kind == 4) {
-        // a second, broken foam line just off the bank
-        let n = vnoise(w * 0.5 + vec2<f32>(-t * 0.18, t * 0.25));
-        if (n > 0.8) {
-            c = mix(c, vec3<f32>(0.95, 0.98, 1.0), 0.8);
-        }
-    }
-    return c;
+    return min(result, vec3<f32>(1.2));
+}
+
+// Layer vegetation cover and patches of exposed soil across a real slope.
+fn grass_soil(colour: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, px: f32) -> vec3<f32> {
+    let hill = smoothstep(0.03, 0.34, 1.0 - normal.z);
+    let meadow_patch = vnoise(world.xy * 0.016);
+    let sward = vnoise(world.xy * 0.18);
+    let dry = smoothstep(0.43, 0.81, meadow_patch * 0.76 + sward * 0.24 + hill * 0.22);
+    let bare = dry * (0.24 + 0.34 * hill) * (1.0 - g.wx.x);
+    let detail = 1.0 - smoothstep(0.15, 0.65, px);
+    let litter = vnoise(world.xy * 1.35);
+    let soil = vec3<f32>(0.44, 0.36, 0.26) * (1.0 - g.wx.y * 0.26);
+    let meadow = colour * (0.90 + 0.20 * sward + (litter - 0.5) * detail * 0.15);
+    return mix(meadow, soil, bare);
 }
 
 fn is_green(c: vec3<f32>) -> bool {
@@ -876,16 +883,20 @@ fn fs_main(v: VOut) -> FOut {
         col = mix(vec3<f32>(lum), col, 0.12);
     }
     if (wkind > 0) {
-        col = water_colour(wkind, v.world.xy, v.dist, g.screen.w);
+        n = wave_normal(v.world.xy, g.screen.z * v.dist, wkind == 2);
+        col = water_colour(wkind, v.world, v.dist, n);
     } else if (gkind > 0) {
         let snowy = min(col.r, min(col.g, col.b)) > 0.88;
         col = ground_detail(col, v.color.rgb, gkind, v.world.xy, v.dist, snowy, season);
+        if ((gkind == 1 || gkind == 4) && !snowy) {
+            col = grass_soil(col, v.world, n, g.screen.z * v.dist);
+        }
     }
     if (!emissive && g.look.z < 0.5 && v.tint == 0u && wkind == 0) {
         col = textured_surface(col, v.color.rgb, v.world, n, g.screen.z * v.dist, cel, !ground && !exempt);
     }
     var k = 1.0;
-    if (cel && ground) {
+    if (cel && ground && wkind == 0) {
         // hillshade: stepped tones by how the slope faces the sun compared with level ground
         var d = l - g.sun.z;
         if (g.rock[7].z > 0.5) {
@@ -907,7 +918,7 @@ fn fs_main(v: VOut) -> FOut {
         } else {
             k = 0.7;
         }
-    } else if (cel) {
+    } else if (cel && wkind == 0) {
         // top brightest, sun side, shade side: three steps
         if (n.z > 0.9) {
             k = 1.0;
@@ -919,7 +930,7 @@ fn fs_main(v: VOut) -> FOut {
             k = 0.66;
         }
     }
-    if (l > 0.02 && k > g.shade.x) {
+    if (l > 0.02 && k > g.shade.x && wkind == 0) {
         k = mix(g.shade.x, k, lit(v.world, n));
     }
     let material_colour = col;
