@@ -237,9 +237,13 @@ pub struct LiveScene {
     /// Forests and lone trees on open land, felled where the town builds.
     woods: us_render::woods::Woods,
     woods_chunk: HashMap<us_render::woods::Cell, usize>,
-    /// Road runs and lots whose ground has been cleared of trees.
-    woods_runs: Vec<bool>,
-    woods_lots: Vec<bool>,
+    /// The half width each road run and the radius each lot was last cleared of trees for
+    /// (0 when not yet): a widened street or a merged lot is cleared again.
+    woods_runs: Vec<f32>,
+    woods_lots: Vec<f32>,
+    /// Woodland chunks waiting to be redrawn, a few each frame.
+    woods_dirty: std::collections::BTreeSet<us_render::woods::Cell>,
+    woods_roads_ver: u32,
 }
 
 fn cell_of(x: f64, y: f64) -> Cell {
@@ -716,8 +720,11 @@ impl LiveScene {
             woods_chunk: HashMap::new(),
             woods_runs: Vec::new(),
             woods_lots: Vec::new(),
+            woods_dirty: std::collections::BTreeSet::new(),
+            woods_roads_ver: u32::MAX,
         };
         ls.clear_woods_for_town(sim);
+        ls.woods_dirty.clear();
         for cell in ls.woods.cells() {
             ls.rev += 1;
             let chunk = ls.woods.chunk(cell, ls.rev);
@@ -1330,7 +1337,8 @@ impl LiveScene {
     /// lots follow in `sync_woods`.
     fn clear_woods_for_town(&mut self, sim: &Sim) {
         if self.show_hall {
-            let hall = self.town.hall;
+            // the hall stands where the mayor put it, which need not be the generated site
+            let hall = sim.hall;
             self.woods.clear_disc(hall, self.town.hall_radius + 14.0);
             let tiles = self.square_tiles.clone();
             for p in tiles {
@@ -1349,53 +1357,65 @@ impl LiveScene {
         self.fell_for_roads_and_lots(sim);
     }
 
-    /// Fell trees for every street that is now on the ground and every lot that is now drawn.
-    /// Returns the woodland chunks that changed.
-    fn fell_for_roads_and_lots(
-        &mut self,
-        sim: &Sim,
-    ) -> std::collections::BTreeSet<us_render::woods::Cell> {
-        let mut changed = std::collections::BTreeSet::new();
+    /// Fell trees for every street that is now on the ground and every lot the town has laid
+    /// out, and note the woodland chunks that changed. A lot counts from the day it is laid out,
+    /// built on or not, so a town reopened from a save has the same woods as before it was saved.
+    fn fell_for_roads_and_lots(&mut self, sim: &Sim) {
         let runs = sim.road_runs();
-        if self.woods_runs.len() != runs.len() {
-            // widening cuts and renumbers runs: look at all of them again
-            self.woods_runs = vec![false; runs.len()];
+        if self.woods_runs.len() != runs.len() || self.woods_roads_ver != sim.roads_version() {
+            // streets were added, cut, moved or widened: look at every run again
+            self.woods_runs = vec![0.0; runs.len()];
+            self.woods_roads_ver = sim.roads_version();
         }
         for (i, run) in runs.iter().enumerate() {
-            if self.woods_runs[i] || !sim.road_visible(i) {
+            let half = run.class.half_width() as f32 + 4.5;
+            if self.woods_runs[i] >= half || !sim.road_visible(i) {
                 continue;
             }
-            self.woods_runs[i] = true;
-            let half = run.class.half_width() + 4.5;
+            self.woods_runs[i] = half;
             for w in run.points.windows(2) {
-                changed.extend(self.woods.clear_along(w[0], w[1], half));
+                let changed = self.woods.clear_along(w[0], w[1], half as f64);
+                self.woods_dirty.extend(changed);
             }
         }
         let lots = sim.lots();
-        self.woods_lots.resize(lots.len(), false);
+        self.woods_lots.resize(lots.len(), 0.0);
         for (i, l) in lots.iter().enumerate() {
-            if self.woods_lots[i] || matches!(l.phase, Phase::Hidden | Phase::Vacant) {
+            let radius = l.radius as f32 + 3.0;
+            if self.woods_lots[i] >= radius || l.phase == Phase::Hidden {
                 continue;
             }
-            self.woods_lots[i] = true;
-            changed.extend(self.woods.clear_disc(l.pos, l.radius + 3.0));
+            self.woods_lots[i] = radius;
+            let changed = self.woods.clear_disc(l.pos, radius as f64);
+            self.woods_dirty.extend(changed);
         }
-        changed
     }
 
-    /// Keep the woods off new streets and buildings, redrawing the chunks that lost trees.
+    /// Keep the woods off new streets and buildings, redrawing at most two of the chunks that
+    /// lost trees each frame so a burst of building never stalls one.
     fn sync_woods(&mut self, sim: &Sim) {
-        let changed = self.fell_for_roads_and_lots(sim);
-        if changed.is_empty() {
-            return;
-        }
-        for cell in changed {
+        self.fell_for_roads_and_lots(sim);
+        // a large backlog (a town fast-forwarded by years) is cleared in one go instead of
+        // trickling out behind the buildings
+        let limit = if self.woods_dirty.len() > 12 {
+            usize::MAX
+        } else {
+            2
+        };
+        let mut drawn = 0;
+        while drawn < limit {
+            let Some(cell) = self.woods_dirty.pop_first() else {
+                break;
+            };
             if let Some(&i) = self.woods_chunk.get(&cell) {
                 self.rev += 1;
                 self.scene.chunks[i] = self.woods.chunk(cell, self.rev);
+                drawn += 1;
             }
         }
-        self.triangles = self.scene.triangles();
+        if drawn > 0 {
+            self.triangles = self.scene.triangles();
+        }
     }
 
     /// Follow road changes: new class or new streets show as roadworks that finish over time.
@@ -1532,12 +1552,8 @@ impl LiveScene {
         self.ground_chunks += 1;
         if !matches!(a.zone, Zone::Farm | Zone::Park) {
             // land opened for building keeps only a few of its trees
-            for cell in self.woods.thin_ring(&a.polygon, 0.12) {
-                if let Some(&i) = self.woods_chunk.get(&cell) {
-                    self.rev += 1;
-                    self.scene.chunks[i] = self.woods.chunk(cell, self.rev);
-                }
-            }
+            let changed = self.woods.thin_ring(&a.polygon, 0.12);
+            self.woods_dirty.extend(changed);
         }
         if a.zone == Zone::Park {
             let cover =

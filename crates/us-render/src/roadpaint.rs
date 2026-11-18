@@ -296,6 +296,9 @@ struct Arm {
     class: RoadClass,
     avail: f64,
     ring: bool,
+    /// How far from the node the road keeps to the arm's heading (within two metres), metres.
+    /// Paving and markings worked out from the heading are only right this far.
+    straight: f64,
 }
 
 struct Node {
@@ -458,6 +461,24 @@ fn find_nodes(all: &[&RoadDraw], n_mine: usize) -> Vec<Node> {
                 };
                 let v = q - p;
                 if v.len() > 1.0 {
+                    let dir = v.unit();
+                    let mut straight = look;
+                    while straight < 180.0 {
+                        let t = straight + 6.0;
+                        let st = if fwd { s0 + t } else { s0 - t };
+                        if !closed && !(0.0..=total).contains(&st) {
+                            break;
+                        }
+                        let on_road = if closed {
+                            at(r.points, st.rem_euclid(total))
+                        } else {
+                            at(r.points, st)
+                        };
+                        if on_road.dist(p + dir * t) > 2.0 {
+                            break;
+                        }
+                        straight = t;
+                    }
                     arms.push(Arm {
                         road: j,
                         s0,
@@ -467,6 +488,7 @@ fn find_nodes(all: &[&RoadDraw], n_mine: usize) -> Vec<Node> {
                         class: r.class,
                         avail,
                         ring,
+                        straight,
                     });
                 }
             };
@@ -556,7 +578,10 @@ fn pad_of(n: &Node, fillets: bool) -> Pad {
         // Two roads leaving at a narrow angle run over each other until their kerbs part. The
         // pad reaches to that point, however far, so one road's lines, median and kerb are
         // never drawn across the other; only the room the arms have limits it.
-        let meet = s > 0.0 && u > 0.0 && s < a.avail.min(170.0) && u < b.avail.min(170.0);
+        let meet = s > 0.0
+            && u > 0.0
+            && s < a.avail.min(a.straight).min(170.0)
+            && u < b.avail.min(b.straight).min(170.0);
         if theta < 25f64.to_radians() {
             if meet {
                 left[i] = c;
@@ -694,6 +719,10 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
         // a crossing belongs at the mouth of a compact junction. Where the paving runs far
         // along an arm (roads parting at a narrow angle) it would sit out on its own.
         if pad.cut[k] > a.hw * 1.5 + 13.0 {
+            continue;
+        }
+        // and only where the road is still on the heading the marking is laid out along
+        if d + 4.5 > a.straight {
             continue;
         }
         let across = pt(-a.dir.y, a.dir.x);
@@ -1060,10 +1089,29 @@ mod tests {
             assert!(
                 pad.ring
                     .iter()
-                    // roads that part at a narrow angle share a long wedge of pad
                     .all(|p| p.dist(n.p) < 175.0 && p.x.is_finite() && p.y.is_finite()),
                 "a pad point is far from its junction"
             );
+            // only roads that part at a narrow angle share a long wedge of pad, and it never
+            // reaches past where either road leaves its heading
+            let reach = pad.ring.iter().map(|p| p.dist(n.p)).fold(0.0, f64::max);
+            if reach >= 40.0 {
+                let narrow = n.arms.iter().enumerate().any(|(i, a)| {
+                    n.arms
+                        .iter()
+                        .skip(i + 1)
+                        .any(|b| a.dir.dot(b.dir) > 25f64.to_radians().cos())
+                });
+                assert!(
+                    narrow,
+                    "a long pad at a junction with no narrow pair of arms"
+                );
+                let limit = n.arms.iter().map(|a| a.straight).fold(0.0, f64::max);
+                assert!(
+                    reach <= limit + 25.0,
+                    "a pad runs past the straight of its arms"
+                );
+            }
             let square = pad_of(&n, false);
             if crate::ground::signed_area(&pad.ring) <= 0.0 {
                 bad += 1;

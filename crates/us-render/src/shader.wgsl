@@ -139,7 +139,12 @@ fn lit(world: vec3<f32>, n: vec3<f32>) -> f32 {
     // penumbra to about three texels so shadow edges stop stepping along the texel grid.
     let texel = 1.0 / f32(textureDimensions(shadow_tex).x);
     let depth = c.z - g.shade.y;
-    var sum = textureSampleCompareLevel(shadow_tex, shadow_cmp, uv, depth) * 2.0;
+    let centre = textureSampleCompareLevel(shadow_tex, shadow_cmp, uv, depth);
+    if (g.resolve.w < 0.5 && g.local_lights.w < 0.5) {
+        // the light preset (phones by default) keeps the single filtered comparison
+        return centre;
+    }
+    var sum = centre * 2.0;
     let r = texel * 1.4;
     sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(r, r * 0.4), depth);
     sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(-r * 0.4, r), depth);
@@ -148,11 +153,13 @@ fn lit(world: vec3<f32>, n: vec3<f32>) -> f32 {
     if (g.resolve.w < 0.5) {
         return sum / 6.0;
     }
+    // the wide ring reaches further across a sloping face, so it compares with more slack
+    let far_depth = depth - g.shade.y * 1.6;
     let q = texel * 2.6;
-    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(q, -q * 0.3), depth);
-    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(q * 0.3, q), depth);
-    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(-q, q * 0.3), depth);
-    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(-q * 0.3, -q), depth);
+    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(q, -q * 0.3), far_depth);
+    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(q * 0.3, q), far_depth);
+    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(-q, q * 0.3), far_depth);
+    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(-q * 0.3, -q), far_depth);
     return sum / 10.0;
 }
 
@@ -367,18 +374,25 @@ fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist:
         // Grassland: a continuous spectrum of variation instead of two glade sizes, so the
         // ground reads as pasture with lusher hollows and drier rises, not as painted blots.
         let footprint = g.screen.z * dist;
-        let warp = vec2<f32>(vnoise(w / 97.0 + vec2<f32>(13.0, 5.0)), vnoise(w / 97.0 + vec2<f32>(-7.0, 31.0))) - 0.5;
+        let rich = g.resolve.w > 0.5 || g.local_lights.w > 0.5;
+        var warp = vec2<f32>(0.0);
+        if (rich) {
+            warp = vec2<f32>(vnoise(w / 97.0 + vec2<f32>(13.0, 5.0)), vnoise(w / 97.0 + vec2<f32>(-7.0, 31.0))) - 0.5;
+        }
         let broad = vnoise(w / 260.0 + vec2<f32>(4.1, 22.8));
         let field = vnoise((w + warp * 70.0) / 74.0);
         let glade = vnoise((w + warp * 24.0) / 21.0 + vec2<f32>(9.0, 2.0));
-        let clump = vnoise(w / 6.1 + vec2<f32>(3.0, 17.0));
+        var clump = 0.5;
+        if (rich) {
+            clump = vnoise(w / 6.1 + vec2<f32>(3.0, 17.0));
+        }
         let meadow = broad * 0.40 + field * 0.33 + glade * 0.18 + clump * 0.09;
         let lush_green = vec3<f32>(0.25, 0.39, 0.21);
         let dry_green = vec3<f32>(0.46, 0.48, 0.28);
         let seasonal = mix(lush_green, dry_green, smoothstep(0.24, 0.78, meadow));
         var grass = mix(c, seasonal * (c.g / 0.66), select(0.70, 0.45, kind == 4));
         let detail = 1.0 - smoothstep(0.06, 0.32, footprint);
-        let tufts = 1.0 - smoothstep(0.18, 0.95, footprint);
+        let tufts = 1.0 - smoothstep(0.18, select(0.68, 0.95, rich), footprint);
         var grain = 0.0;
         if (tufts > 0.0) {
             // tussocks about a metre and a half across, combed a little by the wind
@@ -1226,9 +1240,8 @@ fn fs_main(v: VOut) -> FOut {
         let seed = hash2(vec2<i32>(floor(v.room_anchor.xy * 3.1 + v.room_anchor.z * 1.7)));
         let footprint = sqrt(max(dot(world_dx, world_dx), dot(world_dy, world_dy)));
         col = glass_look(col, pane, seed, v.world, n, footprint);
-        if (l > 0.02) {
-            col *= mix(0.74, 1.0, lit(v.world, n));
-        } else {
+        // glass in sun is shaded with everything else below; glass turned away is dimmer
+        if (l <= 0.02) {
             col *= 0.80;
         }
     }
@@ -1910,9 +1923,12 @@ fn sun_reaches(world: vec3<f32>) -> f32 {
 // sun and damp air.
 fn sun_shafts(colour: vec3<f32>, p: vec2<i32>, depth: f32) -> vec3<f32> {
     let low = 1.0 - smoothstep(0.16, 0.66, g.sun.z);
+    // by day only (at night the light vector is the moon's), and only while the shadow pass
+    // is drawing: under heavy cloud it stops and the map would be stale
+    let daylight = 1.0 - smoothstep(0.02, 0.22, g.tone.w);
     let strength = (0.16 + 0.84 * low) * smoothstep(0.03, 0.12, g.sun.z)
-        * (1.0 - 0.75 * g.shade.w) * (1.0 + 1.6 * g.fog.w);
-    if (strength < 0.02) {
+        * (1.0 - 0.75 * g.shade.w) * (1.0 + 1.6 * g.fog.w) * daylight;
+    if (strength < 0.02 || g.shade.x >= 0.985) {
         return colour;
     }
     let ray = ray_for_pixel(vec2<f32>(p) + 0.5);
@@ -1935,7 +1951,10 @@ fn sun_shafts(colour: vec3<f32>, p: vec2<i32>, depth: f32) -> vec3<f32> {
     let amount = (1.0 - exp(-reach * 0.0042 * air)) * strength * (0.40 + 1.2 * toward * toward);
     let beam = mix(vec3<f32>(1.0, 0.93, 0.80), vec3<f32>(1.0, 0.74, 0.46), low);
     let dimmed = colour * (1.0 - 0.62 * amount * (1.0 - sunlit));
-    return dimmed + beam * amount * sunlit * 0.42;
+    // open, clear air glows only faintly: the light gathers where there is mist or where
+    // something stands in the beam, so ordinary play is not veiled
+    let presence = 0.22 + 0.78 * min(1.0, g.fog.w * 8.0 + (1.0 - sunlit) * 3.0);
+    return dimmed + beam * amount * sunlit * 0.42 * presence;
 }
 
 // The sky where no land is drawn: a gradient to a pale horizon, the sun and its glow.
@@ -1943,7 +1962,7 @@ fn sky_dome(p: vec2<i32>) -> vec3<f32> {
     let ray = normalize(ray_for_pixel(vec2<f32>(p) + 0.5));
     let up = vec3<f32>(ray.xy, max(ray.z, 0.0));
     var sky = sky_radiance(normalize(up + vec3<f32>(0.0, 0.0, 0.02)));
-    let day = smoothstep(-0.08, 0.3, g.sun.z);
+    let day = smoothstep(-0.08, 0.3, g.sun.z) * (1.0 - smoothstep(0.05, 0.45, g.tone.w));
     let low = (1.0 - smoothstep(0.05, 0.5, g.sun.z)) * day;
     let haze = mix(vec3<f32>(0.16, 0.20, 0.30), vec3<f32>(0.80, 0.85, 0.88), day)
         + vec3<f32>(0.20, 0.06, -0.06) * low;
