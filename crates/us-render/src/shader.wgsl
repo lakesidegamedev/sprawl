@@ -1365,10 +1365,19 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>) ->
             break;
         }
         let jitter = fract(phase + f32(i) * 0.618034) - 0.5;
-        let distance = interval_start + interval_length * (0.5 + jitter * select(0.72, 0.45, detailed));
+        let middle = interval_start + interval_length * 0.5;
+        let offset = interval_length * jitter * select(0.34, 0.24, detailed);
+        let distance = middle + offset;
         let point = eye + dir * distance;
         let open_near_camera = smoothstep(12.0, 100.0, distance);
-        let density = cloud_density(point, select(1u, 2u, detailed)) * open_near_camera;
+        var density = cloud_density(point, select(1u, 2u, detailed));
+        // Average opposite sides of coarse intervals so a thin lit rim resolves
+        // as a smooth surface instead of alternating light and dark pixels.
+        if (interval_length > 14.0 && density < 0.68) {
+            let across = eye + dir * (middle - offset);
+            density = 0.5 * (density + cloud_density(across, select(1u, 2u, detailed)));
+        }
+        density *= open_near_camera;
         if (density < 0.004) {
             continue;
         }
