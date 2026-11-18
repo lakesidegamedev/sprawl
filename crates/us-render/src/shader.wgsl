@@ -5,7 +5,7 @@ struct Globals {
     light_vp: mat4x4<f32>,
     sun: vec4<f32>,    // xyz toward the sun, w shadow texel size in metres
     ink: vec4<f32>,    // rgb ink colour, a ink width in pixels (1 or 2)
-    shade: vec4<f32>,  // x multiplier for a shadowed face, y shadow depth bias
+    shade: vec4<f32>,  // x multiplier for a shadowed face, y shadow depth bias, z seasonal blend, w overcast
     screen: vec4<f32>, // width, height of the main targets
     tone: vec4<f32>,   // rgb flat tint of the whole picture, a share of lit windows
     look: vec4<f32>,   // x season (1 autumn, 2 spring, 3 summer), y snow, z map view (desaturate), w share of lamps and vehicle lights on (0 to 1)
@@ -533,6 +533,77 @@ fn window_lit(id: u32, shop: bool) -> bool {
     return f32(hash_u(id) % 1000u) < share * 1000.0;
 }
 
+// Surface studies in world metres. Filter the grain and seams against the pixel footprint.
+fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, px: f32, cel: bool, object: bool) -> vec3<f32> {
+    let w = world.xy;
+    let aggregate = 1.0 - smoothstep(0.09, 0.28, px);
+    if (near(base, 108.0, 108.0, 120.0)) {
+        let repair = vnoise(w * 0.34);
+        let dust = vnoise(w * 0.95 + vec2<f32>(19.0, 7.0));
+        let specks = hash2(vec2<i32>(floor(w * 7.0))) - 0.5;
+        var paved = col * vec3<f32>(0.87, 0.89, 0.90)
+            * (0.89 + 0.17 * repair + 0.13 * dust + 0.20 * specks * aggregate);
+        if (g.wx.y > 0.05) {
+            let pool = vnoise(w * 0.54) * 0.7 + vnoise(w * 1.32) * 0.3;
+            let puddle = smoothstep(0.77 - 0.15 * g.wx.y, 0.84 - 0.15 * g.wx.y, pool) * g.wx.y;
+            let broken_sky = mix(vec3<f32>(0.46, 0.54, 0.57), vec3<f32>(0.35, 0.42, 0.48), g.shade.w);
+            paved = mix(paved, broken_sky, puddle * (0.42 + 0.16 * dust));
+        }
+        return paved;
+    }
+    if (near(base, 194.0, 190.0, 182.0) || near(base, 206.0, 202.0, 194.0)) {
+        let cell = w / vec2<f32>(1.8, 0.95);
+        let in_tile = fract(cell);
+        let seam = 1.0 - smoothstep(0.01, 0.10,
+            min(min(in_tile.x, 1.0 - in_tile.x), min(in_tile.y, 1.0 - in_tile.y)));
+        let variation = hash2(vec2<i32>(floor(cell))) - 0.5;
+        let fade = 1.0 - smoothstep(0.2, 0.62, px);
+        let stone = vec3<f32>(0.76, 0.73, 0.68) * (1.0 - 0.22 * g.wx.y);
+        return stone * (0.97 + 0.08 * vnoise(w * 0.32) + fade * (0.11 * variation - 0.22 * seam));
+    }
+    if (near(base, 128.0, 104.0, 84.0) || near(base, 198.0, 194.0, 186.0)) {
+        let grains = hash2(vec2<i32>(floor(w * 6.0)));
+        return col * (0.92 + 0.14 * vnoise(w * 1.2) + (grains - 0.5) * 0.24 * aggregate);
+    }
+    if (!object || !cel || px > 0.49) {
+        return col;
+    }
+    let fade = 1.0 - smoothstep(0.15, 0.49, px);
+    if (abs(normal.z) < 0.08 && base.r - base.g > 0.11 && base.g - base.b > 0.03
+        && base.r < 0.83 && base.g < 0.65) {
+        let along = dot(w, vec2<f32>(-normal.y, normal.x));
+        let course = world.z / 0.42;
+        let block = along / 0.86 + 0.5 * (floor(course) % 2.0);
+        let edge = min(min(fract(course), 1.0 - fract(course)), min(fract(block), 1.0 - fract(block)));
+        let mortar = 1.0 - smoothstep(0.02, 0.13, edge);
+        let kiln = hash2(vec2<i32>(i32(floor(block)), i32(floor(course))));
+        return mix(col * (1.0 + (kiln - 0.5) * 0.23 * fade), vec3<f32>(0.64, 0.59, 0.52), mortar * fade * 0.4);
+    }
+    if (normal.z > 0.42 && normal.z < 0.94 && !is_green(base)) {
+        let run = normalize(normal.xy);
+        let row = dot(w, run) / 0.52;
+        let seam = 1.0 - smoothstep(0.0, 0.16, fract(row));
+        let tile = vec2<i32>(i32(floor(dot(w, vec2<f32>(-run.y, run.x)) * 1.8 + 0.5 * floor(row))), i32(floor(row)));
+        return col * (1.0 + fade * ((hash2(tile) - 0.5) * 0.22 - seam * 0.24));
+    }
+    return col;
+}
+
+fn previous_season(season: i32) -> i32 {
+    switch (season) {
+        case 0: { return 1; }
+        case 1: { return 3; }
+        case 2: { return 0; }
+        default: { return 2; }
+    }
+}
+
+fn leaf_palette(base: vec3<f32>, step: i32, dark: bool, season: i32) -> vec3<f32> {
+    if (season == 1) { return autumn_leaf(step, dark); }
+    if (season == 0) { return base; }
+    return season_leaf(step, dark, season);
+}
+
 @fragment
 fn fs_main(v: VOut) -> FOut {
     var n = normalize(v.normal);
@@ -639,19 +710,20 @@ fn fs_main(v: VOut) -> FOut {
         emissive = true;
     }
     if (g.look.z < 0.5) {
-        // seasonal ground and leaves
-        if (ground && season > 0 && is_green(col)) {
-            col = season_ground(col, season);
+        // Seasonal palettes ease from the previous season.
+        let previous = previous_season(season);
+        if (ground && is_green(col)) {
+            col = mix(season_ground(col, previous), season_ground(col, season), g.shade.z);
         }
-        if (season > 0 && cel) {
+        if (cel) {
             let s1 = leaf_step(col, 88.0, 150.0, 76.0);
             let s2 = leaf_step(col, 70.0, 128.0, 66.0);
-            if (season == 1) {
-                if (s1 >= 0) { col = autumn_leaf(s1, false); }
-                if (s2 >= 0) { col = autumn_leaf(s2, true); }
-            } else {
-                if (s1 >= 0) { col = season_leaf(s1, false, season); }
-                if (s2 >= 0) { col = season_leaf(s2, true, season); }
+            if (s1 >= 0 || s2 >= 0) {
+                let step = max(s1, s2);
+                let dark = s2 >= 0;
+                col = mix(leaf_palette(col, step, dark, previous), leaf_palette(col, step, dark, season), g.shade.z);
+                let foliage = vnoise(v.world.xy * 0.95 + v.world.z * 0.63);
+                col = col * (0.86 + foliage * 0.29);
             }
         }
         // lit windows and headlights
@@ -715,6 +787,9 @@ fn fs_main(v: VOut) -> FOut {
     } else if (gkind > 0) {
         let snowy = min(col.r, min(col.g, col.b)) > 0.88;
         col = ground_detail(col, v.color.rgb, gkind, v.world.xy, v.dist, snowy, season);
+    }
+    if (!emissive && g.look.z < 0.5 && v.tint == 0u && wkind == 0) {
+        col = textured_surface(col, v.color.rgb, v.world, n, g.screen.z * v.dist, cel, !ground && !exempt);
     }
     var k = 1.0;
     if (cel && ground) {
@@ -862,7 +937,8 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
             }
         }
         if (ink) {
-            acc = acc + g.ink.rgb;
+            let face = textureLoad(colour_tex, p, s).rgb;
+            acc = acc + mix(g.ink.rgb, face, 0.28);
         } else {
             acc = acc + textureLoad(colour_tex, p, s).rgb * ao;
         }

@@ -45,8 +45,50 @@ pub const CAR_COLS: [Rgb; 6] = [
 pub fn tree(r: f32, h: f32, col: Rgb) -> Obj {
     let mut o = Obj::new();
     o.bx(-0.25, -0.25, 0.0, 0.25, 0.25, h * 0.35, [110, 80, 56]);
-    o.prism(0.0, 0.0, h * 0.3, h * 0.75, r, col, 6, None);
-    o.pyramid(0.0, 0.0, h * 0.75, r, h * 0.3, col, 6, 0.0);
+    // Prototype crown: tapered, uneven rings keep the low-poly silhouette without boxy sides.
+    const SIDES: usize = 8;
+    let rings = [
+        (0.27, 0.48),
+        (0.47, 0.96),
+        (0.68, 1.0),
+        (0.87, 0.69),
+        (0.99, 0.27),
+    ];
+    let point = |level: usize, side: usize| {
+        let (height, spread) = rings[level];
+        let angle = std::f32::consts::TAU * (side % SIDES) as f32 / SIDES as f32;
+        let shape = 1.0 + 0.14 * libm::sinf(3.0 * angle + 0.6 * level as f32 + r);
+        let z = h * (height + 0.035 * libm::sinf(angle * 2.0 + r));
+        [
+            r * spread * shape * libm::cosf(angle),
+            r * spread * shape * libm::sinf(angle),
+            z,
+        ]
+    };
+    for side in 0..SIDES {
+        for level in 0..rings.len() - 1 {
+            let a = point(level, side);
+            let b = point(level, side + 1);
+            let c = point(level + 1, side + 1);
+            let d = point(level + 1, side);
+            o.poly(&[a, b, c], col, true, false, false);
+            o.poly(&[a, c, d], col, true, false, false);
+        }
+        o.poly(
+            &[point(4, side), point(4, side + 1), [0.0, 0.0, h * 1.06]],
+            col,
+            true,
+            false,
+            false,
+        );
+        o.poly(
+            &[point(0, side + 1), point(0, side), [0.0, 0.0, h * 0.22]],
+            col,
+            true,
+            false,
+            false,
+        );
+    }
     // fallen leaves: a flat triangle on the ground that only shows in autumn (the shader reads
     // the blue channel as the tree's colour step)
     let step = col[2]

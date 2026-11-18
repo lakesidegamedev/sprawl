@@ -537,8 +537,13 @@ pub fn add_roads_with(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt], context: 
     for r in roads {
         if r.class == RoadClass::Rail {
             g.ribbon(r.points, 2.6, 0.0, layer::RAIL, BALLAST);
-            g.ribbon(r.points, 0.2, 0.9, layer::RAIL + 0.06, STEEL);
-            g.ribbon(r.points, 0.2, -0.9, layer::RAIL + 0.06, STEEL);
+            for tie in crate::roadpaint::dashes(r.points, 0.27, 0.47) {
+                g.ribbon(&tie, 1.55, 0.0, layer::RAIL + 0.04, [83, 69, 58]);
+            }
+            g.ribbon(r.points, 0.12, 0.9, layer::RAIL + 0.08, STEEL);
+            g.ribbon(r.points, 0.04, 0.9, layer::RAIL + 0.09, [160, 160, 165]);
+            g.ribbon(r.points, 0.12, -0.9, layer::RAIL + 0.08, STEEL);
+            g.ribbon(r.points, 0.04, -0.9, layer::RAIL + 0.09, [160, 160, 165]);
         }
     }
 }
