@@ -36,6 +36,8 @@ pub struct Style {
     pub shadow_tone: f32,
     /// Draw chunks that are small on screen in their simpler far form (no ink, no small parts).
     pub lod: bool,
+    /// Scale of world render targets on window surfaces. The UI stays native.
+    pub window_world_scale: f32,
 }
 
 /// A chunk uses its far form when one metre of it spans less than this share of the frame height
@@ -56,6 +58,7 @@ impl Default for Style {
             ink: [28, 30, 38],
             shadow_tone: 0.72,
             lod: true,
+            window_world_scale: 1.0,
         }
     }
 }
@@ -192,6 +195,8 @@ struct Globals {
     terrain: [f32; 4],
     /// Lower tile coordinate and strength of local night lighting.
     local_lights: [f32; 4],
+    /// Conversion from native surface pixels to world texture pixels.
+    resolve: [f32; 4],
     sun: [f32; 4],
     ink: [f32; 4],
     shade: [f32; 4],
@@ -237,13 +242,17 @@ struct Targets {
     colour: wgpu::TextureView,
     aux: wgpu::TextureView,
     depth: wgpu::TextureView,
-    out: wgpu::Texture,
-    out_view: wgpu::TextureView,
-    readback: wgpu::Buffer,
-    padded: u32,
+    readback: Option<Readback>,
     edge_group: wgpu::BindGroup,
     fog_view: wgpu::TextureView,
     fog_composite: wgpu::BindGroup,
+}
+
+struct Readback {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    buffer: wgpu::Buffer,
+    padded: u32,
 }
 
 struct ShadowMap {
@@ -1090,8 +1099,12 @@ impl Renderer {
         });
     }
 
-    fn ensure_targets(&mut self, w: u32, h: u32, out_format: wgpu::TextureFormat) {
-        if self.targets.as_ref().is_some_and(|t| t.w == w && t.h == h) {
+    fn ensure_targets(&mut self, w: u32, h: u32, capture: bool) {
+        if self
+            .targets
+            .as_ref()
+            .is_some_and(|t| t.w == w && t.h == h && t.readback.is_some() == capture)
+        {
             return;
         }
         self.targets = None;
@@ -1123,18 +1136,26 @@ impl Renderer {
             msaa,
         )
         .create_view(&Default::default());
-        let out = make(
-            "out",
-            out_format,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        );
-        let out_view = out.create_view(&Default::default());
-        let padded = (w * 4).div_ceil(256) * 256;
-        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("readback"),
-            size: padded as u64 * h as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
+        let readback = capture.then(|| {
+            let texture = make(
+                "out",
+                COLOUR_FORMAT,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            );
+            let view = texture.create_view(&Default::default());
+            let padded = (w * 4).div_ceil(256) * 256;
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("readback"),
+                size: padded as u64 * h as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            Readback {
+                texture,
+                view,
+                buffer,
+                padded,
+            }
         });
         let edge_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("edge inputs"),
@@ -1181,10 +1202,7 @@ impl Renderer {
             colour,
             aux,
             depth,
-            out,
-            out_view,
             readback,
-            padded,
             edge_group,
             fog_view,
             fog_composite,
@@ -1211,8 +1229,16 @@ impl Renderer {
         let t0 = Instant::now();
         self.ensure_scene(scene);
         stats.upload = t0.elapsed();
-        self.ensure_targets(rw, rh, COLOUR_FORMAT);
-        let out_view = self.targets.as_ref().unwrap().out_view.clone();
+        self.ensure_targets(rw, rh, true);
+        let out_view = self
+            .targets
+            .as_ref()
+            .unwrap()
+            .readback
+            .as_ref()
+            .unwrap()
+            .view
+            .clone();
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.draw_frame(
             &mut enc,
@@ -1221,23 +1247,24 @@ impl Renderer {
             style,
             rw,
             rh,
+            [rw, rh],
             &out_view,
             COLOUR_FORMAT,
             &mut stats,
         );
-        let tg = self.targets.as_ref().unwrap();
+        let readback = self.targets.as_ref().unwrap().readback.as_ref().unwrap();
         enc.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &tg.out,
+                texture: &readback.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
-                buffer: &tg.readback,
+                buffer: &readback.buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(tg.padded),
+                    bytes_per_row: Some(readback.padded),
                     rows_per_image: Some(rh),
                 },
             },
@@ -1249,7 +1276,7 @@ impl Renderer {
         );
         let t1 = Instant::now();
         self.queue.submit([enc.finish()]);
-        let slice = tg.readback.slice(..);
+        let slice = readback.buffer.slice(..);
         slice.map_async(wgpu::MapMode::Read, |r| r.expect("map readback"));
         self.device
             .poll(wgpu::PollType::wait_indefinitely())
@@ -1262,7 +1289,7 @@ impl Renderer {
             for x in 0..width {
                 let mut acc = [0u32; 3];
                 for sy in 0..ss {
-                    let row = &data[((y * ss + sy) * tg.padded) as usize..];
+                    let row = &data[((y * ss + sy) * readback.padded) as usize..];
                     for sx in 0..ss {
                         let s = ((x * ss + sx) * 4) as usize;
                         acc[0] += row[s] as u32;
@@ -1277,7 +1304,7 @@ impl Renderer {
             }
         }
         drop(data);
-        tg.readback.unmap();
+        readback.buffer.unmap();
         stats.total = t_all.elapsed();
         Frame {
             width,
@@ -1348,7 +1375,8 @@ impl Renderer {
             ..Default::default()
         };
         self.ensure_scene(scene);
-        self.ensure_targets(width, height, format);
+        let (rw, rh) = world_render_size(width, height, style.window_world_scale);
+        self.ensure_targets(rw, rh, false);
         let view = frame.texture.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
         let one = Style {
@@ -1356,7 +1384,16 @@ impl Renderer {
             ..style.clone()
         };
         self.draw_frame(
-            &mut enc, scene, camera, &one, width, height, &view, format, &mut stats,
+            &mut enc,
+            scene,
+            camera,
+            &one,
+            rw,
+            rh,
+            [width, height],
+            &view,
+            format,
+            &mut stats,
         );
         overlay(&self.device, &self.queue, &mut enc, &view);
         self.queue.submit([enc.finish()]);
@@ -1374,11 +1411,12 @@ impl Renderer {
         style: &Style,
         rw: u32,
         rh: u32,
+        present: [u32; 2],
         final_view: &wgpu::TextureView,
         final_format: wgpu::TextureFormat,
         stats: &mut FrameStats,
     ) {
-        let aspect = rw as f32 / rh as f32;
+        let aspect = present[0] as f32 / present[1] as f32;
         let view = camera.view(aspect);
         use crate::calendar::Season;
         let cal = scene.calendar;
@@ -1492,6 +1530,12 @@ impl Renderer {
                 (land.n() as f32).recip(),
             ],
             local_lights: [origin[0], origin[1], night_lighting, 0.0],
+            resolve: [
+                rw as f32 / present[0] as f32,
+                rh as f32 / present[1] as f32,
+                0.0,
+                0.0,
+            ],
             sun: [sun.x, sun.y, sun.z, texel],
             ink: [
                 style.ink[0] as f32 / 255.0,
@@ -1906,6 +1950,18 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
     }
+}
+
+fn world_render_size(width: u32, height: u32, scale: f32) -> (u32, u32) {
+    let scale = if scale.is_finite() {
+        scale.clamp(0.5, 1.0)
+    } else {
+        1.0
+    };
+    (
+        (width as f32 * scale).round().max(1.0) as u32,
+        (height as f32 * scale).round().max(1.0) as u32,
+    )
 }
 
 fn light_extent() -> wgpu::Extent3d {
