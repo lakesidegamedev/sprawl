@@ -2,6 +2,7 @@
 //! the peak hour trips and picks road upgrades and connectors (`us-grow`). The result is applied
 //! on a fixed later day, so the outcome is the same however long the thread takes.
 
+use crate::save::{LoadError, R, Res, W};
 use crate::*;
 use std::thread::JoinHandle;
 use us_gen::{Lot, Road};
@@ -20,6 +21,15 @@ const CELL: f64 = 30.0;
 /// where everyone drives.
 const TRAFFIC_SCALE: f64 = 2.5;
 
+/// The last assignment's busiest approach in a direction of a road run.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TrafficApproach {
+    pub rate: f32,
+    pub capacity: f32,
+    /// Distance from the run's first point as a fraction of its length.
+    pub stop: f32,
+}
+
 /// What the last traffic run found on one road run.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RoadTraffic {
@@ -27,9 +37,25 @@ pub struct RoadTraffic {
     pub volume: f32,
     /// Volume over capacity at the equilibrium.
     pub vc: f32,
+    /// Forward and reverse approaches, in that order.
+    pub approaches: [TrafficApproach; 2],
 }
 
 impl RoadTraffic {
+    /// Old saves contain total flow only. Split it evenly until the next assignment.
+    pub fn directions_for(self, class: RoadClass) -> [TrafficApproach; 2] {
+        if self.volume <= 0.0 || self.approaches.iter().any(|a| a.capacity > 0.0) {
+            return self.approaches;
+        }
+        let mut fallback = [TrafficApproach {
+            rate: (self.volume * 0.5).max(0.0),
+            capacity: us_traffic::class_capacity(class) as f32,
+            stop: 0.0,
+        }; 2];
+        fallback[0].stop = 1.0;
+        fallback
+    }
+
     /// 0 (empty) to 1 (jammed): volume over capacity, capped at 1.5, scaled.
     pub fn congestion(&self) -> f32 {
         self.vc.clamp(0.0, 1.5) / 1.5
@@ -102,6 +128,29 @@ impl Sim {
     /// Result of the latest traffic run, one entry per `road_runs()` entry (zeros before the first).
     pub fn road_traffic(&self) -> &[RoadTraffic] {
         &self.run_traffic
+    }
+
+    pub(crate) fn save_traffic_approaches(&self, w: &mut W) {
+        put_approaches(w, &self.run_traffic);
+        if let Some(Pending {
+            work: Work::Ready(done),
+            ..
+        }) = &self.pending
+        {
+            put_approaches(w, &done.run_traffic);
+        }
+    }
+
+    pub(crate) fn load_traffic_approaches(&mut self, r: &mut R<'_>) -> Res<()> {
+        get_approaches(r, &mut self.run_traffic)?;
+        if let Some(Pending {
+            work: Work::Ready(done),
+            ..
+        }) = &mut self.pending
+        {
+            get_approaches(r, &mut done.run_traffic)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn step_traffic(&mut self) {
@@ -435,6 +484,68 @@ impl Sim {
     }
 }
 
+fn put_approaches(w: &mut W, roads: &[RoadTraffic]) {
+    w.usize(roads.len());
+    for road in roads {
+        for a in road.approaches {
+            w.f32(a.rate);
+            w.f32(a.capacity);
+            w.f32(a.stop);
+        }
+    }
+}
+
+fn get_approaches(r: &mut R<'_>, roads: &mut [RoadTraffic]) -> Res<()> {
+    if r.len(24)? != roads.len() {
+        return Err(LoadError::Invalid("traffic approaches"));
+    }
+    for road in roads {
+        for a in &mut road.approaches {
+            let rate = r.f32()?;
+            let capacity = r.f32()?;
+            let stop = r.f32()?;
+            if !rate.is_finite()
+                || rate < 0.0
+                || !capacity.is_finite()
+                || capacity < 0.0
+                || !(0.0..=1.0).contains(&stop)
+            {
+                return Err(LoadError::Invalid("traffic approach"));
+            }
+            *a = TrafficApproach {
+                rate,
+                capacity,
+                stop,
+            };
+        }
+    }
+    Ok(())
+}
+
+/// Project a junction onto a rendered run, respecting bent and subdivided roads.
+fn distance_fraction(line: &[Pt], junction: Pt) -> f32 {
+    let (mut length, mut nearest, mut distance) = (0.0, f64::INFINITY, 0.0);
+    for pair in line.windows(2) {
+        let delta = pair[1] - pair[0];
+        let segment = pair[0].dist(pair[1]);
+        if segment < 1e-8 {
+            continue;
+        }
+        let t = ((junction - pair[0]).dot(delta) / delta.dot(delta)).clamp(0.0, 1.0);
+        let gap = junction.dist(pair[0] + delta * t);
+        if gap < nearest {
+            nearest = gap;
+            distance = length + segment * t;
+        }
+        length += segment;
+    }
+    if length > 0.0 {
+        (distance / length) as f32
+    } else {
+        0.0
+    }
+}
+
 /// The worker: assign traffic, choose changes, map the results onto the road runs.
 fn run_traffic(town: Town, runs: Vec<(RoadClass, Vec<Pt>)>, visible: Vec<bool>) -> Done {
     let p = grow_params();
@@ -448,21 +559,38 @@ fn run_traffic(town: Town, runs: Vec<(RoadClass, Vec<Pt>)>, visible: Vec<bool>) 
         let vol = plan.eval.assignment.edge_volume[i];
         wsum += e.len * (vc.clamp(0.0, 1.5) / 1.5);
         lsum += e.len;
-        let mid = e.pts[e.pts.len() / 2];
-        let mut best: Option<(f64, usize)> = None;
+        let k = (e.pts.len() - 1) / 2;
+        let mid = e.pts[k].lerp(e.pts[k + 1], 0.5);
+        let tangent = (e.pts[k + 1] - e.pts[k]).unit();
+        let mut best: Option<(f64, usize, bool)> = None;
         for (r, s) in grid.near(mid, mid, 3.0) {
             let (r, s) = (r as usize, s as usize);
             if !visible[r] || matches!(runs[r].0, RoadClass::Rail | RoadClass::Alley) {
                 continue;
             }
             let d = dist_pt_seg(mid, runs[r].1[s], runs[r].1[s + 1]);
-            if d <= 3.0 && best.is_none_or(|b| d < b.0) {
-                best = Some((d, r));
+            let alignment = tangent.dot((runs[r].1[s + 1] - runs[r].1[s]).unit());
+            let score = d + 2.0 * (1.0 - alignment.abs());
+            if d <= 3.0 && alignment.abs() > 0.65 && best.is_none_or(|b| score < b.0) {
+                best = Some((score, r, alignment < 0.0));
             }
         }
-        if let Some((_, r)) = best {
+        if let Some((_, r, reversed)) = best {
             rt[r].vc = rt[r].vc.max(vc as f32);
             rt[r].volume = rt[r].volume.max(vol as f32);
+            for j in 0..2 {
+                let arc = &plan.eval.net.arcs[2 * i + j];
+                let candidate = plan.eval.assignment.arc_flow[2 * i + j] as f32;
+                let a = &mut rt[r].approaches[j ^ usize::from(reversed)];
+                if a.capacity == 0.0 || candidate > a.rate {
+                    let stop = plan.eval.net.streets.nodes[arc.to as usize];
+                    *a = TrafficApproach {
+                        rate: candidate,
+                        capacity: arc.cap as f32,
+                        stop: distance_fraction(&runs[r].1, stop),
+                    };
+                }
+            }
         }
     }
     let mut ops = Vec::new();
@@ -503,5 +631,47 @@ fn run_traffic(town: Town, runs: Vec<(RoadClass, Vec<Pt>)>, visible: Vec<bool>) 
             0.0
         },
         ops,
+    }
+}
+
+#[cfg(test)]
+mod approach_tests {
+    use super::*;
+
+    #[test]
+    fn current_and_pending_directions_survive_save_load() {
+        let town = us_gen::generate(us_gen::Preset::Grid, 13);
+        let mut sim = Sim::new(&town, town.hall, 13);
+        let old = RoadTraffic {
+            volume: 480.0,
+            ..RoadTraffic::default()
+        };
+        let fallback = old.directions_for(RoadClass::Local);
+        assert_eq!([fallback[0].stop, fallback[1].stop], [1.0, 0.0]);
+        assert_eq!([fallback[0].rate, fallback[1].rate], [240.0, 240.0]);
+        let approach = |rate| TrafficApproach {
+            rate,
+            capacity: 600.0,
+            stop: 0.72,
+        };
+        sim.run_traffic[0].approaches[0] = approach(830.0);
+        let mut next = sim.run_traffic.clone();
+        next[0].approaches[0] = approach(1280.0);
+        sim.pending = Some(Pending {
+            work: Work::Ready(Done {
+                run_traffic: next.clone(),
+                avg_cong: 0.2,
+                ops: Vec::new(),
+            }),
+            join_day: 61,
+            lot_map: Vec::new(),
+        });
+        let loaded = Sim::load(&sim.save()).expect("load saved traffic");
+        assert_eq!(loaded.road_traffic(), sim.road_traffic());
+        let pending = loaded.pending.expect("pending traffic snapshot");
+        let Work::Ready(done) = pending.work else {
+            panic!("saved assignment should be ready")
+        };
+        assert_eq!(done.run_traffic, next);
     }
 }

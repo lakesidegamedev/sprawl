@@ -5,11 +5,12 @@ struct Globals {
     light_vp: mat4x4<f32>,
     sun: vec4<f32>,    // xyz toward the sun, w shadow texel size in metres
     ink: vec4<f32>,    // rgb ink colour, a ink width in pixels (1 or 2)
-    shade: vec4<f32>,  // x multiplier for a shadowed face, y shadow depth bias
+    shade: vec4<f32>,  // x multiplier for a shadowed face, y shadow depth bias, z seasonal blend, w overcast
     screen: vec4<f32>, // width, height of the main targets
     tone: vec4<f32>,   // rgb flat tint of the whole picture, a share of lit windows
     look: vec4<f32>,   // x season (1 autumn, 2 spring, 3 summer), y snow, z map view (desaturate), w share of lamps and vehicle lights on (0 to 1)
     wx: vec4<f32>,     // x snow cover 0 to 1, y wet ground, zw wind (east, north) in m/s
+    precipitation: vec4<f32>, // x rainfall intensity
     rock: array<vec4<f32>, 8>, // rows 0 to 3 strata colours, 4 talus, 5 (snow line, tree line, band height, on), 6 (snow rgb, winter drop)
 };
 
@@ -272,7 +273,15 @@ fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist:
         } else if (broad < 0.4) {
             c = c * vec3<f32>(0.9, 0.97, 1.0);
         }
-        c = c * k;
+        let footprint = g.screen.z * dist;
+        let grass_detail = 1.0 - smoothstep(0.28, 0.85, footprint);
+        let clover = vnoise(w * 1.62 + vec2<f32>(11.0, 17.0));
+        let meadow = vnoise(w / 6.0);
+        c = c * (k + (clover - 0.5) * 0.26 * grass_detail + (meadow - 0.5) * 0.14);
+        let stems = 1.0 - smoothstep(0.10, 0.32, footprint);
+        if (stems > 0.0 && tuft(w, 0.74, 23) > 0.5) {
+            c = mix(c, c * vec3<f32>(0.81, 0.94, 0.79), stems);
+        }
         if (near_d) {
             let tf = tuft(w, 1.5, 1);
             if (tf > 0.5) {
@@ -533,6 +542,87 @@ fn window_lit(id: u32, shop: bool) -> bool {
     return f32(hash_u(id) % 1000u) < share * 1000.0;
 }
 
+// Surface studies in world metres. Filter the grain and seams against the pixel footprint.
+fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, px: f32, cel: bool, object: bool) -> vec3<f32> {
+    let w = world.xy;
+    let aggregate = 1.0 - smoothstep(0.09, 0.28, px);
+    if (near(base, 108.0, 108.0, 120.0)) {
+        let repair = vnoise(w * 0.34);
+        let dust = vnoise(w * 0.95 + vec2<f32>(19.0, 7.0));
+        let specks = hash2(vec2<i32>(floor(w * 7.0))) - 0.5;
+        var paved = col * vec3<f32>(0.87, 0.89, 0.90)
+            * (0.89 + 0.17 * repair + 0.13 * dust + 0.20 * specks * aggregate);
+        if (g.wx.y > 0.05) {
+            let pool = vnoise(w * 0.54) * 0.7 + vnoise(w * 1.32) * 0.3;
+            let puddle = smoothstep(0.77 - 0.15 * g.wx.y, 0.84 - 0.15 * g.wx.y, pool) * g.wx.y;
+            let broken_sky = mix(vec3<f32>(0.46, 0.54, 0.57), vec3<f32>(0.35, 0.42, 0.48), g.shade.w);
+            let fine = w * 1.9;
+            let tile = vec2<i32>(floor(fine));
+            let offset = vec2<f32>(hash2(tile), hash2(tile + vec2<i32>(17, 31))) * 0.5 + 0.25;
+            let life = fract(g.screen.w * 1.65 + hash2(tile + vec2<i32>(31, 7)));
+            let radius = length(fract(fine) - offset);
+            let ring = 1.0 - smoothstep(0.025, 0.105, abs(radius - (0.06 + 0.38 * life)));
+            let ripple = ring * (1.0 - life) * g.precipitation.x;
+            paved = mix(paved, broken_sky * (1.0 + ripple * 0.47), puddle * (0.50 + 0.16 * dust));
+        }
+        return paved;
+    }
+    if (near(base, 194.0, 190.0, 182.0) || near(base, 206.0, 202.0, 194.0)) {
+        let cell = w / vec2<f32>(1.8, 0.95);
+        let in_tile = fract(cell);
+        let seam = 1.0 - smoothstep(0.01, 0.10,
+            min(min(in_tile.x, 1.0 - in_tile.x), min(in_tile.y, 1.0 - in_tile.y)));
+        let variation = hash2(vec2<i32>(floor(cell))) - 0.5;
+        let fade = 1.0 - smoothstep(0.2, 0.62, px);
+        let stone = vec3<f32>(0.76, 0.73, 0.68) * (1.0 - 0.22 * g.wx.y);
+        return stone * (0.97 + 0.08 * vnoise(w * 0.32) + fade * (0.11 * variation - 0.22 * seam));
+    }
+    if (near(base, 128.0, 104.0, 84.0) || near(base, 198.0, 194.0, 186.0)) {
+        let grains = hash2(vec2<i32>(floor(w * 6.0)));
+        return col * (0.92 + 0.14 * vnoise(w * 1.2) + (grains - 0.5) * 0.24 * aggregate);
+    }
+    if (near(base, 83.0, 69.0, 58.0)) {
+        return col * (0.89 + 0.22 * vnoise(w * vec2<f32>(5.0, 1.4)));
+    }
+    if (!object || !cel || px > 0.49) {
+        return col;
+    }
+    let fade = 1.0 - smoothstep(0.15, 0.49, px);
+    if (abs(normal.z) < 0.08 && base.r - base.g > 0.11 && base.g - base.b > 0.03
+        && base.r < 0.83 && base.g < 0.65) {
+        let along = dot(w, vec2<f32>(-normal.y, normal.x));
+        let course = world.z / 0.42;
+        let block = along / 0.86 + 0.5 * (floor(course) % 2.0);
+        let edge = min(min(fract(course), 1.0 - fract(course)), min(fract(block), 1.0 - fract(block)));
+        let mortar = 1.0 - smoothstep(0.02, 0.13, edge);
+        let kiln = hash2(vec2<i32>(i32(floor(block)), i32(floor(course))));
+        return mix(col * (1.0 + (kiln - 0.5) * 0.23 * fade), vec3<f32>(0.64, 0.59, 0.52), mortar * fade * 0.4);
+    }
+    if (normal.z > 0.42 && normal.z < 0.94 && !is_green(base)) {
+        let run = normalize(normal.xy);
+        let row = dot(w, run) / 0.52;
+        let seam = 1.0 - smoothstep(0.0, 0.16, fract(row));
+        let tile = vec2<i32>(i32(floor(dot(w, vec2<f32>(-run.y, run.x)) * 1.8 + 0.5 * floor(row))), i32(floor(row)));
+        return col * (1.0 + fade * ((hash2(tile) - 0.5) * 0.22 - seam * 0.24));
+    }
+    return col;
+}
+
+fn previous_season(season: i32) -> i32 {
+    switch (season) {
+        case 0: { return 1; }
+        case 1: { return 3; }
+        case 2: { return 0; }
+        default: { return 2; }
+    }
+}
+
+fn leaf_palette(base: vec3<f32>, step: i32, dark: bool, season: i32) -> vec3<f32> {
+    if (season == 1) { return autumn_leaf(step, dark); }
+    if (season == 0) { return base; }
+    return season_leaf(step, dark, season);
+}
+
 @fragment
 fn fs_main(v: VOut) -> FOut {
     var n = normalize(v.normal);
@@ -585,11 +675,18 @@ fn fs_main(v: VOut) -> FOut {
     }
     let pstep = patch_step(col);
     if (pstep >= 0) {
-        if (season == 1 && g.look.z < 0.5 && g.look.y < 0.5) {
-            col = autumn_leaf(pstep, pstep >= 2) * 0.94;
-        } else {
+        let litter = select(0.0, g.shade.z, season == 1);
+        let tile = v.world.xy / 0.22;
+        let cell = vec2<i32>(floor(tile));
+        let chance = hash2(cell);
+        let tilt = hash2(cell + vec2<i32>(17, -3)) - 0.5;
+        let d = fract(tile) - vec2<f32>(0.5);
+        let leaf = vec2<f32>(d.x + tilt * d.y, d.y - tilt * d.x);
+        if (g.look.z > 0.5 || g.look.y > 0.5 || v.dist * g.screen.z > 0.45
+            || chance > 0.70 * litter || abs(leaf.x) * 1.3 + abs(leaf.y) > 0.45) {
             discard;
         }
+        col = autumn_leaf(pstep, pstep >= 2) * (0.70 + 0.21 * chance);
     }
     var is_cover = false;
     if (cel && !ground) {
@@ -639,19 +736,20 @@ fn fs_main(v: VOut) -> FOut {
         emissive = true;
     }
     if (g.look.z < 0.5) {
-        // seasonal ground and leaves
-        if (ground && season > 0 && is_green(col)) {
-            col = season_ground(col, season);
+        // Seasonal palettes ease from the previous season.
+        let previous = previous_season(season);
+        if (ground && is_green(col)) {
+            col = mix(season_ground(col, previous), season_ground(col, season), g.shade.z);
         }
-        if (season > 0 && cel) {
+        if (cel) {
             let s1 = leaf_step(col, 88.0, 150.0, 76.0);
             let s2 = leaf_step(col, 70.0, 128.0, 66.0);
-            if (season == 1) {
-                if (s1 >= 0) { col = autumn_leaf(s1, false); }
-                if (s2 >= 0) { col = autumn_leaf(s2, true); }
-            } else {
-                if (s1 >= 0) { col = season_leaf(s1, false, season); }
-                if (s2 >= 0) { col = season_leaf(s2, true, season); }
+            if (s1 >= 0 || s2 >= 0) {
+                let step = max(s1, s2);
+                let dark = s2 >= 0;
+                col = mix(leaf_palette(col, step, dark, previous), leaf_palette(col, step, dark, season), g.shade.z);
+                let foliage = vnoise(v.world.xy * 0.95 + v.world.z * 0.63);
+                col = col * (0.86 + foliage * 0.29);
             }
         }
         // lit windows and headlights
@@ -715,6 +813,9 @@ fn fs_main(v: VOut) -> FOut {
     } else if (gkind > 0) {
         let snowy = min(col.r, min(col.g, col.b)) > 0.88;
         col = ground_detail(col, v.color.rgb, gkind, v.world.xy, v.dist, snowy, season);
+    }
+    if (!emissive && g.look.z < 0.5 && v.tint == 0u && wkind == 0) {
+        col = textured_surface(col, v.color.rgb, v.world, n, g.screen.z * v.dist, cel, !ground && !exempt);
     }
     var k = 1.0;
     if (cel && ground) {
@@ -862,10 +963,26 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
             }
         }
         if (ink) {
-            acc = acc + g.ink.rgb;
+            let face = textureLoad(colour_tex, p, s).rgb;
+            acc = acc + mix(g.ink.rgb, face, 0.28);
         } else {
             acc = acc + textureLoad(colour_tex, p, s).rgb * ao;
         }
     }
-    return vec4<f32>(acc / f32(SAMPLE_COUNT), 1.0);
+    var col = acc / f32(SAMPLE_COUNT);
+    if (g.precipitation.x > 0.01 && g.look.z < 0.5) {
+        // Advect a sparse field of short streaks. Scale with screen height for portrait views.
+        let pixel = e.clip.xy * 900.0 / g.screen.y;
+        let lean = clamp(0.16 + 0.034 * g.wx.z, -0.55, 0.72);
+        let moving = vec2<f32>(pixel.x - lean * pixel.y, pixel.y - g.screen.w * 920.0);
+        let tile = vec2<i32>(floor(moving / vec2<f32>(13.0, 35.0)));
+        let chance = hash2(tile);
+        let jitter = vec2<f32>(hash2(tile + vec2<i32>(19, 31)), hash2(tile + vec2<i32>(5, 13)));
+        let delta = fract(moving / vec2<f32>(13.0, 35.0)) - (jitter * 0.60 + 0.20);
+        let streak = (1.0 - smoothstep(0.015, 0.086, abs(delta.x)))
+            * (1.0 - smoothstep(0.04, 0.23, abs(delta.y)));
+        let density = smoothstep(0.0, 0.09, g.precipitation.x * 0.68 - chance);
+        col = mix(col, vec3<f32>(0.70, 0.79, 0.88), streak * density * (0.18 + 0.19 * g.precipitation.x));
+    }
+    return vec4<f32>(col, 1.0);
 }

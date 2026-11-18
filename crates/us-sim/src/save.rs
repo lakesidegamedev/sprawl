@@ -423,6 +423,7 @@ fn get_traffic(r: &mut R) -> Res<RoadTraffic> {
     Ok(RoadTraffic {
         volume: r.f32()?,
         vc: r.f32()?,
+        approaches: Default::default(),
     })
 }
 

@@ -2,10 +2,25 @@
 
 ## Unreleased
 
-- Civic buildings snap beside open streets. The placement preview shows where the building will go before you pay.
-- Towns start with more water, power, school seats and clinic capacity. Water towers, power plants, schools and clinics cost less to build.
+## 1.3.2 (2026-11-18)
 
-- 1.3.1 is the performance and rendering update for TestFlight. See the version notes below.
+<!-- Release coverage starts after the 1.3.1 TestFlight source ca827a4. Includes civic placement and opening balance from 2937362. -->
+
+### For players
+
+- Traffic builds in the morning and reverses for the evening commute. Cars slow, queue and move through busy junctions in separate lanes, then spread back out after rush hour. Closed, flooded and unfinished roads stay clear of traffic.
+- Reopening a saved town restores its local streets, junctions and neighborhood ground.
+- Streets have clearer arterial markings, textured asphalt and paving, larger tree canopies, more roadside planting and more detailed grass, roofs and brick. Rail crossings show sleepers and brighter railheads.
+- Season colours change over four game weeks. Rain follows the wind and ripples in puddles. Roads stay wet as the sky clears.
+- Civic buildings snap beside open streets. The placement preview shows where the building will go before you pay.
+- Towns start with more water, power, school seats and clinic capacity. Water towers, power plants, schools and clinics cost less to build. Buildings reopening or rebuilding reserve capacity just like new construction.
+
+### For developers
+
+- Build revealed neighborhood meshes from saved state, preserve the saved generator output on load, and track visibility separately from construction progress. Keep the Hard opening migration wave within its existing growth bound.
+- Carry directional vehicle flow, capacity and the downstream junction from the peak-hour solver to the live renderer. Sample a daily demand curve against road storage and discharge capacity. The traffic map continues to show peak-hour load.
+- Preserve directional approach data for the current and pending traffic assignment in the optional TRAF save section. Older saves use their stored aggregate traffic until their next assignment. Town generation is unchanged.
+- Use world-space, distance-filtered materials and the existing weather state to drive the rain pass. Preserve the renderer's existing outline attachment, chunk culling and shadow paths.
 
 ## 1.3.1 (2026-11-17)
 

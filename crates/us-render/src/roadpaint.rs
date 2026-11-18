@@ -93,7 +93,7 @@ fn sub_line(line: &[Pt], s0: f64, s1: f64) -> Vec<Pt> {
     out
 }
 
-fn dashes(line: &[Pt], on: f64, off: f64) -> Vec<Vec<Pt>> {
+pub(crate) fn dashes(line: &[Pt], on: f64, off: f64) -> Vec<Vec<Pt>> {
     let total = len(line);
     let mut out = Vec::new();
     let mut s = 0.0;
@@ -793,6 +793,43 @@ fn point_at(line: &[Pt], along: f64) -> Pt {
     line[line.len() - 1]
 }
 
+/// Keep arterial striping clear of other arterial approaches, even on skew junctions.
+fn arterial_marking_segments(road: usize, line: &[Pt], nodes: &[Node]) -> Vec<Vec<Pt>> {
+    let total = len(line);
+    let mut cuts = Vec::new();
+    for n in nodes {
+        for a in n.arms.iter().filter(|a| a.road == road) {
+            let reach = n
+                .arms
+                .iter()
+                .filter(|b| b.road != road && b.class == RoadClass::Arterial)
+                .map(|b| b.hw / a.dir.cross(b.dir).abs().max(0.48) + 1.2)
+                .fold(0.0, f64::max);
+            if reach > 0.0 {
+                let (lo, hi) = if a.fwd {
+                    (a.s0, a.s0 + reach)
+                } else {
+                    (a.s0 - reach, a.s0)
+                };
+                cuts.push((lo.clamp(0.0, total), hi.clamp(0.0, total)));
+            }
+        }
+    }
+    cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut pieces = Vec::new();
+    let mut start = 0.0;
+    for (lo, hi) in cuts {
+        if lo - start > 0.3 {
+            pieces.push(sub_line(line, start, lo));
+        }
+        start = start.max(hi);
+    }
+    if total - start > 0.3 {
+        pieces.push(sub_line(line, start, total));
+    }
+    pieces
+}
+
 fn marks(
     g: &mut Ground,
     i: usize,
@@ -814,11 +851,14 @@ fn marks(
             }
         }
         RoadClass::Arterial => {
-            for side in [-1.0f32, 1.0] {
-                g.ribbon(line, 0.09, side * 0.22, z::MARK, YELLOW);
-                g.ribbon(line, 0.12, side * (hw - 0.7), z::MARK, WHITE);
-                for d in dashes(line, 3.0, 6.0) {
-                    g.ribbon(&d, 0.12, side * 5.0, z::MARK, WHITE);
+            for segment in arterial_marking_segments(i, line, nodes) {
+                let stripes = dashes(&segment, 3.0, 6.0);
+                for side in [-1.0f32, 1.0] {
+                    g.ribbon(&segment, 0.09, side * 0.22, z::MARK, YELLOW);
+                    g.ribbon(&segment, 0.12, side * (hw - 0.7), z::MARK, WHITE);
+                    for d in &stripes {
+                        g.ribbon(d, 0.12, side * 5.0, z::MARK, WHITE);
+                    }
                 }
             }
             median(g, i, line, nodes);

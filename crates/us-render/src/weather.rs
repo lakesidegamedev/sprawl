@@ -20,6 +20,8 @@ pub struct WeatherLook {
     pub snow: f32,
     /// Wet ground and roads, 0 (dry) to 1 (soaked).
     pub wet: f32,
+    /// Active rainfall intensity, independent of how much water remains on the roads.
+    pub rain: f32,
     /// Cloud cover: darker light and no hard shadows, 0 to 1.
     pub overcast: f32,
     /// A lightning flash right now, 0 to 1.

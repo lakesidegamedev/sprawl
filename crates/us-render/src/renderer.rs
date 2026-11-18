@@ -189,6 +189,8 @@ struct Globals {
     look: [f32; 4],
     /// snow cover, wet ground, wind east and north
     wx: [f32; 4],
+    /// precipitation intensity and reserved channels
+    precipitation: [f32; 4],
     /// rock look rows, see `rock::RockLook::rows`
     rock: [[f32; 4]; 8],
 }
@@ -1220,6 +1222,19 @@ impl Renderer {
             Season::Summer => 3.0,
             Season::Winter => 0.0,
         });
+        // Prototype: ease each seasonal palette in over the first four weeks.
+        let season_blend = cal.map_or(1.0, |c| {
+            let day = i32::from(c.day_of_year);
+            let start = match c.season() {
+                Season::Winter if day < 59 => -31,
+                Season::Winter => 334,
+                Season::Spring => 59,
+                Season::Summer => 151,
+                Season::Autumn => 243,
+            };
+            let t = ((day - start) as f32 / 28.0).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        });
         let snow_cover = if wl.active {
             wl.snow.clamp(0.0, 1.0)
         } else if cal.is_some_and(|c| c.season() == Season::Winter) {
@@ -1242,7 +1257,7 @@ impl Renderer {
                 style.ink[2] as f32 / 255.0,
                 style.ink_width as f32,
             ],
-            shade: [shadow_tone, 0.2 / range, 0.0, 0.0],
+            shade: [shadow_tone, 0.2 / range, season_blend, oc],
             screen: [
                 rw as f32,
                 rh as f32,
@@ -1252,6 +1267,7 @@ impl Renderer {
             tone: [tone[0], tone[1], tone[2], lit_windows],
             look: [season_code, snow as u8 as f32, map_view as u8 as f32, lamps],
             wx: [snow_cover, wl.wet.clamp(0.0, 1.0), wl.wind[0], wl.wind[1]],
+            precipitation: [wl.rain.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
             rock: scene
                 .land
                 .rock()
@@ -1479,7 +1495,20 @@ impl Renderer {
             } else if snow_cover > 0.6 {
                 base = [236.0 / 255.0, 241.0 / 255.0, 247.0 / 255.0];
             } else {
-                base = season_ground(base, season_code);
+                let next = season_ground(base, season_code);
+                // Shader season codes run winter, autumn, spring, summer.
+                let previous = if season_code == 0.0 {
+                    season_ground(base, 1.0)
+                } else if season_code == 1.0 {
+                    season_ground(base, 3.0)
+                } else if season_code == 2.0 {
+                    base
+                } else {
+                    season_ground(base, 2.0)
+                };
+                base = std::array::from_fn(|i| {
+                    previous[i] + (next[i] - previous[i]) * f64::from(season_blend)
+                });
             }
             let clear = wgpu::Color {
                 r: base[0] * tone[0] as f64,

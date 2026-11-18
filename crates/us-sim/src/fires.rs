@@ -452,7 +452,7 @@ impl Sim {
         }
         self.fx.rigs.retain(|r| r.end_s() >= day_start);
 
-        // lots burned out: rebuilt
+        // Lots burned out have their replacement capacity reserved.
         for i in 0..self.lots.len() {
             if let Some(start) = self.lots[i].fire
                 && day - start >= FIRE_DAYS

@@ -41,6 +41,15 @@ const PUPIL_SHARE_PCT: i64 = 18;
 const CLINIC_SERVES: i64 = 2500;
 const HEALTH_FREE: i64 = 1100;
 
+/// Admission uses exact half-water units and hundredths of a school seat.
+fn capacity_scale(c: Capacity) -> i64 {
+    match c {
+        Capacity::Water => 2,
+        Capacity::Schools => 100,
+        _ => 1,
+    }
+}
+
 impl Sim {
     pub fn difficulty(&self) -> Difficulty {
         self.rules.difficulty
@@ -60,10 +69,37 @@ impl Sim {
     /// The same, with or without today's weather. The monthly growth check leaves it out, so a
     /// hot day on the first of the month does not stop building for a month.
     pub(crate) fn capacity_with(&self, c: Capacity, weather: bool) -> CapacityStatus {
-        let pop = self.population();
+        let (load, supply) = self.capacity_load(c, false);
+        let demand = load / capacity_scale(c);
+        CapacityStatus {
+            capacity: c,
+            demand: if weather {
+                demand * self.weather_use_pct(c) / 100
+            } else {
+                demand
+            },
+            supply,
+        }
+    }
+
+    /// Calculate exact load and whole units of supply. Round only when displaying demand.
+    fn capacity_load(&self, c: Capacity, construction: bool) -> (i64, i64) {
+        let mut load = 0;
         let (mut water, mut power, mut seats, mut clinics) = (0i64, 0i64, 0i64, 0i64);
         for l in &self.lots {
-            if !matches!(l.phase, Phase::Built { .. }) {
+            let built = matches!(l.phase, Phase::Built { .. });
+            if !l.exempt && l.civic.is_none() {
+                if built {
+                    load += Self::lot_demand(l.kind, l.level, c);
+                } else if construction {
+                    if matches!(l.phase, Phase::Building { .. }) {
+                        load += Self::lot_demand(l.kind, l.level.max(l.next_level), c);
+                    } else if l.fire.is_some() && matches!(l.phase, Phase::Empty { .. }) {
+                        load += Self::lot_demand(l.kind, 1, c);
+                    }
+                }
+            }
+            if !built {
                 continue;
             }
             match l.civic {
@@ -81,39 +117,19 @@ impl Sim {
                 },
             }
         }
-        let (demand, supply) = match c {
-            Capacity::Water => (
-                pop + self.jobs() / 2,
-                self.scaled(WATER_FREE + WATER_PER_TOWER * water),
-            ),
-            Capacity::Power => (
-                pop + self.jobs_of(Class::Shops) + 3 * self.jobs_of(Class::Industry),
-                self.scaled(POWER_FREE + POWER_PER_PLANT * power),
-            ),
+        let supply = match c {
+            Capacity::Water => self.scaled(WATER_FREE + WATER_PER_TOWER * water),
+            Capacity::Power => self.scaled(POWER_FREE + POWER_PER_PLANT * power),
             Capacity::Schools => {
                 let f = self.budget[Dept::Schools.index()].min(130) as i64;
-                (
-                    pop * PUPIL_SHARE_PCT / 100,
-                    SEATS_FREE + self.scaled(SEATS_PER_SCHOOL * seats) * f / 100,
-                )
+                SEATS_FREE + self.scaled(SEATS_PER_SCHOOL * seats) * f / 100
             }
             Capacity::Health => {
                 let f = self.budget[Dept::Health.index()].min(130) as i64;
-                (
-                    pop,
-                    HEALTH_FREE + self.scaled(CLINIC_SERVES * clinics) * f / 100,
-                )
+                HEALTH_FREE + self.scaled(CLINIC_SERVES * clinics) * f / 100
             }
         };
-        CapacityStatus {
-            capacity: c,
-            demand: if weather {
-                demand * self.weather_use_pct(c) / 100
-            } else {
-                demand
-            },
-            supply,
-        }
+        (load, supply)
     }
 
     /// All four capacities.
@@ -166,12 +182,17 @@ impl Sim {
     /// Arrivals per month at the pace of this point in game time and the chosen difficulty.
     fn arrival_cap(&self) -> f64 {
         let years = self.month_index as f64 / 12.0;
+        let settlers_bonus = if self.rules.difficulty == Difficulty::Hard {
+            2.0
+        } else {
+            SETTLERS_ARRIVALS
+        };
         BASE_PEOPLE_PER_MONTH
             * libm::pow(1.0 + POOL_GROWTH_PER_YEAR, years)
             * self.rules.difficulty.arrival_pct() as f64
             / 100.0
             * self.arrival_bonus()
-            * (1.0 + SETTLERS_ARRIVALS * self.settlers())
+            * (1.0 + settlers_bonus * self.settlers())
     }
 
     /// Dollars paid so far for new streets and utility connections, before the taxes they bring.
@@ -189,13 +210,14 @@ impl Sim {
         (growth_mult(self.tax.get(c) as f64 / 10.0) / growth_mult(7.0)).clamp(0.05, 1.6)
     }
 
-    /// What one lot of this kind and level asks of a capacity once it stands.
+    /// What one lot asks of a capacity, in its exact admission units.
     pub(crate) fn lot_demand(kind: LotKind, level: u8, c: Capacity) -> i64 {
         let u = Sim::units_at(kind, level);
         match (class_of(kind), c) {
-            (Some(Class::Homes), Capacity::Water | Capacity::Power | Capacity::Health) => u,
-            (Some(Class::Homes), Capacity::Schools) => u * PUPIL_SHARE_PCT / 100,
-            (Some(_), Capacity::Water) => u / 2,
+            (Some(Class::Homes), Capacity::Water) => 2 * u,
+            (Some(Class::Homes), Capacity::Power | Capacity::Health) => u,
+            (Some(Class::Homes), Capacity::Schools) => u * PUPIL_SHARE_PCT,
+            (Some(_), Capacity::Water) => u,
             (Some(Class::Shops), Capacity::Power) => u,
             (Some(Class::Industry), Capacity::Power) => 3 * u,
             _ => 0,
@@ -205,26 +227,19 @@ impl Sim {
     /// Demand of a capacity counting the buildings under construction, which will ask for it
     /// the day they open. This is what starts are checked against.
     pub(crate) fn committed_status(&self, c: Capacity) -> CapacityStatus {
-        let mut st = self.capacity_with(c, false);
-        for l in &self.lots {
-            if matches!(l.phase, Phase::Building { .. })
-                && !l.exempt
-                && l.civic.is_none()
-                && class_of(l.kind).is_some()
-            {
-                // an upgrade stops counting as built while it is under way, so count the
-                // target level for both
-                st.demand += Sim::lot_demand(l.kind, l.level.max(l.next_level), c);
-            }
+        let (load, supply) = self.capacity_load(c, true);
+        CapacityStatus {
+            capacity: c,
+            demand: load / capacity_scale(c),
+            supply,
         }
-        st
     }
 
-    /// Room left in each capacity for new starts, counting what is under construction.
+    /// Room left in each capacity for new starts, in exact admission units.
     pub(crate) fn start_room(&self) -> [i64; 4] {
         Capacity::ALL.map(|c| {
-            let st = self.committed_status(c);
-            st.supply - st.demand
+            let (load, supply) = self.capacity_load(c, true);
+            supply * capacity_scale(c) - load
         })
     }
 

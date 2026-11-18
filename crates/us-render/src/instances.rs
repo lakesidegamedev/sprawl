@@ -263,7 +263,7 @@ pub struct Car {
     pub colour: Rgb,
 }
 
-fn cruise(c: RoadClass) -> f32 {
+pub(crate) fn cruise(c: RoadClass) -> f32 {
     match c {
         RoadClass::Alley => 5.0,
         RoadClass::Local => 8.0,

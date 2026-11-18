@@ -12,6 +12,7 @@ use crate::obj::{Obj, Rgb, Sit};
 use crate::overlay::{self, LotInfo, Overlay};
 use crate::parts::Region;
 use crate::rng::Rng;
+use crate::road_traffic::{Approach, Traffic};
 use glam::Vec3;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -120,6 +121,9 @@ struct Extras {
     paths: Vec<Path>,
     volumes: Vec<f32>,
     cars: Vec<Car>,
+    traffic: Traffic,
+    traffic_enabled: bool,
+    traffic_hour: f32,
     chimneys: Vec<[f32; 3]>,
     walkers: Vec<Walker>,
     lamps: Vec<Instance>,
@@ -283,6 +287,7 @@ impl Scene {
         self.x.lot_active = vec![true; lots.len()];
         self.x.lots = lots;
         self.x.roads = roads;
+        self.x.traffic = Traffic::default();
         self.x.centre = [self.hall.x, self.hall.y];
         self.x.lamps = instances::lamp_instances(&self.x.paths);
         let service = self.x.trains.service.clone();
@@ -373,11 +378,22 @@ impl Scene {
 
     // ---- traffic, smoke, people ----
 
-    /// Traffic volume of every road, 0 (empty) to 1 (jammed), indexed like the road list. The
-    /// number of cars on each road follows it.
+    /// Traffic volume of roads for scenes that do not have directional traffic assignment.
     pub fn set_road_volumes(&mut self, volumes: &[f32]) {
+        self.x.traffic_enabled = false;
+        self.x.traffic = Traffic::default();
         self.x.volumes = volumes.to_vec();
         self.x.cars = instances::make_cars(&self.x.paths, &self.x.volumes);
+    }
+
+    /// Set peak-hour rates and measured approach capacities for the living town.
+    pub fn set_road_traffic(&mut self, roads: &[[Approach; 2]]) {
+        self.x.traffic = Traffic::new(&self.x.paths, roads);
+        self.x.traffic_enabled = true;
+    }
+
+    pub fn set_traffic_hour(&mut self, hour: f32) {
+        self.x.traffic_hour = hour;
     }
 
     pub fn car_count(&self) -> usize {
@@ -457,7 +473,13 @@ impl Scene {
         let mut puffs = instances::puff_instances(&self.x.chimneys, self.time);
         puffs.extend(smoke);
         FrameInstances {
-            cars: instances::car_instances(&self.x.paths, &self.x.cars, self.time),
+            cars: if self.x.traffic_enabled {
+                self.x
+                    .traffic
+                    .instances(&self.x.paths, self.time, self.x.traffic_hour)
+            } else {
+                instances::car_instances(&self.x.paths, &self.x.cars, self.time)
+            },
             puffs,
             people: instances::walker_instances(&self.x.paths, &self.x.walkers, self.time),
             lamps: self.x.lamps.clone(),
