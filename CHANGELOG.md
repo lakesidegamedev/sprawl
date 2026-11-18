@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Choose Town Growth or City Planning when founding a town. In City Planning, draw the streets yourself and zone roadside land for housing, shops, offices and industry.
+
 - In compact layouts, the gesture hint moves to Settings once the town hall is placed. Balanced world resolution reduces the number of pixels drawn in the 3D scene while keeping the interface crisp.
 
 - Hear traffic, wind, rain and building cues. The original score shifts from a daytime theme to an evening theme. Settings offers independent music, ambience and effects controls.

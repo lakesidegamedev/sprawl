@@ -369,6 +369,9 @@ impl Sim {
                 }
             }
         }
+        if self.rules.city_planning {
+            return;
+        }
         // short of room: too few lots overall, or too few of a kind that newcomers are waiting for
         // newcomers waiting for a kind of lot that the town has none of: head for the nearest
         // land of that kind, one street a month

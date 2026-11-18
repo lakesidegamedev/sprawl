@@ -246,6 +246,9 @@ impl Sim {
             self.run_traffic = done.run_traffic;
         }
         self.avg_cong = done.avg_cong;
+        if self.rules.city_planning {
+            return;
+        }
         let (mut widened, mut widened_m, mut built, mut built_m, mut gone) = (0, 0.0, 0, 0.0, 0);
         let mut first: Option<Pt> = None;
         for op in done.ops {

@@ -69,6 +69,13 @@ impl Sim {
         if l.civic.is_some() {
             return 0.0;
         }
+        if self.is_planned_lot(i) {
+            return match l.kind {
+                LotKind::Apartments | LotKind::Office => 1.0,
+                LotKind::Shop | LotKind::Workshop => 0.45,
+                _ => 0.10,
+            };
+        }
         self.town.lots.get(l.src).map_or(0.0, |t| t.density)
     }
 

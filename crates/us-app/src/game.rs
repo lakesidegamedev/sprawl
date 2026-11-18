@@ -186,6 +186,7 @@ pub struct State {
     account_note: Arc<Mutex<String>>,
     account_busy: Arc<AtomicBool>,
     mode: Mode,
+    city_planning: bool,
     difficulty: Difficulty,
     saves: Vec<crate::saves::SaveInfo>,
     continue_info: Option<crate::saves::SaveInfo>,
@@ -291,6 +292,7 @@ impl State {
             account_note: Arc::new(Mutex::new(String::new())),
             account_busy: Arc::new(AtomicBool::new(false)),
             mode: Mode::Standard,
+            city_planning: false,
             difficulty: Difficulty::Normal,
             saves: Vec::new(),
             continue_info: None,
@@ -412,6 +414,7 @@ impl State {
             KeyCode::Digit2 | KeyCode::Numpad2 => g.speed = 2,
             KeyCode::Digit3 | KeyCode::Numpad3 => g.speed = 3,
             KeyCode::Space => g.speed = if g.speed == 0 { 1 } else { 0 },
+            KeyCode::Escape if g.ui.zone.is_some() => g.ui.zone = None,
             KeyCode::Escape => g.menu_open = !g.menu_open,
             _ => {}
         }
@@ -501,6 +504,8 @@ impl State {
                     } else {
                         g.place_tool(site);
                     }
+                } else if g.ui.zone.is_some() {
+                    g.zone_corner(pt(p.x as f64, p.y as f64));
                 } else if g.road_active().is_some() {
                     g.road_click(pt(p.x as f64, p.y as f64));
                 } else if g.ui.paint.is_some() {
@@ -652,7 +657,10 @@ impl State {
             false,
             sites,
             cam,
-            self.mode.rules().with_difficulty(self.difficulty),
+            self.mode
+                .rules()
+                .with_difficulty(self.difficulty)
+                .with_city_planning(self.city_planning),
             name,
         ));
         self.screen = Screen::Game;
@@ -1627,6 +1635,9 @@ impl State {
             }
             if g.ui.trams.open {
                 g.trams_ui(ctx, screen_w);
+            }
+            if g.ui.zone.is_some() && g.map_input_available() {
+                g.zone_prompt(ctx);
             }
             if compact && g.ui.more_open {
                 g.more_sheet(ctx);

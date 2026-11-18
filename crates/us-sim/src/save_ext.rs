@@ -38,6 +38,9 @@ pub(crate) fn sections(s: &Sim) -> Vec<([u8; 4], Vec<u8>)> {
     }
     push(b"GOAL", &|s, w| s.save_goals(w));
     push(b"TRAF", &|s, w| s.save_traffic_approaches(w));
+    if s.rules.city_planning {
+        push(b"PLAN", &|s, w| s.save_planning(w));
+    }
     out
 }
 
@@ -55,6 +58,7 @@ pub(crate) fn load_section(s: &mut Sim, tag: [u8; 4], bytes: &[u8]) -> Res<()> {
         b"FIRE" => s.load_fires(r)?,
         b"GOAL" => s.load_goals(r)?,
         b"TRAF" => s.load_traffic_approaches(r)?,
+        b"PLAN" => s.load_planning(r)?,
         _ => {
             let _ = (s, r.left());
         }
