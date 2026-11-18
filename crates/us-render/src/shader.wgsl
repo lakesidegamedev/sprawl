@@ -767,8 +767,15 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
         let repair = vnoise(w * 0.34);
         let dust = vnoise(w * 0.95 + vec2<f32>(19.0, 7.0));
         let specks = hash2(vec2<i32>(floor(w * 7.0))) - 0.5;
-        var paved = col * vec3<f32>(0.87, 0.89, 0.90)
-            * (0.89 + 0.17 * repair + 0.13 * dust + 0.20 * specks * aggregate);
+        // old repairs: now and then a squared-off patch of newer, darker asphalt
+        let slab = w / vec2<f32>(11.0, 7.0);
+        let slab_id = vec2<i32>(floor(slab));
+        let slab_roll = hash2(slab_id + vec2<i32>(91, 13));
+        let inset = abs(fract(slab) - 0.5);
+        let mend = step(0.83, slab_roll) * (1.0 - smoothstep(0.26, 0.29, max(inset.x, inset.y)))
+            * (1.0 - smoothstep(0.3, 1.2, px));
+        var paved = col * vec3<f32>(0.80, 0.80, 0.76)
+            * (0.95 + 0.05 * repair + 0.06 * dust + 0.20 * specks * aggregate - 0.06 * mend);
         if (g.wx.y > 0.05) {
             let pool = vnoise(w * 0.54) * 0.7 + vnoise(w * 1.32) * 0.3;
             let puddle = smoothstep(0.77 - 0.15 * g.wx.y, 0.84 - 0.15 * g.wx.y, pool) * g.wx.y;
@@ -807,7 +814,23 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
     if (!object || !cel || px > 0.49) {
         return col;
     }
+    var col_weather = 1.0;
     let fade = 1.0 - smoothstep(0.15, 0.49, px);
+    if (normal.z > 0.95 && !is_green(base) && base.r + base.g + base.b < 2.5) {
+        // a flat roof: gravel, the seams of the roofing sheets and old water stains
+        let sheet = w / 3.4;
+        let edge = min(min(fract(sheet.x), 1.0 - fract(sheet.x)), min(fract(sheet.y), 1.0 - fract(sheet.y)));
+        let seam = 1.0 - smoothstep(0.0, 0.035, edge);
+        let stain = vnoise(w * 0.21 + vec2<f32>(7.0, 3.0));
+        let gravel = hash2(vec2<i32>(floor(w * 5.0))) - 0.5;
+        return col * (1.0 + fade * (0.10 * (stain - 0.5) + 0.12 * gravel * aggregate - 0.13 * seam));
+    }
+    if (abs(normal.z) < 0.12) {
+        // walls weather: faint streaks run down them and the foot of the wall is darker
+        let run = dot(w, vec2<f32>(-normal.y, normal.x));
+        let streak = vnoise(vec2<f32>(run * 1.3, world.z * 0.11));
+        col_weather = 1.0 + fade * (0.09 * (streak - 0.5));
+    }
     if (abs(normal.z) < 0.08 && base.r - base.g > 0.11 && base.g - base.b > 0.03
         && base.r < 0.83 && base.g < 0.65) {
         let along = dot(w, vec2<f32>(-normal.y, normal.x));
@@ -816,7 +839,7 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
         let edge = min(min(fract(course), 1.0 - fract(course)), min(fract(block), 1.0 - fract(block)));
         let mortar = 1.0 - smoothstep(0.02, 0.13, edge);
         let kiln = hash2(vec2<i32>(i32(floor(block)), i32(floor(course))));
-        return mix(col * (1.0 + (kiln - 0.5) * 0.23 * fade), vec3<f32>(0.64, 0.59, 0.52), mortar * fade * 0.4);
+        return mix(col * (1.0 + (kiln - 0.5) * 0.23 * fade), vec3<f32>(0.64, 0.59, 0.52), mortar * fade * 0.4) * col_weather;
     }
     if (normal.z > 0.42 && normal.z < 0.94 && !is_green(base)) {
         let run = normalize(normal.xy);
@@ -825,7 +848,28 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
         let tile = vec2<i32>(i32(floor(dot(w, vec2<f32>(-run.y, run.x)) * 1.8 + 0.5 * floor(row))), i32(floor(row)));
         return col * (1.0 + fade * ((hash2(tile) - 0.5) * 0.22 - seam * 0.24));
     }
-    return col;
+    return col * col_weather;
+}
+
+// Window glass: a dark room behind, a band of sky light across the upper pane, a diagonal
+// glare and a shadow under the head of the opening. `pane` is 0 to 1 across and up the window.
+fn glass_look(base: vec3<f32>, pane: vec2<f32>, seed: f32, world: vec3<f32>, n: vec3<f32>, px: f32) -> vec3<f32> {
+    let day = smoothstep(-0.05, 0.3, g.sun.z);
+    let eye = normalize(g.eye.xyz - world);
+    let grazing = pow(1.0 - max(0.0, dot(eye, n)), 2.0);
+    let sky = sky_radiance(normalize(vec3<f32>(n.xy, 0.55)));
+    let room = base * vec3<f32>(0.34, 0.40, 0.50);
+    // some panes have blinds drawn part of the way down
+    let blind = step(0.72, seed) * (1.0 - smoothstep(0.45 + 0.4 * fract(seed * 7.3), 0.5 + 0.4 * fract(seed * 7.3), 1.0 - pane.y));
+    let sharp = 1.0 - smoothstep(0.25, 0.9, px);
+    var col = mix(room, sky * (0.72 + 0.3 * seed), (0.30 + 0.45 * grazing) * smoothstep(0.15, 0.95, pane.y));
+    col = mix(col, vec3<f32>(0.86, 0.84, 0.78) * (0.55 + 0.35 * day), blind * 0.8 * sharp);
+    let band = pane.x * 0.9 + pane.y - 0.55 - 0.5 * seed;
+    let glare = (1.0 - smoothstep(0.0, 0.13, abs(band))) + 0.5 * (1.0 - smoothstep(0.0, 0.05, abs(band - 0.26)));
+    col += vec3<f32>(0.20, 0.23, 0.25) * glare * day * sharp * (0.5 + 0.5 * max(0.0, dot(n.xy, g.sun.xy)));
+    // the head of the opening shades the top of the glass
+    col *= 1.0 - 0.30 * smoothstep(0.84, 0.98, pane.y) * sharp;
+    return mix(base * vec3<f32>(0.62, 0.70, 0.80), col, 0.35 + 0.65 * sharp);
 }
 
 // Finish codes come from Obj::Finish. These materials are projected in metres
@@ -901,7 +945,10 @@ fn facing_facade(col: vec3<f32>, finish: u32, world: vec3<f32>, anchor: vec3<f32
     let glass = glazing * frame;
     let seed_cell = cell + floor(anchor.xy * 1.7 + anchor.z * vec2<f32>(0.53, 1.07));
     let pane_seed = hash2(vec2<i32>(seed_cell));
-    let tint = glass_base * (0.83 + 0.33 * pane_seed);
+    let inner = vec2<f32>(
+        clamp((part.x - reveal) / max(0.05, 1.0 - 2.0 * reveal), 0.0, 1.0),
+        clamp((part.y - sill) / max(0.05, head - sill), 0.0, 1.0));
+    let tint = glass_look(glass_base * 1.5, inner, pane_seed, world, normal, px);
     let ledge = 1.0 - smoothstep(0.018, 0.077 + border * 0.3, min(part.y, 1.0 - part.y));
     let ribs = select(0.08, 0.20, finish == 244u || balcony);
     let rail = (1.0 - smoothstep(0.028, 0.078, abs(part.y - 0.22))) * select(0.0, 0.20, balcony);
@@ -1169,6 +1216,22 @@ fn fs_main(v: VOut) -> FOut {
         }
     }
     var facade_glass = 0.0;
+    let window_pane = !cel && !ground && v.tint == 0u
+        && (near(v.color.rgb, 98.0, 156.0, 204.0) || near(v.color.rgb, 64.0, 88.0, 118.0));
+    if (window_pane && g.look.z < 0.5 && abs(n.z) < 0.5) {
+        // a window drawn as its own face: its first corner is the anchor, so the pane's own
+        // width and height are not known; a typical window is assumed
+        let along = dot(v.world.xy - v.room_anchor.xy, vec2<f32>(-n.y, n.x));
+        let pane = vec2<f32>(fract(abs(along) / 1.4), clamp(abs(v.world.z - v.room_anchor.z) / 1.5, 0.0, 1.0));
+        let seed = hash2(vec2<i32>(floor(v.room_anchor.xy * 3.1 + v.room_anchor.z * 1.7)));
+        let footprint = sqrt(max(dot(world_dx, world_dx), dot(world_dy, world_dy)));
+        col = glass_look(col, pane, seed, v.world, n, footprint);
+        if (l > 0.02) {
+            col *= mix(0.74, 1.0, lit(v.world, n));
+        } else {
+            col *= 0.80;
+        }
+    }
     if (!emissive && g.look.z < 0.5 && v.tint == 0u && wkind == 0) {
         if (finish == 0u) {
             col = textured_surface(col, v.color.rgb, v.world, n, g.screen.z * v.dist, cel, !ground && !exempt);

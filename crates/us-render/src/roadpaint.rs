@@ -553,15 +553,22 @@ fn pad_of(n: &Node, fillets: bool) -> Pad {
         let s = rhs.cross(ub) / den;
         let u = rhs.cross(ua) / den;
         let c = la + ua * s;
+        // Two roads leaving at a narrow angle run over each other until their kerbs part. The
+        // pad reaches to that point, however far, so one road's lines, median and kerb are
+        // never drawn across the other; only the room the arms have limits it.
+        let meet = s > 0.0 && u > 0.0 && s < a.avail.min(170.0) && u < b.avail.min(170.0);
         if theta < 25f64.to_radians() {
-            // two roads leaving at a narrow angle: their kerbs meet in a point
-            if s > 0.0 && u > 0.0 && s < 30.0 && u < 30.0 {
+            if meet {
                 left[i] = c;
                 right[(i + 1) % k] = c;
             }
             continue;
         }
         if !fillets {
+            if meet && theta < 60f64.to_radians() {
+                left[i] = c;
+                right[(i + 1) % k] = c;
+            }
             continue;
         }
         let half = theta / 2.0;
@@ -574,6 +581,11 @@ fn pad_of(n: &Node, fillets: bool) -> Pad {
             rad = t * libm::tan(half);
         }
         if t < 1.0 || s + t < 0.0 || u + t < 0.0 || s + t > 30.0 || u + t > 30.0 {
+            if meet && theta < 60f64.to_radians() {
+                // no room for a rounded corner: at least close the wedge between the kerbs
+                left[i] = c;
+                right[(i + 1) % k] = c;
+            }
             continue;
         }
         let ta = c + ua * t;
@@ -656,13 +668,18 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
         return;
     }
     g.polygon(&pad.ring, z::PAD, ASPHALT);
-    let eligible = |a: &Arm| matches!(a.class, RoadClass::Local | RoadClass::Collector) && !a.ring;
+    let eligible = |a: &Arm| {
+        matches!(
+            a.class,
+            RoadClass::Local | RoadClass::Collector | RoadClass::Arterial
+        ) && !a.ring
+    };
     let streets = n
         .arms
         .iter()
         .filter(|a| a.class != RoadClass::Alley)
         .count();
-    if big || streets < 3 {
+    if streets < 3 {
         return;
     }
     for (k, a) in n.arms.iter().enumerate() {
@@ -677,6 +694,18 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
         let across = pt(-a.dir.y, a.dir.x);
         let reach = a.hw - 0.9;
         let c = n.p + a.dir * d;
+        // a crossing never lies on another arm of the junction
+        let on_other_arm = n.arms.iter().enumerate().any(|(j, o)| {
+            j != k
+                && [c - across * reach, c, c + across * reach].iter().any(|q| {
+                    let rel = *q - n.p;
+                    let t = rel.dot(o.dir).max(0.0);
+                    (rel - o.dir * t).len() < o.hw + 1.2
+                })
+        });
+        if on_other_arm {
+            continue;
+        }
         let mut off = -reach;
         while off <= reach + 1e-6 {
             quad(
@@ -690,6 +719,20 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
                 WHITE,
             );
             off += 1.1;
+        }
+        if big && a.avail > 2.0 * d + 12.0 {
+            // a stop line across the lanes that come in to a main junction
+            let half = a.hw * 0.5;
+            quad(
+                g,
+                n.p + a.dir * (d + 2.6) + across * half,
+                a.dir,
+                across,
+                0.22,
+                half - 0.6,
+                z::ZEBRA,
+                WHITE,
+            );
         }
     }
 }
@@ -995,7 +1038,8 @@ mod tests {
             assert!(
                 pad.ring
                     .iter()
-                    .all(|p| p.dist(n.p) < 40.0 && p.x.is_finite() && p.y.is_finite()),
+                    // roads that part at a narrow angle share a long wedge of pad
+                    .all(|p| p.dist(n.p) < 175.0 && p.x.is_finite() && p.y.is_finite()),
                 "a pad point is far from its junction"
             );
             let square = pad_of(&n, false);
