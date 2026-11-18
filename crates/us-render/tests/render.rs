@@ -404,3 +404,65 @@ fn storm_flash_is_local_and_tilt_focus_keeps_the_centre_sharp() {
     assert_ne!(first.rgba, second.rgba);
     assert!(second.rgba.chunks_exact(4).all(|p| p[3] == 255));
 }
+
+#[test]
+fn street_zoom_clears_the_cloud_deck_without_removing_fog() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let square = |z| [[0., 0., z], [900., 0., z], [900., 900., z], [0., 900., z]];
+    let mut elevated = Mesh::default();
+    elevated.push_poly(&square(150.0), [90, 93, 96], true, false, 0);
+    let town = Vec3::new(450.0, 450.0, 150.0);
+    let mut scene = Scene::dynamic(900.0, elevated, town);
+    scene.set_weather(WeatherLook {
+        overcast: 0.8,
+        ..WeatherLook::default()
+    });
+    // Without surface cloud shadows, any difference here is in the overhead volume itself.
+    let style = Style {
+        sun: [0.4, -0.2, -0.5],
+        supersample: 1,
+        shadow_size: 128,
+        ..Style::default()
+    };
+    let camera = Camera {
+        target: town,
+        distance: 70.0,
+        yaw_deg: 0.0,
+        tilt_deg: 89.0,
+        fov_deg: 24.0,
+    };
+    let close = renderer.render_to_rgba(&scene, &camera, &style, 96, 80);
+    let wide = Camera {
+        distance: 500.0,
+        ..camera
+    };
+    let far = renderer.render_to_rgba(&scene, &wide, &style, 96, 80);
+    scene.set_time(44.0);
+    let moved_close = renderer.render_to_rgba(&scene, &camera, &style, 96, 80);
+    let moved_far = renderer.render_to_rgba(&scene, &wide, &style, 96, 80);
+    assert_eq!(close.rgba, moved_close.rgba);
+    assert_ne!(far.rgba, moved_far.rgba);
+
+    let mut ground = Mesh::default();
+    ground.push_poly(&square(0.0), [90, 93, 96], true, false, 0);
+    let ground_target = Vec3::new(town.x, town.y, 0.0);
+    let mut street = Scene::dynamic(900.0, ground, ground_target);
+    street.weather.overcast = 0.8;
+    let close_to_ground = Camera {
+        target: ground_target,
+        ..camera
+    };
+    let dry = renderer.render_to_rgba(&street, &close_to_ground, &style, 96, 80);
+    street.weather.ground_fog = 1.0;
+    let fog = renderer.render_to_rgba(&street, &close_to_ground, &style, 96, 80);
+    assert!(
+        dry.rgba
+            .chunks_exact(4)
+            .zip(fog.rgba.chunks_exact(4))
+            .filter(|(a, b)| a[2].abs_diff(b[2]) > 8)
+            .count()
+            > 500
+    );
+}

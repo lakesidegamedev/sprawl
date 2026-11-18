@@ -66,9 +66,13 @@ within 240 xcrun simctl io "$udid" screenshot "$out/$kind-4-map-selector.png"
 xcrun simctl terminate "$udid" "$bundle" || true
 sleep 2
 
-# town: the smoke autopilot starts a new town and places the hall, then runs for 10 minutes
+# Use street zoom on iPhone and an overview on iPad during a simulated storm.
 step "launch town"
-SIMCTL_CHILD_URBAN_SPRAWL_SMOKE=600 SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_DAYS=900 within 240 xcrun simctl launch "$udid" "$bundle"
+storm_view=storm
+if [[ "$kind" == iphone ]]; then storm_view=storm:70; fi
+SIMCTL_CHILD_URBAN_SPRAWL_SMOKE=600 SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_DAYS=900 \
+  SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_PRESET=coast SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_SEED=4 \
+  SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_UI="$storm_view,clean" within 240 xcrun simctl launch "$udid" "$bundle"
 sleep 20
 running || fail "app stopped while building the town"
 step "screenshot town"
