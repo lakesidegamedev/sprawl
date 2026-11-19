@@ -2,9 +2,10 @@
 use crate::obj::{Finish, Obj, Rgb};
 use crate::parts::{GLASS, GLASS_D};
 use crate::rng::Rng;
+use crate::skyline;
 use us_gen::LotKind;
 
-pub const FAMILIES: [&str; 13] = [
+pub const FAMILIES: [&str; 23] = [
     "Single-wide homes",
     "Double-wide homes",
     "Courtyard bungalows",
@@ -18,6 +19,16 @@ pub const FAMILIES: [&str; 13] = [
     "Landmark spires",
     "Offset atrium towers",
     "Terraced residential towers",
+    "Slab blocks",
+    "Point towers",
+    "Stepped deco spires",
+    "Cylinder towers",
+    "L-plan towers",
+    "U-plan courtyard blocks",
+    "Flatiron wedges",
+    "Tapered needles",
+    "Crowned towers",
+    "Sky-bridge pairs",
 ];
 pub const PLANS: usize = 12;
 const CONCRETE: Rgb = [176, 173, 164];
@@ -34,15 +45,24 @@ pub(crate) fn lot(kind: LotKind, level: u8, density: f32, rng: &mut Rng) -> Opti
             if level == 5 && density >= 0.97 && kind == LotKind::Office && rng.below(20) == 0 {
                 10
             } else if kind == LotKind::Office {
-                [5, 6, 7, 9, 11][rng.below(5)]
+                // most downtown towers are the new silhouettes; the older stepped ones are the minority
+                [14, 15, 16, 17, 19, 20, 21, 22, 13, 5, 6, 7, 9, 11, 18, 14][rng.below(16)]
             } else {
-                [5, 7, 8, 9, 12][rng.below(5)]
+                [13, 17, 18, 18, 16, 22, 12, 8, 21, 19, 5, 9, 15, 14][rng.below(14)]
             }
         }
         _ => return None,
     };
     let plan = rng.below(PLANS);
-    Some(build(family, plan, level))
+    // taller in the middle of downtown, lower toward its edge, and the odd real outlier
+    let edge = ((density - 0.78) / 0.22).clamp(0.0, 1.0);
+    let mut scale = 0.62 + 0.38 * edge;
+    if density >= 0.9 && level >= 5 && family != 10 && rng.below(11) == 0 {
+        scale = 1.32 + rng.range(0.0, 0.18);
+    }
+    let pick = rng.below(9);
+    let wall = skyline::tower_wall(density, plan, pick);
+    Some(build_with(family, plan, level, scale, Some(wall)))
 }
 
 fn rectangle(w: f32, d: f32) -> [[f32; 2]; 4] {
@@ -263,7 +283,7 @@ fn small(family: usize, plan: usize, wall: Rgb) -> Obj {
     obj
 }
 
-fn tower(family: usize, plan: usize, level: u8, wall: Rgb) -> Obj {
+fn tower(family: usize, plan: usize, level: u8, wall: Rgb, scale: f32) -> Obj {
     let mut obj = Obj::new();
     let w = 8.7 + (plan % 4) as f32 * 0.85;
     let d = 7.0 + (plan / 4) as f32;
@@ -271,18 +291,25 @@ fn tower(family: usize, plan: usize, level: u8, wall: Rgb) -> Obj {
     let count = if level < 5 {
         9 + plan % 4 + usize::from(family != 5)
     } else {
-        [28, 36, 41, 34, 43, 76, 49, 42][family - 5] + if family == 5 { 0 } else { plan % 4 }
+        let n =
+            [28, 36, 41, 34, 43, 76, 49, 42][family - 5] + if family == 5 { 0 } else { plan % 4 };
+        if family == 10 {
+            n
+        } else {
+            ((n as f32 * scale).round() as usize).max(20)
+        }
     };
     let base_depth = d + 1.15 + 0.30 * (plan % 3) as f32;
-    let podium = rectangle(w + 1.2, base_depth);
     let street_wall = [CONCRETE, [145, 113, 99], [142, 152, 158]][plan % 3];
-    finish_extrusion(
+    skyline::base(
         &mut obj,
-        &podium,
         0.0,
-        storey * 2.0,
+        0.0,
+        w + 1.2,
+        base_depth,
+        2,
+        plan,
         street_wall,
-        Finish::Loft,
     );
     let entry = (plan % 3) as f32 * 1.2 - 1.2;
     obj.bx(
@@ -441,6 +468,11 @@ fn tower(family: usize, plan: usize, level: u8, wall: Rgb) -> Obj {
 
 /// Create one of the measured architecture plans. Level five previews the full skyline form.
 pub fn build(family: usize, plan: usize, level: u8) -> Obj {
+    build_with(family, plan, level, 1.0, None)
+}
+
+/// Like `build`, with the floor count stretched by `scale` and an optional wall colour.
+pub fn build_with(family: usize, plan: usize, level: u8, scale: f32, wall: Option<Rgb>) -> Obj {
     const WALLS: [Rgb; 9] = [
         [208, 199, 177],
         [163, 118, 97],
@@ -452,10 +484,12 @@ pub fn build(family: usize, plan: usize, level: u8) -> Obj {
         [161, 162, 190],
         [198, 188, 153],
     ];
-    let wall = WALLS[(family + plan * 5) % WALLS.len()];
+    let wall = wall.unwrap_or(WALLS[(family + plan * 5) % WALLS.len()]);
     if family < 5 {
         small(family, plan, wall)
+    } else if family >= skyline::FIRST {
+        skyline::build(family - skyline::FIRST, plan, level, scale, wall)
     } else {
-        tower(family, plan, level, wall)
+        tower(family, plan, level, wall, scale)
     }
 }

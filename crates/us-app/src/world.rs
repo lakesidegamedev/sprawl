@@ -16,10 +16,7 @@ use us_render::live::{
 };
 use us_render::obj::{Obj, Sit};
 use us_render::site::{step_of, step_progress};
-use us_render::{
-    Chunk, CivicModel, Land, LotInfo, Mesh, Rng, RoadInfo, Scene, build_civic,
-    build_lot_level_dense, kit,
-};
+use us_render::{Chunk, CivicModel, Land, LotInfo, Mesh, Rng, RoadInfo, Scene, build_civic, kit};
 use us_sim::{CivicKind, LotState, Phase, Sim};
 
 const CELL: f32 = 256.0;
@@ -335,12 +332,27 @@ struct LotDraw {
 }
 
 /// The model of one lot at a level, local to the lot, facing south.
-fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8, density: f32) -> LotDraw {
+fn lot_model(
+    preset: Preset,
+    seed: u64,
+    l: &LotState,
+    level: u8,
+    density: f32,
+    downtown: bool,
+) -> LotDraw {
     let mut rng = Rng::new(seed ^ 0x5eed_0000, l.src as u64 * 7919 + 13);
     let building = match civic_model(l.civic) {
         Some(m) => build_civic(m, &mut rng),
         None if l.civic.is_some() => kit::build_lot_for(preset, l.kind, l.radius as f32, &mut rng),
-        None => build_lot_level_dense(preset, l.kind, level, l.radius as f32, density, &mut rng),
+        None => us_render::build_lot_level_district(
+            preset,
+            l.kind,
+            level,
+            l.radius as f32,
+            density,
+            downtown,
+            &mut rng,
+        ),
     };
     let building = if l.civic.is_some() && level >= 2 {
         let tier = f32::from(level.min(3) - 1);
@@ -357,7 +369,11 @@ fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8, density: f32) -
         building
     };
     let (kind, radius) = (l.kind, l.radius);
-    let n = trees_for(kind, &mut rng);
+    let n = if downtown {
+        0
+    } else {
+        trees_for(kind, &mut rng)
+    };
     let mut trees = Vec::new();
     if n > 0 {
         let fp = building.footprint();
@@ -374,7 +390,7 @@ fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8, density: f32) -
                     continue;
                 }
                 placed.push([lx, ly]);
-                let (rad, h) = (rng.range(1.8, 2.8), rng.range(5.0, 8.0));
+                let (rad, h) = (rng.range(2.4, 3.4), rng.range(8.0, 12.0));
                 let col = rng.pick(&green);
                 let roll = rng.f32();
                 trees.push((lx, ly, us_render::kit_more::tree_species(roll, rad, h, col)));
@@ -402,7 +418,12 @@ fn look_obj(
     ground: (&Streetscape, &Town),
 ) -> LotDraw {
     let level = if l.civic.is_some() { 1 } else { look.level };
-    let mut d = lot_model(preset, seed, l, level, density);
+    let downtown = ground
+        .1
+        .additions
+        .get(l.addition)
+        .is_some_and(|a| a.zone == Zone::Core);
+    let mut d = lot_model(preset, seed, l, level, density, downtown);
     // the grounds around a finished building, from the model as built
     if l.civic.is_none() && matches!(look.state, 2 | 4) {
         let (yard, drive) = ground.0.lot_yard(ground.1, l.src, &d.building);
@@ -417,8 +438,8 @@ fn look_obj(
     let mut rng = Rng::new(seed ^ 0xb0b0, i as u64);
     let mut dress = |o: &Obj| match look.state {
         1 => {
-            let old =
-                (look.from > 0).then(|| lot_model(preset, seed, l, look.from, density).building);
+            let old = (look.from > 0)
+                .then(|| lot_model(preset, seed, l, look.from, density, downtown).building);
             let tall = look.level >= 4 || l.kind == LotKind::Office;
             building_site_for(o, old.as_ref(), tall, step_progress(look.step))
         }

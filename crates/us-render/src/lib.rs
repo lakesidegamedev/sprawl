@@ -42,6 +42,7 @@ pub mod roadpaint;
 pub mod rock;
 mod scene;
 pub mod site;
+pub mod skyline;
 pub mod trains;
 pub mod trams;
 pub mod weather;
@@ -52,7 +53,8 @@ pub use camera::{Camera, View, pick_ground, pick_terrain, project, ray_ground};
 pub use civic::{ALL_CIVIC, CivicModel, build_civic};
 pub use land::Land;
 pub use levels::{
-    MAX_LEVEL, build_lot_level, build_lot_level_dense, build_lot_level_for, build_lot_level_in,
+    MAX_LEVEL, build_lot_level, build_lot_level_dense, build_lot_level_district,
+    build_lot_level_for, build_lot_level_in,
 };
 pub use mesh::{ID_GROUND, ID_NONE, Mesh, VERTEX_BYTES, Vertex};
 pub use obj::{Obj, Poly, Rgb, V3};

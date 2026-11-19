@@ -289,6 +289,82 @@ pub fn build_lot_level_dense(
     kit::fit_to_lot(obj, radius)
 }
 
+/// Like `build_lot_level_dense`, for a lot in a downtown (core) district: houses, rowhouses and
+/// works become shop-fronted infill, small buildings widen to the lot line, towers stand on a
+/// shopfront plinth that fills the lot, and the colours follow the district palette.
+pub fn build_lot_level_district(
+    preset: us_gen::Preset,
+    kind: LotKind,
+    level: u8,
+    radius: f32,
+    density: f32,
+    downtown: bool,
+    rng: &mut Rng,
+) -> Obj {
+    let level = level.clamp(1, MAX_LEVEL);
+    let kind_eff = if downtown {
+        match kind {
+            LotKind::House | LotKind::Row => {
+                if level >= 4 {
+                    LotKind::Apartments
+                } else {
+                    LotKind::Shop
+                }
+            }
+            LotKind::Workshop | LotKind::Warehouse => {
+                if level >= 4 {
+                    LotKind::Office
+                } else {
+                    LotKind::Shop
+                }
+            }
+            k => k,
+        }
+    } else {
+        kind
+    };
+    let mut o = build_lot_level_dense(preset, kind_eff, level, radius, density, rng);
+    let roll = rng.f32();
+    let built = matches!(
+        kind_eff,
+        LotKind::Shop | LotKind::Office | LotKind::Apartments
+    );
+    if downtown && built {
+        let fp = o.footprint();
+        let (hx, hy) = (fp[0].abs().max(fp[2].abs()), fp[1].abs().max(fp[3].abs()));
+        let (tx, ty) = (radius * 0.66, radius * 0.62);
+        if top_of(&o) < 24.0 && hx > 1.0 && hy > 1.0 {
+            // low-rise infill: stretch to the lot line so neighbours join into a street wall
+            let kx = (tx / hx).clamp(1.0, 1.9);
+            let ky = (ty / hy).clamp(1.0, 1.7);
+            if kx > 1.05 || ky > 1.05 {
+                o = scaled(&o, kx, ky, 1.0);
+            }
+        } else if hx < tx * 0.9 || hy < ty * 0.9 {
+            // a tower: a two-storey shopfront plinth the width of the lot
+            let wall = [
+                [176, 173, 164],
+                [145, 113, 99],
+                [142, 152, 158],
+                [120, 112, 104],
+            ][(roll * 4.0) as usize % 4];
+            crate::skyline::base_with(
+                &mut o,
+                0.0,
+                0.0,
+                tx,
+                ty,
+                2,
+                3.2,
+                (roll * 12.0) as usize,
+                wall,
+            );
+        }
+    }
+    crate::skyline::recolour(&mut o, kind_eff, density, downtown, roll);
+    o
+}
+
 /// The model for one lot at a building level from 1 to 5 in a region.
 pub fn build_lot_level_in(region: Region, kind: LotKind, level: u8, rng: &mut Rng) -> Obj {
     let level = level.clamp(1, MAX_LEVEL);

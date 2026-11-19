@@ -903,8 +903,12 @@ impl Streetscape {
         };
         let mut drives = Vec::new();
         let yard = match lot.kind {
-            LotKind::House | LotKind::Row => house_yard(lot, i, obj, &cx, &mut drives),
-            LotKind::Shop
+            LotKind::House | LotKind::Row if !cx.core.has(lot.centre) => {
+                house_yard(lot, i, obj, &cx, &mut drives)
+            }
+            LotKind::House
+            | LotKind::Row
+            | LotKind::Shop
             | LotKind::FastFood
             | LotKind::Office
             | LotKind::Apartments
