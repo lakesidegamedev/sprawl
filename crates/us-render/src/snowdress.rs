@@ -71,7 +71,8 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], hw_of: &dyn Fn(usize) -> f32, r
                 right,
                 left,
                 crest,
-                0.32,
+                // low enough that junction paving covers the bank where roads meet
+                0.10,
             );
         }
     }
