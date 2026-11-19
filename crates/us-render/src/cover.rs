@@ -1138,6 +1138,13 @@ pub fn build_all(t: &Town, land: &Land) -> Vec<Chunk> {
     v
 }
 
+/// Every bush shape, light and dark, for the model sheet example.
+pub fn bush_sheet() -> Vec<Obj> {
+    (0..3)
+        .flat_map(|s| [bush(s, false, 0), bush(s, true, 0)])
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

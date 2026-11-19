@@ -567,7 +567,7 @@ fn forecourt(lot: &Lot, i: usize, obj: &Obj, cx: &Ctx) -> Option<Obj> {
     let xc = ((fp[0] + fp[2]) / 2.0).clamp(-r * 0.3, r * 0.3);
     let (xa, xb) = ((xc - w2).max(-r * 0.95), (xc + w2).min(r * 0.95));
     let (ya, yb) = (-(l - 0.1), front + 0.1);
-    let downtown = cx.core.has(lot.centre);
+    let downtown = cx.core.has(lot.centre) || lot.density as f32 >= crate::towers::CORE_EDGE;
     let industrial = matches!(
         lot.kind,
         LotKind::Workshop | LotKind::Warehouse | LotKind::Gas
@@ -855,7 +855,17 @@ fn plaza(t: &Town, land: &Land, roads: &Roads, circles: &Circles, out: &mut Vec<
                     o.bx_top(-1.75, -1.4, 0.0, 1.75, 1.4, 0.38, [150, 130, 108], SOIL);
                     for (sx, sy) in [(-1.1, -0.75), (1.05, -0.6), (0.9, 0.85)] {
                         let tone = rng.pick(&[[96, 150, 66], [112, 158, 78], [78, 126, 77]]);
-                        o.pyramid(sx, sy, 0.38, 0.43, rng.range(0.46, 0.75), tone, 6, 0.15);
+                        let hgt = rng.range(0.4, 0.62);
+                        o.bx_top(
+                            sx - 0.38,
+                            sy - 0.34,
+                            0.38,
+                            sx + 0.38,
+                            sy + 0.34,
+                            0.38 + hgt,
+                            tone,
+                            shade(tone, 1.1),
+                        );
                     }
                 } else {
                     // a bench pair with a bin
@@ -903,8 +913,14 @@ impl Streetscape {
         };
         let mut drives = Vec::new();
         let yard = match lot.kind {
-            LotKind::House | LotKind::Row => house_yard(lot, i, obj, &cx, &mut drives),
-            LotKind::Shop
+            LotKind::House | LotKind::Row
+                if !cx.core.has(lot.centre) && (lot.density as f32) < crate::towers::CORE_EDGE =>
+            {
+                house_yard(lot, i, obj, &cx, &mut drives)
+            }
+            LotKind::House
+            | LotKind::Row
+            | LotKind::Shop
             | LotKind::FastFood
             | LotKind::Office
             | LotKind::Apartments
@@ -962,7 +978,8 @@ pub fn lot_pad(zone: Zone, r: f32, footprint: [f32; 4]) -> Option<Obj> {
     if zone == Zone::Core {
         // downtown lots are paved edge to edge so built neighbours join into paved blocks; the
         // plain paving of next-door lots overlaps in one colour, the checker stays by the building
-        quad(&mut o, -r, -r, r, r, 0.03, base);
+        let e = r * 1.2;
+        quad(&mut o, -e, -e, e, e, 0.03, base);
     } else {
         // trodden ground round the paving, so the pad does not end in a clean line on grass
         quad(
@@ -1546,7 +1563,7 @@ mod tests {
             let at_lot = t.lots.iter().any(|l| {
                 (l.centre.x as f32 - x).abs() < 0.01 && (l.centre.y as f32 - y).abs() < 0.01
             });
-            if at_lot || *turn != 0.0 || o.polys.len() > 60 {
+            if at_lot || *turn != 0.0 || o.polys.len() > 100 {
                 continue;
             }
             let p = pt(*x as f64, *y as f64);

@@ -201,9 +201,9 @@ pub fn zone_ground(t: &Town, index: usize) -> Mesh {
 pub fn zone_ground_on(land: &Land, t: &Town, index: usize) -> Mesh {
     let mut g = Ground::on(land);
     let a = &t.additions[index];
-    // downtown, industry and malls are not paved over as a slab: the land stays natural and each
-    // building gets its own paving (`decor::lot_pad`) when it is built
-    let slab = !matches!(a.zone, Zone::Core | Zone::Industry | Zone::Mall);
+    // no zone slab for downtown, industry or malls: each lot is paved where it is (`decor::lot_pad`,
+    // built or vacant), so paving ends at the lot edge and never runs on into open land or woods
+    let slab = !matches!(a.zone, Zone::Industry | Zone::Mall | Zone::Core);
     if let Some(c) = zone_colour_in(t.preset, a.zone, a.pattern, t.seed, index).filter(|_| slab) {
         g.polygon(&a.polygon, layer::ZONE, c);
     }
@@ -226,6 +226,8 @@ pub struct RoadDraw<'a> {
 pub const SNOW_EDGE: Rgb = [247, 248, 253];
 pub const DIRT: Rgb = [156, 140, 118];
 pub const CONE_ORANGE: Rgb = [238, 132, 40];
+/// Road-works cones seen from above, toned down to sit in the picture.
+const CONE_MUTED: Rgb = [196, 126, 78];
 pub const DIRT_RUT: Rgb = [126, 112, 94];
 pub const GRAVEL: Rgb = [176, 170, 158];
 pub const FRESH_ASPHALT: Rgb = [58, 60, 68];
@@ -311,14 +313,11 @@ fn road_works(g: &mut Ground, r: &RoadDraw, hw: f32, p: f32) {
             }
         }
     }
+    // cones, not a stripe: a muted dot every few metres along both edges
     for side in [-1.0f32, 1.0] {
-        g.ribbon(
-            r.points,
-            0.35,
-            side * (hw - 0.6),
-            layer::MARK + 0.02,
-            CONE_ORANGE,
-        );
+        for d in dashes(r.points, 0.7, 7.5) {
+            g.ribbon(&d, 0.5, side * (hw - 0.6), layer::MARK + 0.02, CONE_MUTED);
+        }
     }
     // the machine: a truck while the earth is moved, a roller after
     let total: f64 = r.points.windows(2).map(|w| w[0].dist(w[1])).sum();
