@@ -841,7 +841,7 @@ fn plaza(t: &Town, land: &Land, roads: &Roads, circles: &Circles, out: &mut Vec<
                 let pick = rng.f32();
                 if pick > 0.7
                     || !in_ring(q, &a.polygon)
-                    || roads.edge_dist(q, None).0 < 4.5
+                    || roads.edge_dist(q, None).0 < 9.0
                     || circles.blocked(q, 2.0)
                     || land.water_at(q).is_some()
                 {

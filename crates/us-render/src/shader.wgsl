@@ -1782,6 +1782,8 @@ fn fs_main(v: VOut) -> FOut {
         let night = smoothstep(0.08, 0.6, 1.0 - g.tone.r);
         let luma = dot(col, vec3<f32>(0.3, 0.59, 0.11));
         col = mix(col, vec3<f32>(luma) * vec3<f32>(0.88, 0.96, 1.12), night * 0.6);
+        // roofs and other upward faces fall back at night: the streets and windows carry the light
+        col *= 1.0 - 0.32 * night * smoothstep(0.6, 0.95, n.z);
     }
     col = mix(col, glow, glow_amount) + glow * glow_amount * 0.33;
     var o: FOut;

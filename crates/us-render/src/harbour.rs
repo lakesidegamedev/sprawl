@@ -517,8 +517,30 @@ pub fn add(mesh: &mut Mesh, land: &Land, t: &Town) {
             o.emit_on(mesh, &mut next, a.x as f32, a.y as f32, ang, 1.0, None);
         }
     }
-    // piers: a deck on posts, with a path from its root to the nearest road
-    for (root, tip) in &h.piers {
+    // piers: a deck on posts, with a path from its root to the nearest road. A pier starts at
+    // the water's edge, not up the beach, and reaches far enough out to float a boat.
+    let wet = |p: Pt| land.water_at(p).is_some() || land.height(p.x as f32, p.y as f32) < -0.3;
+    let piers: Vec<(Pt, Pt)> = h
+        .piers
+        .iter()
+        .map(|(root, tip)| {
+            let len = root.dist(*tip);
+            if len < 1.0 {
+                return (*root, *tip);
+            }
+            let (dx, dy) = ((tip.x - root.x) / len, (tip.y - root.y) / len);
+            let at = |d: f64| us_gen::pt(root.x + dx * d, root.y + dy * d);
+            // where the water begins along the pier's line
+            let mut shore = 0.0;
+            while shore < len + 60.0 && !wet(at(shore)) {
+                shore += 2.0;
+            }
+            let start = (shore - 5.0).max(0.0);
+            let end = len.max(shore + 46.0);
+            (at(start), at(end))
+        })
+        .collect();
+    for (root, tip) in &piers {
         let len = root.dist(*tip) as f32;
         let ang = libm::atan2f((tip.y - root.y) as f32, (tip.x - root.x) as f32);
         let mut o = Obj::new();
@@ -570,8 +592,9 @@ pub fn add(mesh: &mut Mesh, land: &Land, t: &Town) {
         }
     }
     moor.room = usize::MAX;
-    for (root, tip) in &h.piers {
-        moor.along((*root, *tip), 24.0, 4.0, &[-1.0, 1.0], &water);
+    for (root, tip) in &piers {
+        // berths begin a boat's length out from the water's edge, where it is deep enough
+        moor.along((*root, *tip), 16.0, 4.0, &[-1.0, 1.0], &water);
     }
     for (i, (size, b)) in moor.berths.iter().enumerate() {
         let o = boat(*size, hash(t.seed, i as u64));

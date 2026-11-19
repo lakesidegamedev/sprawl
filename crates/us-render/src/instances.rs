@@ -131,6 +131,55 @@ pub fn lamp_mesh() -> Mesh {
 
 /// Where the street lamps stand: both sides in turn along every street, a lamp each `spacing`
 /// metres, set just outside the road edge with the arm over the road.
+/// Whether `at` lies on the carriageway of a road other than `own`: used to keep lamps and
+/// people off the crossing road at a junction.
+fn on_other_carriageway(paths: &[Path], own: &Path, at: [f32; 2], main_only: bool) -> bool {
+    paths.iter().any(|o| {
+        !std::ptr::eq(o, own)
+            && o.class != RoadClass::Rail
+            && (!main_only || matches!(o.class, RoadClass::Arterial | RoadClass::Collector))
+            && o.pts.windows(2).any(|w| {
+                let (ax, ay, bx, by) = (w[0][0], w[0][1], w[1][0], w[1][1]);
+                let reach = o.class.half_width() as f32 + 1.0;
+                if at[0] < ax.min(bx) - reach
+                    || at[0] > ax.max(bx) + reach
+                    || at[1] < ay.min(by) - reach
+                    || at[1] > ay.max(by) + reach
+                {
+                    return false;
+                }
+                let (vx, vy) = (bx - ax, by - ay);
+                let l2 = (vx * vx + vy * vy).max(1e-6);
+                let t = (((at[0] - ax) * vx + (at[1] - ay) * vy) / l2).clamp(0.0, 1.0);
+                let (ex, ey) = (at[0] - (ax + vx * t), at[1] - (ay + vy * t));
+                ex * ex + ey * ey < reach * reach
+            })
+    })
+}
+
+/// Whether `at` lies on the carriageway of any road: street furniture never does.
+pub(crate) fn on_any_carriageway(paths: &[Path], at: [f32; 2]) -> bool {
+    paths.iter().any(|o| {
+        o.class != RoadClass::Rail
+            && o.pts.windows(2).any(|w| {
+                let (ax, ay, bx, by) = (w[0][0], w[0][1], w[1][0], w[1][1]);
+                let reach = o.class.half_width() as f32 - 0.3;
+                if at[0] < ax.min(bx) - reach
+                    || at[0] > ax.max(bx) + reach
+                    || at[1] < ay.min(by) - reach
+                    || at[1] > ay.max(by) + reach
+                {
+                    return false;
+                }
+                let (vx, vy) = (bx - ax, by - ay);
+                let l2 = (vx * vx + vy * vy).max(1e-6);
+                let t = (((at[0] - ax) * vx + (at[1] - ay) * vy) / l2).clamp(0.0, 1.0);
+                let (ex, ey) = (at[0] - (ax + vx * t), at[1] - (ay + vy * t));
+                ex * ex + ey * ey < reach * reach
+            })
+    })
+}
+
 pub fn lamp_instances(paths: &[Path]) -> Vec<Instance> {
     let mut out = Vec::new();
     for p in paths {
@@ -148,15 +197,22 @@ pub fn lamp_instances(paths: &[Path]) -> Vec<Instance> {
             let (pt, d) = p.at(s);
             let side = if k.is_multiple_of(2) { 1.0 } else { -1.0 };
             let (nx, ny) = (-d[1] * side, d[0] * side);
+            let at = [pt[0] + nx * off, pt[1] + ny * off];
+            s += spacing;
+            k += 1;
+            // never on another road's carriageway: at a junction a lamp from one arm would
+            // otherwise stand in the middle of the crossing road
+            let on_road = on_other_carriageway(paths, p, at, false);
+            if on_road {
+                continue;
+            }
             out.push(Instance {
-                pos: [pt[0] + nx * off, pt[1] + ny * off, p.z(s)],
+                pos: [at[0], at[1], p.z(s - spacing)],
                 theta: libm::atan2f(-ny, -nx),
                 scale: 1.0,
                 tint: 0,
                 id: LAMP_ID_BASE + out.len() as u32 * ID_STRIDE,
             });
-            s += spacing;
-            k += 1;
         }
     }
     out
@@ -498,8 +554,13 @@ pub fn walker_instances(paths: &[Path], walkers: &[Walker], time: f32) -> Vec<In
         let off = p.class.half_width() as f32 + 1.4;
         let (nx, ny) = (-d[1], d[0]);
         let dir = fwd * w.dir.signum() * if w.dir > 0.0 { 1.0 } else { -1.0 };
+        let at = [pt[0] + nx * off * w.side, pt[1] + ny * off * w.side];
+        // nobody stands on the carriageway of a main road that crosses their street
+        if on_other_carriageway(paths, p, at, true) {
+            continue;
+        }
         out.push(Instance {
-            pos: [pt[0] + nx * off * w.side, pt[1] + ny * off * w.side, p.z(s)],
+            pos: [at[0], at[1], p.z(s)],
             theta: libm::atan2f(d[1] * dir, d[0] * dir),
             scale: 1.0,
             tint: tint(w.colour),
