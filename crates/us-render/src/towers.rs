@@ -24,9 +24,64 @@ pub const MAX_CROWNS: usize = 3;
 const PLANS: usize = crate::architecture::PLANS;
 
 /// Families without a spire, crown or mast: the everyday downtown tower.
-pub const PLAIN: [usize; 12] = [13, 16, 17, 18, 19, 22, 5, 7, 8, 9, 11, 12];
+pub const PLAIN: [usize; 15] = [13, 16, 17, 18, 19, 22, 5, 7, 8, 9, 11, 12, 23, 24, 25];
 /// Families with a spire or crown: only the tallest one to three towers of the town.
 pub const CROWNED: [usize; 5] = [14, 15, 20, 21, 10];
+
+// ---- how tall a lot is allowed to be ----
+
+/// (population, storeys of the tallest possible building) anchors: the storey cap of a town is
+/// read off this line, so a few thousand people have a modest centre and only a big town earns
+/// real towers.
+const CAP_LINE: [(f32, f32); 9] = [
+    (0.0, 3.0),
+    (1000.0, 4.0),
+    (2500.0, 7.0),
+    (4000.0, 9.0),
+    (7000.0, 14.0),
+    (12000.0, 20.0),
+    (20000.0, 30.0),
+    (40000.0, 44.0),
+    (80000.0, 60.0),
+];
+/// A building of at least this many storeys is drawn as a tower model; lower ones are street-wall
+/// blocks.
+pub const TOWER_MIN: usize = 14;
+/// A spire or crown needs at least this many storeys.
+pub const CROWN_MIN: usize = 30;
+
+/// Storeys of the tallest building a town of this population can have (a level 5 lot in the very
+/// middle of downtown): 3 at nothing, 9 at 4000 people, 14 at 7000, 30 at 20000, 60 at 80000.
+pub fn storey_cap(pop: u32) -> u8 {
+    let p = pop as f32;
+    let mut out = CAP_LINE[CAP_LINE.len() - 1].1;
+    for w in CAP_LINE.windows(2) {
+        if p < w[1].0 {
+            out = w[0].1 + (w[1].1 - w[0].1) * (p - w[0].0) / (w[1].0 - w[0].0);
+            break;
+        }
+    }
+    out.round() as u8
+}
+
+/// Share of the storey cap a lot of this building level reaches.
+pub fn level_share(level: u8) -> f32 {
+    [0.3, 0.45, 0.62, 0.85, 1.0][usize::from(level.clamp(1, 5)) - 1]
+}
+
+/// Share of the storey cap a lot of this density reaches: steep, so the rim of downtown is low
+/// and only the middle is tall.
+pub fn centre_share(density: f32) -> f32 {
+    let e = ((density - CORE_EDGE) / (1.0 - CORE_EDGE)).clamp(0.0, 1.0);
+    0.18 + 0.82 * e.powf(2.2)
+}
+
+/// Storeys of a downtown building: the town's cap times what the lot's level and its place in
+/// downtown allow, a little roll for variety, never under 2.
+pub fn lot_storeys(cap: u8, level: u8, density: f32, roll: f32) -> usize {
+    let s = f32::from(cap) * level_share(level) * centre_share(density) * (0.88 + 0.24 * roll);
+    (s.round() as usize).max(2)
+}
 
 /// A choice of building for one downtown lot.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -38,10 +93,8 @@ pub struct TowerSlot {
     /// Stretch of the floor count: well under 1 at the edge of downtown, over 1 for the tallest.
     pub scale: f32,
     pub crown: bool,
-    /// No tower model was free here: the lot gets a street-wall block of `floors` storeys.
+    /// No tower model was free here: the lot gets a street-wall block.
     pub mid_rise: bool,
-    /// Storeys of the mid-rise block (6 to 12); unused for a tower.
-    pub floors: usize,
 }
 
 /// Whether a lot of this kind in this town may carry a downtown tower.
@@ -194,7 +247,6 @@ pub fn plan(t: &Town) -> Vec<Option<TowerSlot>> {
             scale: 0.0,
             crown,
             mid_rise: true,
-            floors: 6 + (6.0 * edge.powf(1.5)).round() as usize,
         };
         if !free.is_empty() && tower_ok {
             let c = free[rng.below(free.len())];
@@ -211,7 +263,6 @@ pub fn plan(t: &Town) -> Vec<Option<TowerSlot>> {
             placed.push((i, c));
         } else {
             slot.crown = false;
-            slot.floors = (slot.floors + rng.below(2)).min(12);
         }
         out[i] = Some(slot);
     }
@@ -279,14 +330,11 @@ mod tests {
             for (_, s) in &towers {
                 assert!(s.crown == CROWNED.contains(&s.family));
             }
-            // a lot with no model free gets a mid-rise block of 6 to 12 floors, never nothing
+            // a lot with no model free gets a street-wall block, never nothing
             for (i, l) in t.lots.iter().enumerate() {
                 if eligible(l) {
                     let s = slots[i].expect("every eligible core lot has a building");
-                    if s.mid_rise {
-                        assert!((6..=12).contains(&s.floors), "{} floors", s.floors);
-                        assert!(!s.crown);
-                    }
+                    assert!(!(s.mid_rise && s.crown));
                 }
             }
         }
@@ -311,15 +359,99 @@ mod tests {
                 l.density as f32,
                 true,
                 Some(&s),
+                60,
                 &mut rng,
             );
             assert!(!o.polys.is_empty(), "lot {i} was left unbuilt");
             assert!(
-                crate::levels::top_of(&o) > 12.0,
+                crate::levels::top_of(&o) > 6.0,
                 "lot {i} is a real building"
             );
             built += 1;
         }
         assert!(built > 100 && mid > 0, "{built} lots, {mid} mid-rise");
+    }
+
+    #[test]
+    fn the_storey_cap_follows_the_population() {
+        let caps: Vec<u8> = [
+            0u32, 1000, 2500, 4000, 6000, 7000, 12000, 20000, 40000, 80000, 200000,
+        ]
+        .iter()
+        .map(|&p| storey_cap(p))
+        .collect();
+        assert!(caps.windows(2).all(|w| w[0] <= w[1]), "{caps:?}");
+        assert_eq!(storey_cap(0), 3);
+        assert!(
+            storey_cap(5800) < TOWER_MIN as u8,
+            "a small town has no towers"
+        );
+        assert!(storey_cap(20000) >= 30);
+        assert_eq!(storey_cap(1_000_000), 60);
+    }
+
+    #[test]
+    fn height_falls_off_from_the_centre_and_grows_with_level() {
+        for cap in [9u8, 20, 44] {
+            let mut last = usize::MAX;
+            for d in [1.0f32, 0.9, 0.8, 0.7, 0.62] {
+                let n = lot_storeys(cap, 4, d, 0.5);
+                assert!(n <= last, "cap {cap}: density {d} gives {n}, was {last}");
+                last = n;
+            }
+            assert!(lot_storeys(cap, 5, 1.0, 0.5) >= lot_storeys(cap, 3, 1.0, 0.5));
+            // the rim is low whatever the town: well under a third of the cap
+            assert!(lot_storeys(cap, 4, 0.62, 0.5) * 3 <= usize::from(cap).max(6));
+        }
+    }
+
+    #[test]
+    fn every_tower_model_builds_at_every_forced_floor_count() {
+        for &f in PLAIN.iter().chain(CROWNED.iter()) {
+            for p in 0..PLANS {
+                for n in [8usize, 9, 11, 14, 17, 22, 30, 45, 60] {
+                    let o = crate::skyline::with_tower(3.5, Some(n), || {
+                        crate::architecture::build_with(f, p, 5, 1.0, None)
+                    });
+                    let h = crate::levels::top_of(&o);
+                    assert!(h.is_finite() && h > n as f32 * 3.0, "{f}/{p} at {n}: {h} m");
+                    assert!(
+                        o.polys
+                            .iter()
+                            .flat_map(|q| &q.pts)
+                            .all(|v| v.iter().all(|c| c.is_finite()))
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_downtown_lot_builds_at_every_cap_and_level() {
+        let t = us_gen::generate(us_gen::Preset::Grid, 3);
+        let slots = plan(&t);
+        for (i, l) in t.lots.iter().enumerate() {
+            if !is_downtown(l.zone, l.density as f32) {
+                continue;
+            }
+            for cap in [3u8, 9, 14, 30, 60] {
+                for level in [1u8, 3, 4, 5] {
+                    let mut rng = Rng::new(9, i as u64);
+                    let o = crate::build_lot_level_district(
+                        t.preset,
+                        l.kind,
+                        level,
+                        l.radius as f32,
+                        l.density as f32,
+                        true,
+                        slots[i].as_ref(),
+                        cap,
+                        &mut rng,
+                    );
+                    let top = crate::levels::top_of(&o);
+                    assert!(top.is_finite(), "lot {i} cap {cap} level {level}");
+                }
+            }
+        }
     }
 }

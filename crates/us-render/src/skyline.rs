@@ -30,6 +30,22 @@ thread_local! {
     static NO_BASE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Upper storey height of the tower being built.
     static STOREY_M: std::cell::Cell<f32> = const { std::cell::Cell::new(STOREY) };
+    /// Floor count the town's height rule has set for the tower being built, if any.
+    static FLOORS_SET: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Storey height and the floor count forced by the town's rule for the tower being built.
+pub(crate) fn tower_rule() -> (f32, Option<usize>) {
+    (STOREY_M.with(|b| b.get()), FLOORS_SET.with(|b| b.get()))
+}
+
+/// Run `f` with the tower plinth switched off, the given storey height and, when `floors` is
+/// set, exactly that many storeys in the shaft whatever its family would have chosen.
+pub fn with_tower<T>(storey: f32, floors: Option<usize>, f: impl FnOnce() -> T) -> T {
+    FLOORS_SET.with(|b| b.set(floors));
+    let out = without_base(storey, f);
+    FLOORS_SET.with(|b| b.set(None));
+    out
 }
 
 /// Run `f` with the tower plinth switched off and the given storey height.
@@ -97,7 +113,10 @@ fn chamfered(hw: f32, hd: f32, c: f32) -> Vec<[f32; 2]> {
 }
 
 /// A convex block with a facade finish on its walls and a membrane roof.
-fn block(obj: &mut Obj, ring: &[[f32; 2]], z0: f32, z1: f32, wall: Rgb, finish: Finish) {
+pub(crate) fn block(obj: &mut Obj, ring: &[[f32; 2]], z0: f32, z1: f32, wall: Rgb, finish: Finish) {
+    if z1 < z0 + 0.05 {
+        return;
+    }
     let first = obj.polys.len();
     obj.extrude(ring, z0, z1, wall, ROOF);
     for face in &mut obj.polys[first..first + ring.len()] {
@@ -107,7 +126,18 @@ fn block(obj: &mut Obj, ring: &[[f32; 2]], z0: f32, z1: f32, wall: Rgb, finish: 
 }
 
 /// A tapering block, `lo` at `z0` to `hi` at `z1`.
-fn taper(obj: &mut Obj, lo: &[[f32; 2]], hi: &[[f32; 2]], z0: f32, z1: f32, wall: Rgb, f: Finish) {
+pub(crate) fn taper(
+    obj: &mut Obj,
+    lo: &[[f32; 2]],
+    hi: &[[f32; 2]],
+    z0: f32,
+    z1: f32,
+    wall: Rgb,
+    f: Finish,
+) {
+    if z1 < z0 + 0.05 {
+        return;
+    }
     let first = obj.polys.len();
     obj.loft(lo, z0, hi, z1, wall, Some(ROOF));
     for face in &mut obj.polys[first..first + lo.len()] {
@@ -235,6 +265,9 @@ fn shopfront_base(
 }
 
 fn floors(base: usize, scale: f32, level: u8) -> usize {
+    if let Some(n) = FLOORS_SET.with(|b| b.get()) {
+        return n;
+    }
     let k = match level {
         0..=3 => 0.3,
         4 => 0.58,
@@ -678,91 +711,6 @@ pub fn apply_material(o: &mut Obj, pick: usize, residential: bool) {
             p.finish = f;
         }
     }
-}
-
-/// A mid-rise street-wall block that fills the lot to its line: retail ground floor with
-/// shopfronts, `floors` upper storeys of the material, a cornice, a parapet and a rooftop box.
-/// `hx` and `hy` are half the frontage and depth in metres. Neighbours join into a street wall.
-#[allow(clippy::too_many_arguments)]
-pub fn street_block(
-    hx: f32,
-    hy: f32,
-    floors: usize,
-    residential: bool,
-    pick: usize,
-    plan: usize,
-    roll: f32,
-) -> Obj {
-    let mut o = Obj::new();
-    let storey = if residential { RESIDENTIAL } else { STOREY };
-    let wall = tower_wall(1.0, plan, pick);
-    let plinth = [CONCRETE, [145, 113, 99], [142, 152, 158], [120, 112, 104]][plan % 4];
-    shopfront_base(&mut o, 0.0, 0.0, hx, hy, 1, RETAIL, plan, plinth, false);
-    // shopfront glass on the sides too, but only the corner bay: neighbours hide the rest
-    let top = RETAIL + floors as f32 * storey;
-    block(
-        &mut o,
-        &rect_at(0.0, 0.0, hx, hy),
-        RETAIL,
-        top,
-        wall,
-        material_finish(pick, residential),
-    );
-    // pilasters on the front, a cornice at the top and a parapet round the roof
-    let bays = ((2.0 * hx) / 4.2).round().max(2.0) as usize;
-    let step = 2.0 * hx / bays as f32;
-    for i in 0..=bays {
-        let x = -hx + i as f32 * step;
-        o.bx(
-            x - 0.25,
-            -hy - 0.2,
-            RETAIL,
-            x + 0.25,
-            -hy,
-            top,
-            shade(wall, 0.9),
-        );
-    }
-    o.bx(
-        -hx - 0.2,
-        -hy - 0.3,
-        top - 0.5,
-        hx + 0.2,
-        hy + 0.2,
-        top + 0.4,
-        CONCRETE,
-    );
-    let mut roof = top + 0.4;
-    // a third of the taller blocks step back for their top two floors, a terrace in front
-    if floors >= 8 && roll > 0.62 {
-        let (ix, iy) = (hx - 1.6, hy - 1.6);
-        let up = 2.0 * storey;
-        block(
-            &mut o,
-            &rect_at(0.0, 0.0, ix, iy),
-            top + 0.4,
-            top + 0.4 + up,
-            shade(wall, 1.05),
-            material_finish(pick, residential),
-        );
-        roof = top + 0.4 + up;
-    }
-    // rooftop plant: absent on some, small and offset on the rest
-    let k = ((roll * 53.0) as usize) % 4;
-    if k != 0 {
-        let (bw, bd) = (hx * (0.14 + 0.07 * k as f32), hy * (0.13 + 0.05 * k as f32));
-        let ox = (k as f32 - 2.0) * hx * 0.25;
-        o.bx(
-            ox - bw,
-            -bd,
-            roof,
-            ox + bw,
-            bd,
-            roof + 1.6 + 0.4 * k as f32,
-            ROOF,
-        );
-    }
-    o
 }
 
 // ---- district palettes ----

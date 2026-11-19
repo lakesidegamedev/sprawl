@@ -8,6 +8,7 @@
 //! Mesa software Vulkan driver.
 
 pub mod architecture;
+pub mod blocks;
 mod calendar;
 mod camera;
 pub mod civic;

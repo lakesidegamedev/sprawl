@@ -978,7 +978,8 @@ pub fn lot_pad(zone: Zone, r: f32, footprint: [f32; 4]) -> Option<Obj> {
     if zone == Zone::Core {
         // downtown lots are paved edge to edge so built neighbours join into paved blocks; the
         // plain paving of next-door lots overlaps in one colour, the checker stays by the building
-        quad(&mut o, -r, -r, r, r, 0.03, base);
+        let e = r * 1.2;
+        quad(&mut o, -e, -e, e, e, 0.03, base);
     } else {
         // trodden ground round the paving, so the pad does not end in a clean line on grass
         quad(

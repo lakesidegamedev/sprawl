@@ -6,7 +6,7 @@ use crate::skyline;
 use crate::towers::{self, TowerSlot};
 use us_gen::LotKind;
 
-pub const FAMILIES: [&str; 23] = [
+pub const FAMILIES: [&str; 26] = [
     "Single-wide homes",
     "Double-wide homes",
     "Courtyard bungalows",
@@ -30,8 +30,13 @@ pub const FAMILIES: [&str; 23] = [
     "Tapered needles",
     "Crowned towers",
     "Sky-bridge pairs",
+    "Straight slabs",
+    "Tapered towers",
+    "Setback towers",
 ];
 pub const PLANS: usize = 12;
+/// First of the three profile families (slab, taper, setback), see `blocks::profile_tower`.
+pub const PROFILE_FIRST: usize = 23;
 const CONCRETE: Rgb = [176, 173, 164];
 const ROOF: Rgb = [79, 91, 103];
 
@@ -296,7 +301,9 @@ fn tower(family: usize, plan: usize, level: u8, wall: Rgb, scale: f32) -> Obj {
     let storey = if family == 6 { 3.9 } else { 3.5 };
     let full =
         [28, 36, 41, 34, 43, 76, 49, 42][family - 5] + if family == 5 { 0 } else { plan % 4 };
-    let count = if level < 4 {
+    let count = if let Some(n) = skyline::tower_rule().1 {
+        n
+    } else if level < 4 {
         9 + plan % 4 + usize::from(family != 5)
     } else if level == 4 {
         // a growing tower: over half height, still following the fall-off from the centre
@@ -494,6 +501,8 @@ pub fn build_with(family: usize, plan: usize, level: u8, scale: f32, wall: Optio
     let wall = wall.unwrap_or(WALLS[(family + plan * 5) % WALLS.len()]);
     if family < 5 {
         small(family, plan, wall)
+    } else if family >= PROFILE_FIRST {
+        crate::blocks::profile_tower(family - PROFILE_FIRST, plan, scale, wall)
     } else if family >= skyline::FIRST {
         skyline::build(family - skyline::FIRST, plan, level, scale, wall)
     } else {

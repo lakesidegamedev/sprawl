@@ -42,6 +42,9 @@ pub struct Look {
     pub step: u8,
     /// Level of the building being replaced while a site, 0 for a bare lot.
     pub from: u8,
+    /// The town's storey cap while this lot is downtown and drawn, 0 elsewhere: a downtown lot
+    /// is rebuilt when the town grows into a taller cap.
+    pub cap: u8,
 }
 
 /// Roadworks on one road run.
@@ -262,6 +265,7 @@ fn look_of(l: &LotState, day: i32, burning: bool) -> Look {
             level,
             step: 0,
             from: 0,
+            cap: 0,
         },
         Phase::Building { start, end } => {
             let p = (day - start) as f32 / (end - start).max(1) as f32;
@@ -274,6 +278,7 @@ fn look_of(l: &LotState, day: i32, burning: bool) -> Look {
                 },
                 step: step_of(p),
                 from: if l.next_level > 0 { level } else { 0 },
+                cap: 0,
             }
         }
         Phase::Built { .. } => Look {
@@ -281,12 +286,14 @@ fn look_of(l: &LotState, day: i32, burning: bool) -> Look {
             level,
             step: 0,
             from: 0,
+            cap: 0,
         },
         Phase::Empty { .. } => Look {
             state: 4,
             level,
             step: 0,
             from: 0,
+            cap: 0,
         },
     }
 }
@@ -334,6 +341,7 @@ struct LotDraw {
 }
 
 /// The model of one lot at a level, local to the lot, facing south.
+#[allow(clippy::too_many_arguments)]
 fn lot_model(
     preset: Preset,
     seed: u64,
@@ -342,6 +350,7 @@ fn lot_model(
     density: f32,
     downtown: bool,
     slot: Option<&us_render::towers::TowerSlot>,
+    cap: u8,
 ) -> LotDraw {
     let mut rng = Rng::new(seed ^ 0x5eed_0000, l.src as u64 * 7919 + 13);
     let building = match civic_model(l.civic) {
@@ -365,6 +374,7 @@ fn lot_model(
             density,
             downtown,
             slot,
+            cap,
             &mut rng,
         ),
     };
@@ -443,7 +453,7 @@ fn look_obj(
 ) -> LotDraw {
     let level = if l.civic.is_some() { 1 } else { look.level };
     let downtown = is_downtown(ground.1, l);
-    let mut d = lot_model(preset, seed, l, level, density, downtown, slot);
+    let mut d = lot_model(preset, seed, l, level, density, downtown, slot, look.cap);
     // the grounds around a finished building, from the model as built
     if l.civic.is_none() && matches!(look.state, 2 | 4) {
         let (yard, drive) = ground.0.lot_yard(ground.1, l.src, &d.building);
@@ -459,8 +469,12 @@ fn look_obj(
     let mut rng = Rng::new(seed ^ 0xb0b0, i as u64);
     let mut dress = |o: &Obj| match look.state {
         1 => {
-            let old = (look.from > 0)
-                .then(|| lot_model(preset, seed, l, look.from, density, downtown, slot).building);
+            let old = (look.from > 0).then(|| {
+                lot_model(
+                    preset, seed, l, look.from, density, downtown, slot, look.cap,
+                )
+                .building
+            });
             let tall = look.level >= 4 || l.kind == LotKind::Office;
             building_site_for(o, old.as_ref(), tall, step_progress(look.step))
         }
@@ -1644,8 +1658,12 @@ impl LiveScene {
         self.sync_woods(sim);
         self.refresh_open(sim);
         let day = sim.day;
+        let cap = us_render::towers::storey_cap(sim.population().max(0) as u32);
         for (i, l) in sim.lots().iter().enumerate() {
-            let k = look_of(l, day, l.fire.is_some() && sim.is_burning(i));
+            let mut k = look_of(l, day, l.fire.is_some() && sim.is_burning(i));
+            if k.state != 0 && l.civic.is_none() && is_downtown(&self.town, l) {
+                k.cap = cap;
+            }
             if k != self.look[i] {
                 let was = self.look[i];
                 self.look[i] = k;
@@ -1726,6 +1744,14 @@ impl LiveScene {
                         });
                         if let Some(p) = lot_pad(Zone::Core, l.radius as f32, [0.0; 4]) {
                             p.emit_on(&mut mesh, &mut next_id, x, y, th, 1.0, sit);
+                        }
+                        // until it is built, the land has a use: a car park, a fenced lot or a
+                        // small square
+                        if !sim.is_planned_lot(i) {
+                            let mut vr = Rng::new(seed ^ 0xfa11, i as u64 + 1);
+                            let roll = vr.f32();
+                            let u = us_render::blocks::vacant_lot(l.radius as f32, roll, &mut vr);
+                            u.emit_on(&mut mesh, &mut next_id, x, y, th, 1.0, sit);
                         }
                     }
                     if l.phase == Phase::Vacant && sim.is_planned_lot(i) {
