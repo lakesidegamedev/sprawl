@@ -457,6 +457,20 @@ impl Ground {
     /// A strip of constant half width along a polyline, mitred at the joints. `offset` shifts it
     /// sideways (positive is to the left of travel).
     pub fn ribbon(&mut self, line: &[Pt], half: f32, offset: f32, z: f32, color: Rgb) {
+        self.ribbon_across(line, half, offset, z, color, color);
+    }
+
+    /// Like [`Ground::ribbon`], with one colour along the right edge and another along the left,
+    /// blending across the strip. The winter shader reads the blend as a position across a road.
+    pub fn ribbon_across(
+        &mut self,
+        line: &[Pt],
+        half: f32,
+        offset: f32,
+        z: f32,
+        right_color: Rgb,
+        left_color: Rgb,
+    ) {
         let mut p: Vec<Pt> = Vec::with_capacity(line.len());
         for q in line {
             if p.last().is_none_or(|l| l.dist(*q) > 1e-6) {
@@ -488,7 +502,7 @@ impl Ground {
             left.push([(cx + nx * w) as f32, (cy + ny * w) as f32]);
             right.push([(cx - nx * w) as f32, (cy - ny * w) as f32]);
         }
-        let place = |g: &mut Ground, i: usize, v: &[f32; 2]| -> u32 {
+        let place = |g: &mut Ground, i: usize, v: &[f32; 2], color: Rgb| -> u32 {
             match (&bed, &g.land) {
                 (Some(b), Some(land)) => {
                     let land = land.clone();
@@ -508,12 +522,12 @@ impl Ground {
         let l: Vec<u32> = left
             .iter()
             .enumerate()
-            .map(|(i, v)| place(self, i, v))
+            .map(|(i, v)| place(self, i, v, left_color))
             .collect();
         let r: Vec<u32> = right
             .iter()
             .enumerate()
-            .map(|(i, v)| place(self, i, v))
+            .map(|(i, v)| place(self, i, v, right_color))
             .collect();
         let segs = if closed { n } else { n - 1 };
         for i in 0..segs {

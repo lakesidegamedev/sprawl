@@ -8,11 +8,14 @@
 use crate::ground::{Ground, layer};
 use crate::live::RoadDraw;
 use crate::obj::Rgb;
-use crate::scene::{ASPHALT, ASPHALT_HWY, EDGE, YELLOW};
+use crate::scene::{EDGE, YELLOW};
 use std::collections::HashMap;
 use us_gen::{Pt, RoadClass, pt};
 
 pub const WHITE: Rgb = [236, 234, 226];
+/// Junction paving: asphalt with one more blue, so the winter shader can lay slush on it. It is
+/// drawn exactly like the road surface the rest of the year.
+pub const PAD: Rgb = [108, 108, 121];
 pub const SIDEWALK: Rgb = [198, 194, 186];
 pub const KERB: Rgb = [166, 162, 158];
 pub const SHOULDER: Rgb = [150, 141, 118];
@@ -690,10 +693,10 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
     g.polygon(&Ground::grow(&pad.ring, 0.5), z::CORNER_EDGE, EDGE);
     if highway {
         // the highway keeps its lines through a ramp junction
-        g.polygon(&pad.ring, layer::ROAD + 0.005, ASPHALT_HWY);
+        g.polygon(&pad.ring, layer::ROAD + 0.005, PAD);
         return;
     }
-    g.polygon(&pad.ring, z::PAD, ASPHALT);
+    g.polygon(&pad.ring, z::PAD, PAD);
     let eligible = |a: &Arm| {
         matches!(
             a.class,

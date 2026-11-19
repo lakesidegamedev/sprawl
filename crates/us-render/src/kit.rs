@@ -42,9 +42,23 @@ pub const CAR_COLS: [Rgb; 6] = [
     [60, 130, 96],
 ];
 
+/// A bare skeleton for a broadleaf tree: trunk, limbs and twigs in bark colour, standing inside
+/// the crown. The shader folds the leafy crown away in winter and this is what shows. Three
+/// triangles to a twig, six to a limb: about seventy for the whole tree.
+pub fn limbs(o: &mut Obj, habit: crate::bough::Habit, r: f32, h: f32) {
+    let seed = crate::bough::seed_at(r * 37.0, h * 91.0);
+    for t in crate::bough::skeleton(habit, r, h, seed) {
+        for (pts, _) in crate::bough::faces(&t) {
+            let pts: Vec<[f32; 3]> = pts.iter().map(|p| p.to_array()).collect();
+            o.poly(&pts, crate::bough::BARK, true, false, false);
+        }
+    }
+}
+
 pub fn tree(r: f32, h: f32, col: Rgb) -> Obj {
     let mut o = Obj::new();
-    o.bx(-0.25, -0.25, 0.0, 0.25, 0.25, h * 0.35, [110, 80, 56]);
+    let seed = crate::bough::seed_at(r * 37.0, h * 91.0);
+    limbs(&mut o, crate::bough::pick(seed, false), r, h);
     // Prototype crown: tapered, uneven rings keep the low-poly silhouette without boxy sides.
     const SIDES: usize = 8;
     let rings = [

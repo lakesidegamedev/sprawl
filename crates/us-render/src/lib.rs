@@ -8,6 +8,7 @@
 //! Mesa software Vulkan driver.
 
 pub mod architecture;
+pub mod bough;
 mod calendar;
 mod camera;
 pub mod civic;
@@ -42,6 +43,7 @@ pub mod roadpaint;
 pub mod rock;
 mod scene;
 pub mod site;
+mod snowdress;
 pub mod trains;
 pub mod trams;
 pub mod weather;

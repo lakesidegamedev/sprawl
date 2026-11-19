@@ -247,7 +247,7 @@ pub fn office_park(region: Region, rng: &mut Rng) -> Obj {
     o.add_placed(&pk, 0.0, -9.0, 0.0);
     for i in 0..4 {
         let x = -8.0 + i as f32 * 5.5;
-        o.prism(x, -14.5, 0.0, 2.8, 1.2, TREE, 6, None);
+        o.add_placed(&crate::kit::tree(1.6, 4.0, TREE), x, -14.5, 0.0);
     }
     o
 }
@@ -638,7 +638,8 @@ pub fn mobile_homes(region: Region, rng: &mut Rng) -> Obj {
         }
     }
     for x in [-8.0f32, 8.0] {
-        o.prism(x, rng.range(-6.0, 6.0), 0.0, 3.4, 1.3, TREE, 6, None);
+        let y = rng.range(-6.0, 6.0);
+        o.add_placed(&crate::kit::tree(1.7, 4.4, TREE), x, y, 0.0);
     }
     o
 }
@@ -1016,6 +1017,7 @@ fn diversify(o: Obj, region: Region, resize: bool, rng: &mut Rng) -> Obj {
             || p.color == MARKER_SKIP
             || p.color == TREE
             || p.color == crate::kit::TREE_D
+            || p.color == crate::bough::BARK
         {
             continue;
         }
@@ -1138,12 +1140,12 @@ pub fn tree_species(roll: f32, r: f32, h: f32, col: Rgb) -> Obj {
     let mut o = Obj::new();
     if roll < 0.68 {
         // poplar: tall and narrow
-        o.bx(-0.2, -0.2, 0.0, 0.2, 0.2, h * 0.3, [110, 80, 56]);
+        crate::kit::limbs(&mut o, crate::bough::Habit::Columnar, r * 0.7, h * 1.2);
         o.prism(0.0, 0.0, h * 0.25, h * 1.0, r * 0.6, col, 6, None);
         o.pyramid(0.0, 0.0, h * 1.0, r * 0.6, h * 0.35, col, 6, 0.0);
     } else if roll < 0.84 {
         // oak: short trunk, wide round crown in two tiers
-        o.bx(-0.3, -0.3, 0.0, 0.3, 0.3, h * 0.35, [104, 76, 54]);
+        crate::kit::limbs(&mut o, crate::bough::Habit::Spreading, r * 1.2, h * 0.95);
         o.prism(0.0, 0.0, h * 0.3, h * 0.6, r * 1.25, col, 7, None);
         o.prism(0.0, 0.0, h * 0.6, h * 0.8, r * 0.8, col, 7, None);
         o.pyramid(0.0, 0.0, h * 0.8, r * 0.8, h * 0.2, col, 7, 0.0);

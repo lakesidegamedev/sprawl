@@ -7,6 +7,7 @@
 //! Crowns are rounded: each is a few rings with normals that point away from the crown's
 //! centre, so the light falls off smoothly from the sunlit top to the shaded underside.
 
+use crate::bough;
 use crate::kit::{TREE, TREE_D};
 use crate::kit_more::PINE;
 use crate::land::Land;
@@ -485,7 +486,7 @@ fn near_tree(mesh: &mut Mesh, tr: &Tree) {
     let at = Vec3::new(tr.x, tr.y, tr.z);
     match tr.kind {
         Kind::Broadleaf => {
-            trunk(mesh, tr, 0.32, tr.h * 0.36);
+            bough_tree(mesh, tr, false);
             let crown = at + Vec3::new(0.0, 0.0, tr.h * 0.24);
             lobe(
                 mesh,
@@ -513,7 +514,7 @@ fn near_tree(mesh: &mut Mesh, tr: &Tree) {
             );
         }
         Kind::Tall => {
-            trunk(mesh, tr, 0.26, tr.h * 0.3);
+            bough_tree(mesh, tr, false);
             lobe(
                 mesh,
                 at + Vec3::new(0.0, 0.0, tr.h * 0.2),
@@ -539,6 +540,42 @@ fn near_tree(mesh: &mut Mesh, tr: &Tree) {
                     tr.turn + 0.5 * f,
                     tr.colour,
                 );
+            }
+        }
+    }
+}
+
+/// The bare skeleton of a broadleaf tree: trunk, limbs and twigs in bark colour. It sits inside
+/// the crown all year; in winter the shader folds the crown away and this is what shows. The far
+/// form keeps only the trunk and the main limbs, each ending in a point.
+fn bough_tree(mesh: &mut Mesh, tr: &Tree, far: bool) {
+    let seed = bough::seed_at(tr.x, tr.y);
+    let habit = bough::pick(seed, tr.kind == Kind::Tall);
+    let base = Vec3::new(tr.x, tr.y, tr.z - 0.35);
+    let mut limbs = 0;
+    for mut t in bough::skeleton(habit, tr.r, tr.h, seed) {
+        if far {
+            // a pointed trunk and up to four pointed limbs: eighteen triangles at most
+            if t.level == 2 {
+                continue;
+            }
+            if t.level == 1 {
+                limbs += 1;
+                if limbs > 4 {
+                    continue;
+                }
+            }
+            t.rb = 0.0;
+        }
+        t.a += base;
+        t.b += base;
+        for (pts, n) in bough::faces(&t) {
+            let ids: Vec<u32> = pts
+                .iter()
+                .map(|p| vertex(mesh, p.to_array(), n, bough::BARK))
+                .collect();
+            for k in 1..ids.len() - 1 {
+                mesh.cast.extend_from_slice(&[ids[0], ids[k], ids[k + 1]]);
             }
         }
     }
@@ -591,6 +628,7 @@ fn far_tree(mesh: &mut Mesh, tr: &Tree) {
             tr.colour,
         ),
         _ => {
+            bough_tree(mesh, tr, true);
             let c = at + Vec3::new(0.0, 0.0, tr.h * 0.2);
             let (height, sides) = (tr.h * 0.8, 5);
             let centre = c + Vec3::new(0.0, 0.0, height * 0.4);
