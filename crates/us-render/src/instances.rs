@@ -358,11 +358,11 @@ pub fn puff_instances(chimneys: &[[f32; 3]], time: f32, winter: bool) -> Vec<Ins
     const PER: usize = 5;
     const PERIOD: f32 = 5.0;
     let greys: [Rgb; 3] = if winter {
-        [[226, 230, 240], [214, 220, 232], [198, 205, 222]]
+        [[236, 238, 244], [212, 218, 230], [184, 192, 212]]
     } else {
         [[236, 236, 240], [206, 206, 214], [176, 176, 188]]
     };
-    let (rise, size) = if winter { (19.0, 1.5) } else { (13.0, 1.0) };
+    let (rise, size) = if winter { (22.0, 2.4) } else { (13.0, 1.0) };
     let mut out = Vec::new();
     for (ci, c) in chimneys.iter().enumerate() {
         for k in 0..PER {
@@ -387,7 +387,7 @@ pub fn puff_instances(chimneys: &[[f32; 3]], time: f32, winter: bool) -> Vec<Ins
 pub fn hearth_instances(hearths: &[[f32; 3]], time: f32) -> Vec<Instance> {
     const PER: usize = 3;
     const PERIOD: f32 = 6.5;
-    let greys: [Rgb; 3] = [[200, 200, 208], [214, 214, 222], [226, 228, 236]];
+    let greys: [Rgb; 3] = [[150, 152, 164], [172, 176, 188], [198, 202, 214]];
     let mut out = Vec::new();
     for (ci, c) in hearths.iter().enumerate() {
         for k in 0..PER {
@@ -399,7 +399,7 @@ pub fn hearth_instances(hearths: &[[f32; 3]], time: f32) -> Vec<Instance> {
             out.push(Instance {
                 pos: [c[0] + ph * 6.0, c[1] + ph * 1.8, c[2] + 0.4 + ph * 7.0],
                 theta: ph * 2.0 + ci as f32,
-                scale: 0.35 + ph * 0.8,
+                scale: 0.7 + ph * 1.4,
                 tint: tint(grey),
                 id: PUFF_ID_BASE + 600_000 + out.len() as u32 * ID_STRIDE,
             });

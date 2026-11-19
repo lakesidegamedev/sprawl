@@ -1148,7 +1148,11 @@ fn is_sidewalk(c: vec3<f32>) -> bool {
 // 0 not paving, 1 sidewalk, 2 plaza and forecourt paving, 3 kerb and barrier stone, 4 gravel shoulder.
 fn paving_kind(c: vec3<f32>) -> i32 {
     if (is_sidewalk(c)) { return 1; }
-    if (near(c, 206.0, 202.0, 194.0) || near(c, 194.0, 192.0, 202.0) || near(c, 208.0, 200.0, 198.0)) { return 2; }
+    if (near(c, 206.0, 202.0, 194.0) || near(c, 194.0, 192.0, 202.0) || near(c, 208.0, 200.0, 198.0)
+        // the darker squares of the downtown checker (0.93 of each paving colour) are paving too,
+        // or they would take the snow differently and show a checkerboard under it
+        || near(c, 194.0, 190.0, 182.0) || near(c, 191.0, 188.0, 180.0) || near(c, 180.0, 178.0, 188.0)
+        || near(c, 193.0, 186.0, 184.0)) { return 2; }
     if (near(c, 166.0, 162.0, 158.0) || near(c, 170.0, 168.0, 164.0)) { return 3; }
     if (near(c, 150.0, 141.0, 118.0)) { return 4; }
     return 0;
