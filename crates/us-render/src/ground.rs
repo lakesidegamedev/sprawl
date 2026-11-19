@@ -288,7 +288,7 @@ impl Ground {
         } else {
             color
         };
-        self.terrain_with(land, apron, &|_, _| color, None);
+        self.terrain_with(land, apron, &|_, _| color, None, false);
     }
 
     /// Like `terrain`, with the colour chosen per vertex (rock faces, scree, beaches).
@@ -305,6 +305,8 @@ impl Ground {
             apron,
             &|x, y| crate::rock::vertex_colour(look, land, height, beach, x, y),
             Some(height),
+            // only a coast has open sea past its edge
+            look.ground.as_ref().is_some_and(|g| g.beach.is_some()),
         );
     }
 
@@ -314,6 +316,7 @@ impl Ground {
         apron: f32,
         colour: &dyn Fn(f32, f32) -> Rgb,
         height: Option<&dyn Fn(f32, f32) -> f32>,
+        open_sea: bool,
     ) {
         let color = colour(0.0, 0.0);
         if self.land.is_none() {
@@ -335,17 +338,32 @@ impl Ground {
         xs.extend(cuts.iter().rev().map(|k| size + apron * k));
         xs.extend(SKIRT.iter().rev().map(|d| size + d.max(apron)));
         let m = xs.len();
+        // the level of the sea, from any water sheet that reaches past the east edge
+        let sea = (0..8)
+            .find_map(|k| {
+                land.water_at(pt(
+                    (size * 0.99 + apron * 0.5) as f64,
+                    size as f64 * k as f64 / 7.0,
+                ))
+            })
+            .unwrap_or(0.12);
         let base = self.mesh.vertices.len() as u32;
         for &y in &xs {
             for &x in &xs {
                 // past the map edge the land is held level, so it is shaded level too
                 if x < 0.0 || y < 0.0 || x > size || y > size {
                     // water that runs off the map (the sea) runs on under its sheet
-                    let z = match land.water_at(pt(x as f64, y as f64)) {
-                        Some(level) => level - 3.0,
-                        None => height.map_or_else(|| land.height(x, y), |f| f(x, y)) + layer::BASE,
+                    let ground = height.map_or_else(|| land.height(x, y), |f| f(x, y));
+                    let (z, c) = if open_sea && ground < 0.05 {
+                        // open sea past the map edge is drawn as water out to the horizon, just
+                        // under the sheet where there is one, not as grey shelf rock
+                        (sea - 0.3, crate::scene::WATER)
+                    } else {
+                        match land.water_at(pt(x as f64, y as f64)) {
+                            Some(level) => (level - 3.0, colour(x, y)),
+                            None => (ground + layer::BASE, colour(x, y)),
+                        }
                     };
-                    let c = colour(x, y);
                     self.raw(x, y, z, [0.0, 0.0, 1.0], c, ID_GROUND);
                 } else {
                     self.vert(x, y, layer::BASE, colour(x, y));
