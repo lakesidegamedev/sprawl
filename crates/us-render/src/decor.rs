@@ -1493,7 +1493,8 @@ mod tests {
         for p in &pad.polys {
             for v in &p.pts {
                 assert!(v[0].abs() <= 46.0 && v[1].abs() <= 46.0);
-                assert!(v[0] >= -17.1 && v[0] <= 19.1, "pad hugs the building");
+                // seven metres of paving and a little trodden ground round it
+                assert!(v[0] >= -18.4 && v[0] <= 20.4, "pad hugs the building");
             }
         }
         assert!(lot_pad(Zone::Inner, 20.0, [-5.0, -5.0, 5.0, 5.0]).is_none());
