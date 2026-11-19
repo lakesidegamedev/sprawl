@@ -52,16 +52,18 @@ struct Tree {
 
 /// How much of the open land a town style keeps wooded, and how much of that is conifer.
 fn climate(p: Preset) -> (f32, f32) {
+    // the second number is the share of the forest that is conifer: different for every style,
+    // so forests do not all carry the same mix, and every forest keeps some green all winter
     match p {
-        Preset::Grid => (0.26, 0.10),
-        Preset::Winding => (0.36, 0.20),
-        Preset::Sunbelt => (0.07, 0.0),
-        Preset::Crossroads => (0.16, 0.05),
-        Preset::LakeTown => (0.34, 0.35),
-        Preset::Gorge => (0.34, 0.45),
-        Preset::Mesa => (0.02, 0.0),
-        Preset::Valley => (0.40, 0.75),
-        Preset::Coast => (0.24, 0.30),
+        Preset::Grid => (0.26, 0.24),
+        Preset::Winding => (0.36, 0.31),
+        Preset::Sunbelt => (0.07, 0.22),
+        Preset::Crossroads => (0.16, 0.27),
+        Preset::LakeTown => (0.34, 0.40),
+        Preset::Gorge => (0.34, 0.52),
+        Preset::Mesa => (0.02, 0.21),
+        Preset::Valley => (0.40, 0.66),
+        Preset::Coast => (0.24, 0.34),
     }
 }
 
@@ -205,7 +207,9 @@ impl Woods {
                 // stands of one kind: conifers gather on their own ground
                 let stand = noise(seed ^ 67, x / 150.0, y / 150.0);
                 let pine_share = (conifer + 0.9 * high + 0.25 * (slope - 0.2).max(0.0)).min(0.97);
-                let kind = if stand * 0.7 + rng.f32() * 0.3 < pine_share {
+                // `mixed` is spread roughly evenly over 0 to 1, so the share is about the share
+                let mixed = (0.5 + (stand * 0.6 + rng.f32() * 0.4 - 0.5) / 0.56).clamp(0.0, 1.0);
+                let kind = if mixed < pine_share {
                     Kind::Conifer
                 } else if rng.f32() < 0.2 {
                     Kind::Tall
@@ -555,13 +559,13 @@ fn bough_tree(mesh: &mut Mesh, tr: &Tree, far: bool) {
     let mut limbs = 0;
     for mut t in bough::skeleton(habit, tr.r, tr.h, seed) {
         if far {
-            // a pointed trunk and up to four pointed limbs: eighteen triangles at most
+            // a pointed trunk and up to two pointed limbs: nine triangles at most
             if t.level == 2 {
                 continue;
             }
             if t.level == 1 {
                 limbs += 1;
-                if limbs > 4 {
+                if limbs > 2 {
                     continue;
                 }
             }
@@ -629,6 +633,10 @@ fn far_tree(mesh: &mut Mesh, tr: &Tree) {
         ),
         _ => {
             bough_tree(mesh, tr, true);
+            // the far crown carries a colour family of its own (blue + 8): in leaf it is the
+            // same crown, and with the leaves down the shader shows it as a thin haze of twigs
+            // instead of folding it away, so distant bare woods do not shimmer as single lines
+            let hazy = [tr.colour[0], tr.colour[1], tr.colour[2] + 8];
             let c = at + Vec3::new(0.0, 0.0, tr.h * 0.2);
             let (height, sides) = (tr.h * 0.8, 5);
             let centre = c + Vec3::new(0.0, 0.0, height * 0.4);
@@ -636,7 +644,7 @@ fn far_tree(mesh: &mut Mesh, tr: &Tree) {
                 mesh,
                 (c + Vec3::new(0.0, 0.0, height)).to_array(),
                 Vec3::Z,
-                tr.colour,
+                hazy,
             );
             let mut ring = Vec::with_capacity(sides);
             let mut foot = Vec::with_capacity(sides);
@@ -644,14 +652,9 @@ fn far_tree(mesh: &mut Mesh, tr: &Tree) {
                 let a = tr.turn + std::f32::consts::TAU * s as f32 / sides as f32;
                 let out = Vec3::new(libm::cosf(a), libm::sinf(a), 0.0);
                 let p = c + out * tr.r + Vec3::new(0.0, 0.0, height * 0.45);
-                ring.push(vertex(
-                    mesh,
-                    p.to_array(),
-                    p - centre + Vec3::Z * 0.6,
-                    tr.colour,
-                ));
+                ring.push(vertex(mesh, p.to_array(), p - centre + Vec3::Z * 0.6, hazy));
                 let q = c + out * tr.r * 0.5;
-                foot.push(vertex(mesh, q.to_array(), out - Vec3::Z * 0.5, tr.colour));
+                foot.push(vertex(mesh, q.to_array(), out - Vec3::Z * 0.5, hazy));
             }
             for s in 0..sides {
                 let t = (s + 1) % sides;
@@ -749,5 +752,36 @@ mod tests {
             far * 4 < near,
             "the far form is much lighter: {far} against {near}"
         );
+    }
+
+    #[test]
+    fn every_style_keeps_some_evergreens_and_the_mix_differs() {
+        let mut shares = Vec::new();
+        for preset in [
+            Preset::Grid,
+            Preset::Winding,
+            Preset::Crossroads,
+            Preset::LakeTown,
+            Preset::Gorge,
+            Preset::Valley,
+            Preset::Coast,
+        ] {
+            let town = generate(preset, 3);
+            let land = Land::from_town(&town);
+            let woods = Woods::plant(&town, &land);
+            let standing: Vec<_> = woods.trees.iter().filter(|t| t.standing).collect();
+            assert!(standing.len() > 300, "{preset:?} has woods");
+            let pines = standing.iter().filter(|t| t.kind == Kind::Conifer).count();
+            let share = pines as f32 / standing.len() as f32;
+            assert!(
+                (0.18..=0.85).contains(&share),
+                "{preset:?} conifer share {share:.2}"
+            );
+            eprintln!("{preset:?} conifer share {share:.2}");
+            shares.push(share);
+        }
+        let lo = shares.iter().cloned().fold(f32::MAX, f32::min);
+        let hi = shares.iter().cloned().fold(f32::MIN, f32::max);
+        assert!(hi - lo > 0.12, "shares {shares:?} should differ by style");
     }
 }

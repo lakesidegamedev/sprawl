@@ -10,7 +10,7 @@ use crate::rng::Rng;
 use glam::Vec3;
 
 /// Colour of bark and twigs. Not a leaf colour, so the shader never folds it away.
-pub const BARK: [u8; 3] = [104, 78, 56];
+pub const BARK: [u8; 3] = [134, 114, 98];
 
 /// One limb: a tapered tube from `a` to `b`. `rb` of zero ends in a point.
 #[derive(Clone, Copy, Debug)]
@@ -90,8 +90,14 @@ pub fn skeleton(habit: Habit, r: f32, h: f32, seed: u64) -> Vec<Tube> {
     let mut rng = Rng::new(seed, 0x6272_616e_6368);
     let turn = rng.range(0.0, std::f32::consts::TAU);
     let lean = Vec3::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), 0.0) * h * 0.035;
-    let size = rng.range(0.88, 1.12);
-    let (r, h) = (r * size * rng.range(0.9, 1.1), h * size);
+    // a wide spread of size and of crown breadth, so a stand is not one tree repeated. The
+    // skeleton only ever shrinks inside the crown mesh (the top of each range matches the old
+    // one), so a limb never pokes out of the leaves.
+    let size = rng.range(0.72, 1.06);
+    let (r, h) = (
+        r * size * rng.range(0.85, 1.15),
+        h * size * rng.range(0.92, 1.06),
+    );
     let trunk_r = (0.034 * h).clamp(0.13, 0.5);
     let mut b = Builder {
         rng: &mut rng,
@@ -196,6 +202,18 @@ pub fn skeleton(habit: Habit, r: f32, h: f32, seed: u64) -> Vec<Tube> {
             t.b.z *= k;
         }
     }
+    // and no tip strays further sideways than twice the crown radius
+    let limit = r * 2.0;
+    for t in &mut out {
+        for p in [&mut t.a, &mut t.b] {
+            let d = p.truncate().length();
+            if d > limit {
+                let k = limit / d;
+                p.x *= k;
+                p.y *= k;
+            }
+        }
+    }
     for t in &mut out {
         // lean: the higher a point, the further it is shifted, so the tree is not plumb
         t.a += lean * (t.a.z / h);
@@ -214,7 +232,7 @@ pub fn pick(seed: u64, tall: bool) -> Habit {
             Habit::Round(rng.below(4) as u8)
         };
     }
-    if rng.chance(0.12) {
+    if rng.chance(0.2) {
         Habit::Spreading
     } else {
         Habit::Round(rng.below(4) as u8)
