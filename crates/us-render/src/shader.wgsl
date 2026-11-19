@@ -907,7 +907,7 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
         var paving = stone * (0.97 + 0.08 * vnoise(w * 0.32) + fade * (0.11 * variation - 0.22 * seam));
         return paving;
     }
-    if (near(base, 128.0, 104.0, 84.0) || near(base, 198.0, 194.0, 186.0) || is_sidewalk(base)) {
+    if (near(base, 124.0, 120.0, 114.0) || near(base, 198.0, 194.0, 186.0) || is_sidewalk(base)) {
         let grains = hash2(vec2<i32>(floor(w * 6.0)));
         return col * (0.92 + 0.14 * vnoise(w * 1.2) + (grains - 0.5) * 0.24 * aggregate);
     }

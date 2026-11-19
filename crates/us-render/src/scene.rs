@@ -42,7 +42,7 @@ pub const ASPHALT: Rgb = [108, 108, 120];
 pub const ASPHALT_HWY: Rgb = ASPHALT;
 pub const EDGE: Rgb = [44, 46, 56];
 pub const YELLOW: Rgb = [226, 196, 70];
-pub const BALLAST: Rgb = [128, 104, 84];
+pub const BALLAST: Rgb = [124, 120, 114];
 pub const STEEL: Rgb = [66, 68, 78];
 
 const CHUNK: f32 = 256.0;
