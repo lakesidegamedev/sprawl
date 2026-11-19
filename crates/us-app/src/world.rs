@@ -1786,12 +1786,14 @@ impl LiveScene {
                             land: &self.land,
                             z: self.land.sit_height(x, y),
                         });
-                        let paved =
+                        // until it is built, a plot is open ground. Only in the true centre, and
+                        // only on some plots, does the land get an interim use (a square, a fenced
+                        // building site, a car park) on paving: a young town is mostly open
+                        // plots, not a grid of car parks
+                        let central =
                             self.town.lots[l.src.min(self.town.lots.len() - 1)].density >= 0.8;
-                        if paved && let Some(p) = lot_pad(Zone::Core, l.radius as f32, [0.0; 4]) {
-                            p.emit_on(&mut mesh, &mut next_id, x, y, th, 1.0, sit);
-                        }
-                        if !sim.is_planned_lot(i) {
+                        let some = Rng::new(seed ^ 0x1a7e, i as u64 + 7).f32() < 0.35;
+                        if !sim.is_planned_lot(i) && central && some {
                             us_render::decor::interim_pad(l.radius as f32).emit_on(
                                 &mut mesh,
                                 &mut next_id,
@@ -1802,13 +1804,6 @@ impl LiveScene {
                                 sit,
                             );
                         }
-                        // until it is built, the land has a use: a car park, a fenced lot or a
-                        // small square
-                        // only in the true centre and only on some lots: a young town is
-                        // mostly open plots, not a grid of car parks
-                        let central =
-                            self.town.lots[l.src.min(self.town.lots.len() - 1)].density >= 0.8;
-                        let some = Rng::new(seed ^ 0x1a7e, i as u64 + 7).f32() < 0.35;
                         if !sim.is_planned_lot(i) && central && some {
                             let mut vr = Rng::new(seed ^ 0xfa11, i as u64 + 1);
                             let roll = vr.f32();
