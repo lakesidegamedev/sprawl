@@ -1018,7 +1018,7 @@ fn facing_facade(col: vec3<f32>, finish: u32, world: vec3<f32>, anchor: vec3<f32
     let cell = floor(uv);
     let part = fract(uv);
     // the frames and piers between windows thin out at night so the material still shows
-    let night = 1.0 - smoothstep(-0.05, 0.22, g.sun.z);
+    let night = clamp(g.look.w * 1.25, 0.0, 1.0);
     let reveal = select(select(0.10, 0.22, warm || balcony), 0.048, ribbon) * (1.0 - 0.75 * night);
     let border = max(0.014, px / spacing * 0.36);
     let jamb = min(part.x, 1.0 - part.x);
@@ -1178,11 +1178,11 @@ fn paving_snow(col: vec3<f32>, kind: i32, base: vec3<f32>, world: vec3<f32>, px:
         // wide cleared paths across the open paving, and two wheel tracks along the lot
         let line = abs(vnoise(w / 17.0 + vec2<f32>(3.0, 8.0)) - 0.5);
         let line2 = abs(vnoise(w / 23.0 + vec2<f32>(9.0, 2.0)) - 0.5);
-        let paths = max(1.0 - smoothstep(0.018, 0.055, line), 1.0 - smoothstep(0.016, 0.045, line2));
+        let paths = max(1.0 - smoothstep(0.008, 0.024, line), 1.0 - smoothstep(0.007, 0.02, line2));
         let lane = fract(w.y / 11.0 + 0.3 * vnoise(vec2<f32>(w.x / 30.0, 1.0)));
         let wheels = max(1.0 - smoothstep(0.02, 0.05, abs(lane - 0.40)), 1.0 - smoothstep(0.02, 0.05, abs(lane - 0.56)))
             * smoothstep(0.35, 0.6, vnoise(vec2<f32>(w.x / 14.0, w.y / 40.0) + vec2<f32>(2.0, 5.0)));
-        trodden = max(paths * 0.95, wheels * 0.75);
+        trodden = max(paths * 0.85, wheels * 0.6);
     } else if (kind == 3) {
         amount = 0.62 * smoothstep(0.1, 0.5, lumps);
     } else {
@@ -1680,7 +1680,7 @@ fn fs_main(v: VOut) -> FOut {
     }
     if (cel && wkind == 0 && g.look.z < 0.5) {
         // moon and sky fill: faces turned from the moon keep their shape instead of going black
-        let moon_fill = 1.0 - smoothstep(-0.05, 0.22, g.sun.z);
+        let moon_fill = clamp(g.look.w * 1.25, 0.0, 1.0);
         k = mix(k, max(k, 0.90), moon_fill);
     }
     var sunlit = 1.0;
@@ -1704,7 +1704,7 @@ fn fs_main(v: VOut) -> FOut {
         let warm = mix(vec3<f32>(1.035, 1.0, 0.945), vec3<f32>(1.10, 0.985, 0.83), low_sun);
         let cool = mix(vec3<f32>(0.84, 0.93, 1.13), vec3<f32>(0.80, 0.88, 1.20), low_sun);
         let clear = 1.0 - g.shade.w;
-        let dusk = 1.0 - smoothstep(-0.05, 0.22, g.sun.z);
+        let dusk = clamp(g.look.w * 1.25, 0.0, 1.0);
         let cool_night = mix(cool, vec3<f32>(0.95, 0.99, 1.04), 0.75 * dusk);
         col = col * mix(vec3<f32>(1.0), mix(warm, cool_night, sh), clear);
     }
@@ -1712,7 +1712,7 @@ fn fs_main(v: VOut) -> FOut {
         let sun_visibility = cloud_sunlight(v.world);
         // at night the whole picture is pulled towards neutral, so warm rooms and lamps carry
         // the colour instead of a blue wash over every wall
-        let night_k = 1.0 - smoothstep(-0.05, 0.22, g.sun.z);
+        let night_k = clamp(g.look.w * 1.25, 0.0, 1.0);
         let tone_lum = dot(g.tone.rgb, vec3<f32>(0.3, 0.59, 0.11));
         col *= mix(g.tone.rgb, vec3<f32>(tone_lum), 0.72 * night_k) * sun_visibility;
         if (ground && g.local_lights.z > 0.01 && wkind == 0) {
@@ -1736,7 +1736,9 @@ fn fs_main(v: VOut) -> FOut {
         // remains in display space. Materials keep their colour in the lit area.
         col = sqrt(col * col + material_colour * material_colour * incoming);
     }
-    if (g.local_lights.z > 0.01 && g.look.z < 0.5 && !ground && n.z > 0.9 && v.world.z > 30.0) {
+    if (g.local_lights.z > 0.01 && g.look.z < 0.5 && !ground && n.z > 0.9 && v.world.z > 26.0
+        && v.world.z - terrain_height(v.world.xy) > 34.0
+        && hash2(vec2<i32>(floor(v.room_anchor.xy / 5.0))) < 0.55) {
         // red aviation beacon on the roof of a tall tower, blinking slowly
         // the lit spot grows with distance so it is always a few pixels across
         let d = length(v.world.xy - v.room_anchor.xy);

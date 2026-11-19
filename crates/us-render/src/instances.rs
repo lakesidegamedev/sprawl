@@ -358,7 +358,7 @@ pub fn puff_instances(chimneys: &[[f32; 3]], time: f32, winter: bool) -> Vec<Ins
     const PER: usize = 5;
     const PERIOD: f32 = 5.0;
     let greys: [Rgb; 3] = if winter {
-        [[252, 252, 254], [244, 246, 250], [232, 236, 244]]
+        [[226, 230, 240], [214, 220, 232], [198, 205, 222]]
     } else {
         [[236, 236, 240], [206, 206, 214], [176, 176, 188]]
     };
