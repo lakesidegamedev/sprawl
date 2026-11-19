@@ -1856,7 +1856,12 @@ impl Renderer {
                 if map_view { 1.0 } else { self.adapted_exposure },
                 if map_view { 0.0 } else { 1.0 },
             ],
-            seasons: [f32::from(cal.is_some()), wide_occlusion_on(), 0.0, 0.0],
+            seasons: [
+                f32::from(cal.is_some()),
+                wide_occlusion_on(),
+                occlusion_on(),
+                0.0,
+            ],
             rock: scene
                 .land
                 .rock()
@@ -2462,10 +2467,25 @@ fn light_matrix(scene: &Scene, view: &View, sun: Vec3, size: u32) -> (Mat4, f32,
 
 /// The wide occlusion band is on unless the smoke picture switch `URBAN_SPRAWL_SMOKE_WIDE_AO=0`
 /// turns it off, so one view can be shown with and without it.
+/// All screen space occlusion (contact, near and wide) is on unless the picture switch
+/// `URBAN_SPRAWL_SMOKE_AO=0` turns it off, for matched on and off pictures.
+fn occlusion_on() -> f32 {
+    static ON: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        if std::env::var("URBAN_SPRAWL_SMOKE_AO").is_ok_and(|v| v == "0") {
+            0.0
+        } else {
+            1.0
+        }
+    })
+}
+
 fn wide_occlusion_on() -> f32 {
     static ON: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        if std::env::var("URBAN_SPRAWL_SMOKE_WIDE_AO").is_ok_and(|v| v == "0") {
+        if std::env::var("URBAN_SPRAWL_SMOKE_WIDE_AO").is_ok_and(|v| v == "0")
+            || std::env::var("URBAN_SPRAWL_SMOKE_AO").is_ok_and(|v| v == "0")
+        {
             0.0
         } else {
             1.0

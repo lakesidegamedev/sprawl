@@ -41,6 +41,12 @@ impl Calendar {
         }
     }
 
+    /// 1 at midwinter, 0 at midsummer, smooth between: how low and cold the sun is.
+    pub fn winter_share(&self) -> f32 {
+        let a = std::f32::consts::TAU * (f32::from(self.day_of_year) - 15.0) / 365.0;
+        0.5 + 0.5 * libm::cosf(a)
+    }
+
     pub fn season(&self) -> Season {
         match self.day_of_year {
             0..=58 | 334..=u16::MAX => Season::Winter,
@@ -84,18 +90,23 @@ impl Calendar {
     /// blended continuously by `darkness`.
     pub fn tone(&self) -> [f32; 3] {
         let day = [1.0, 1.0, 1.0];
-        let night = [0.36, 0.42, 0.66];
+        let night = [0.42, 0.46, 0.60];
         let twilight = if self.hour.rem_euclid(24.0) < 12.0 {
             [0.86, 0.80, 0.88]
         } else {
             [1.0, 0.80, 0.68]
         };
         let n = self.darkness();
-        if n < 0.5 {
+        let mut t = if n < 0.5 {
             lerp3(day, twilight, n * 2.0)
         } else {
             lerp3(twilight, night, n * 2.0 - 1.0)
-        }
+        };
+        // a cooler key light in winter by day
+        let cold = self.winter_share() * (1.0 - n);
+        t[0] *= 1.0 - 0.07 * cold;
+        t[2] *= 1.0 + 0.03 * cold;
+        t
     }
 
     /// Share of windows that are lit, 0 to 1. Rises through the evening so windows come on a
@@ -131,10 +142,12 @@ impl Calendar {
         let h = self.hour.rem_euclid(24.0);
         let a = std::f32::consts::PI * ((h.clamp(5.0, 19.0) - 6.0) / 12.0).clamp(-0.1, 1.1);
         let up = libm::sinf(a).abs();
+        // a low winter sun: shorter days' arc stays near the horizon, so shadows run long
+        let low = 1.0 - 0.62 * self.winter_share();
         let sun = [
             libm::cosf(a),
             -0.55 * libm::sinf(a),
-            (0.32 + 0.5 * up).min(0.85),
+            (0.32 + 0.5 * up).min(0.85) * low,
         ];
         let moon = [-0.45f32, 0.3, 0.84];
         let w = smooth(((self.darkness() - 0.1) / 0.9).clamp(0.0, 1.0));
@@ -145,7 +158,7 @@ impl Calendar {
 
     /// Brightness multiplier of a shadowed face (night shadows are barely darker).
     pub fn shadow_tone(&self) -> f32 {
-        0.60 + 0.26 * self.darkness()
+        0.60 - 0.08 * self.winter_share() * (1.0 - self.darkness()) + 0.26 * self.darkness()
     }
 }
 

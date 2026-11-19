@@ -165,7 +165,7 @@ impl Woods {
                     } else {
                         0.0
                     }
-                    + 0.016 * (cover / 0.3).min(1.0);
+                    + 0.010 * (cover / 0.3).min(1.0);
                 if roll > chance {
                     continue;
                 }
@@ -205,11 +205,16 @@ impl Woods {
                     continue;
                 }
                 // stands of one kind: conifers gather on their own ground
-                let stand = noise(seed ^ 67, x / 150.0, y / 150.0);
+                // stands are patches of 60 to 120 m: a species gathers, it does not scatter
+                let stand = 0.65 * noise(seed ^ 67, x / 110.0, y / 110.0)
+                    + 0.35 * noise(seed ^ 71, x / 42.0 + 5.0, y / 42.0);
                 let pine_share = (conifer + 0.9 * high + 0.25 * (slope - 0.2).max(0.0)).min(0.97);
                 // `mixed` is spread roughly evenly over 0 to 1, so the share is about the share
-                let mixed = (0.5 + (stand * 0.6 + rng.f32() * 0.4 - 0.5) / 0.56).clamp(0.0, 1.0);
-                let kind = if mixed < pine_share {
+                let mixed = (0.5 + (stand * 0.88 + rng.f32() * 0.12 - 0.5) / 0.46).clamp(0.0, 1.0);
+                // a lone evergreen in the open reads as a dot: out in the open and along the
+                // edge of a forest the trees are mostly bare broadleaf, evergreens keep to stands
+                let lone = inside < 0.35 && rng.f32() < 0.85;
+                let kind = if mixed < pine_share && !lone {
                     Kind::Conifer
                 } else if rng.f32() < 0.2 {
                     Kind::Tall

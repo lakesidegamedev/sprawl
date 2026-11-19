@@ -539,6 +539,105 @@ impl Ground {
         }
     }
 
+    /// Like `ribbon_across`, but the line at `crest` (0 right edge to 1 left edge) is raised
+    /// `lift` metres: a heaped bank with real height.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ribbon_ridge(
+        &mut self,
+        line: &[Pt],
+        half: f32,
+        offset: f32,
+        z: f32,
+        right_color: Rgb,
+        left_color: Rgb,
+        crest: f32,
+        lift: f32,
+    ) {
+        let mut p: Vec<Pt> = Vec::with_capacity(line.len());
+        for q in line {
+            if p.last().is_none_or(|l| l.dist(*q) > 1e-6) {
+                p.push(*q);
+            }
+        }
+        if p.len() < 2 {
+            return;
+        }
+        // on hills the line is cut into short steps that follow the ground (or a bridge deck)
+        let bed: Option<Bed> = self.land.as_ref().map(|l| l.bed(&p));
+        if let Some(b) = &bed {
+            p = b.pts.clone();
+        }
+        let closed = p.len() > 2 && p[0].dist(*p.last().unwrap()) < 1e-6;
+        if closed {
+            p.pop();
+        }
+        let n = p.len();
+        let mut left: Vec<[f32; 2]> = Vec::with_capacity(n);
+        let mut right: Vec<[f32; 2]> = Vec::with_capacity(n);
+        for (i, point) in p.iter().enumerate() {
+            let (nx, ny, miter) = ribbon_join(&p, i, closed);
+            let w = f64::from(half) * miter;
+            let (cx, cy) = (
+                point.x + nx * f64::from(offset),
+                point.y + ny * f64::from(offset),
+            );
+            left.push([(cx + nx * w) as f32, (cy + ny * w) as f32]);
+            right.push([(cx - nx * w) as f32, (cy - ny * w) as f32]);
+        }
+        let place = |g: &mut Ground, i: usize, v: &[f32; 2], color: Rgb, z: f32| -> u32 {
+            match (&bed, &g.land) {
+                (Some(b), Some(land)) => {
+                    let land = land.clone();
+                    let top = b.z(&land, i, v[0], v[1]) + z;
+                    // roads on mountain land are cut level into the slope: lit as flat
+                    let up = b.weight[i] > 0.5 || land.rock().is_some();
+                    let nrm = if up {
+                        [0.0, 0.0, 1.0]
+                    } else {
+                        land.normal(v[0], v[1])
+                    };
+                    g.raw(v[0], v[1], top, nrm, color, ID_GROUND)
+                }
+                _ => g.vert(v[0], v[1], z, color),
+            }
+        };
+        let mid_color: Rgb = [
+            (f32::from(right_color[0]) * (1.0 - crest) + f32::from(left_color[0]) * crest) as u8,
+            (f32::from(right_color[1]) * (1.0 - crest) + f32::from(left_color[1]) * crest) as u8,
+            (f32::from(right_color[2]) * (1.0 - crest) + f32::from(left_color[2]) * crest) as u8,
+        ];
+        let l: Vec<u32> = left
+            .iter()
+            .enumerate()
+            .map(|(i, v)| place(self, i, v, left_color, z))
+            .collect();
+        let r: Vec<u32> = right
+            .iter()
+            .enumerate()
+            .map(|(i, v)| place(self, i, v, right_color, z))
+            .collect();
+        let m: Vec<u32> = left
+            .iter()
+            .zip(right.iter())
+            .enumerate()
+            .map(|(i, (a, b))| {
+                let v = [b[0] + (a[0] - b[0]) * crest, b[1] + (a[1] - b[1]) * crest];
+                place(self, i, &v, mid_color, z + lift)
+            })
+            .collect();
+        let segs = if closed { n } else { n - 1 };
+        for i in 0..segs {
+            let j = (i + 1) % n;
+            // two strips: right edge up to the crest, crest down to the left edge
+            self.mesh
+                .plain
+                .extend_from_slice(&[r[i], r[j], m[j], r[i], m[j], m[i]]);
+            self.mesh
+                .plain
+                .extend_from_slice(&[m[i], m[j], l[j], m[i], l[j], l[i]]);
+        }
+    }
+
     /// One face of a bridge or embankment, wound to face `outward`.
     fn face(&mut self, pts: [[f32; 3]; 4], outward: [f32; 3], color: Rgb, id: u32) {
         let n = crate::obj::newell(&pts);
