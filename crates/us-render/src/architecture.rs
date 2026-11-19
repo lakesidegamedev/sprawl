@@ -3,6 +3,7 @@ use crate::obj::{Finish, Obj, Rgb};
 use crate::parts::{GLASS, GLASS_D};
 use crate::rng::Rng;
 use crate::skyline;
+use crate::towers::{self, TowerSlot};
 use us_gen::LotKind;
 
 pub const FAMILIES: [&str; 23] = [
@@ -34,33 +35,38 @@ pub const PLANS: usize = 12;
 const CONCRETE: Rgb = [176, 173, 164];
 const ROOF: Rgb = [79, 91, 103];
 
-pub(crate) fn lot(kind: LotKind, level: u8, density: f32, rng: &mut Rng) -> Option<Obj> {
+pub(crate) fn lot(
+    kind: LotKind,
+    level: u8,
+    density: f32,
+    slot: Option<&TowerSlot>,
+    rng: &mut Rng,
+) -> Option<Obj> {
+    let tower_lot = matches!(kind, LotKind::Office | LotKind::Apartments)
+        && level >= 4
+        && density >= towers::DOWNTOWN;
+    if tower_lot && let Some(s) = slot {
+        // the town-wide plan: no model repeats nearby, crowns only on the tallest
+        let wall = skyline::tower_wall(density, s.plan, s.wall);
+        return Some(build_with(s.family, s.plan, level, s.scale, Some(wall)));
+    }
     let family = match kind {
         LotKind::House if level <= 2 && density < 0.4 && rng.below(4) == 0 => {
             rng.below(if level == 1 { 2 } else { 3 })
         }
         LotKind::Row if rng.below(4) == 0 => 3,
         LotKind::Workshop | LotKind::Warehouse if rng.below(4) == 0 => 4,
-        LotKind::Office | LotKind::Apartments if level >= 4 && density >= 0.78 => {
-            if level == 5 && density >= 0.97 && kind == LotKind::Office && rng.below(20) == 0 {
-                10
-            } else if kind == LotKind::Office {
-                // most downtown towers are the new silhouettes; the older stepped ones are the minority
-                [14, 15, 16, 17, 19, 20, 21, 22, 13, 5, 6, 7, 9, 11, 18, 14][rng.below(16)]
-            } else {
-                [13, 17, 18, 18, 16, 22, 12, 8, 21, 19, 5, 9, 15, 14][rng.below(14)]
-            }
+        LotKind::Office | LotKind::Apartments if tower_lot => {
+            // no plan for this lot (a lot the planner did not know): a plain tower, never a spire
+            towers::PLAIN[rng.below(towers::PLAIN.len())]
         }
         _ => return None,
     };
     let plan = rng.below(PLANS);
-    // taller in the middle of downtown, lower toward its edge, and the odd real outlier
+    // taller in the middle of downtown, lower toward its edge
     let edge = ((density - 0.78) / 0.22).clamp(0.0, 1.0);
-    let mut scale = 0.62 + 0.38 * edge;
-    if density >= 0.9 && level >= 5 && family != 10 && rng.below(11) == 0 {
-        scale = 1.32 + rng.range(0.0, 0.18);
-    }
-    let pick = rng.below(9);
+    let scale = 0.3 + 0.7 * edge.powf(2.6);
+    let pick = rng.below(10);
     let wall = skyline::tower_wall(density, plan, pick);
     Some(build_with(family, plan, level, scale, Some(wall)))
 }
@@ -288,16 +294,17 @@ fn tower(family: usize, plan: usize, level: u8, wall: Rgb, scale: f32) -> Obj {
     let w = 8.7 + (plan % 4) as f32 * 0.85;
     let d = 7.0 + (plan / 4) as f32;
     let storey = if family == 6 { 3.9 } else { 3.5 };
-    let count = if level < 5 {
+    let full =
+        [28, 36, 41, 34, 43, 76, 49, 42][family - 5] + if family == 5 { 0 } else { plan % 4 };
+    let count = if level < 4 {
         9 + plan % 4 + usize::from(family != 5)
+    } else if level == 4 {
+        // a growing tower: over half height, still following the fall-off from the centre
+        ((full as f32 * scale * 0.55).round() as usize).max(12)
+    } else if family == 10 {
+        full
     } else {
-        let n =
-            [28, 36, 41, 34, 43, 76, 49, 42][family - 5] + if family == 5 { 0 } else { plan % 4 };
-        if family == 10 {
-            n
-        } else {
-            ((n as f32 * scale).round() as usize).max(20)
-        }
+        ((full as f32 * scale).round() as usize).max(20)
     };
     let base_depth = d + 1.15 + 0.30 * (plan % 3) as f32;
     let street_wall = [CONCRETE, [145, 113, 99], [142, 152, 158]][plan % 3];

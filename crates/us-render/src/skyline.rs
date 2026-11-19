@@ -20,6 +20,27 @@ pub const NAMES: [&str; 10] = [
 ];
 
 const STOREY: f32 = 3.5;
+/// Ground-floor retail height, metres (the shared downtown rule says 4.5 to 5).
+pub const RETAIL: f32 = 4.8;
+/// Residential upper floors, metres (offices and shops use `STOREY`).
+pub const RESIDENTIAL: f32 = 3.0;
+
+thread_local! {
+    /// Set while a tower shaft is built to stand on a full-lot podium: its own plinth is skipped.
+    static NO_BASE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Upper storey height of the tower being built.
+    static STOREY_M: std::cell::Cell<f32> = const { std::cell::Cell::new(STOREY) };
+}
+
+/// Run `f` with the tower plinth switched off and the given storey height.
+pub fn without_base<T>(storey: f32, f: impl FnOnce() -> T) -> T {
+    NO_BASE.with(|b| b.set(true));
+    STOREY_M.with(|b| b.set(storey));
+    let out = f();
+    NO_BASE.with(|b| b.set(false));
+    STOREY_M.with(|b| b.set(STOREY));
+    out
+}
 const CONCRETE: Rgb = [176, 173, 164];
 const ROOF: Rgb = [79, 91, 103];
 const COPPER: Rgb = [96, 156, 136];
@@ -129,7 +150,31 @@ pub fn base_with(
     plan: usize,
     wall: Rgb,
 ) {
+    if NO_BASE.with(|b| b.get()) {
+        return;
+    }
+    shopfront_base(obj, cx, cy, hw, hd, storeys, storey, plan, wall, true);
+}
+
+/// The plinth itself: `storeys` of `storey` metres, shopfront glass, awnings and signs on the
+/// front (and the sides when `sides`), scaled to the storey height.
+#[allow(clippy::too_many_arguments)]
+fn shopfront_base(
+    obj: &mut Obj,
+    cx: f32,
+    cy: f32,
+    hw: f32,
+    hd: f32,
+    storeys: usize,
+    storey: f32,
+    plan: usize,
+    wall: Rgb,
+    sides: bool,
+) {
     let top = storeys as f32 * storey;
+    // the ground floor is `g` tall: glass, awning and sign sit in proportion
+    let g = storey.max(3.2);
+    let (gl, aw0, aw1, sg0, sg1) = (g * 0.62, g * 0.64, g * 0.71, g * 0.74, g * 0.9);
     block(obj, &rect_at(cx, cy, hw, hd), 0.0, top, wall, Finish::Loft);
     let front = cy - hd;
     let n = ((2.0 * hw) / 3.6).floor().max(1.0) as usize;
@@ -140,7 +185,7 @@ pub fn base_with(
         let x0 = cx - hw + i as f32 * step;
         let x1 = x0 + step;
         let glass = if i % 3 == 1 { DOOR_DARK } else { GLASS_D };
-        obj.wall_quad([x0 + 0.3, front], [x1 - 0.3, front], 0.2, 2.9, glass);
+        obj.wall_quad([x0 + 0.3, front], [x1 - 0.3, front], 0.2, gl, glass);
         let col = if (i + plan).is_multiple_of(2) {
             awn
         } else {
@@ -149,31 +194,31 @@ pub fn base_with(
         obj.bx(
             x0 + 0.15,
             front - 1.5,
-            2.95,
+            aw0,
             x1 - 0.15,
             front - 0.05,
-            3.2,
+            aw1,
             col,
         );
         obj.wall_quad(
             [x0 + 0.5, front - 0.02],
             [x1 - 0.5, front - 0.02],
-            3.3,
-            3.95,
+            sg0,
+            sg1,
             SIGNS[(i + plan) % SIGNS.len()],
         );
     }
     // the two sides get shopfront glass only
-    for sx in [cx - hw, cx + hw] {
+    for sx in [cx - hw, cx + hw].into_iter().filter(|_| sides) {
         let m = ((2.0 * hd) / 4.0).floor().max(1.0) as usize;
         let st = 2.0 * hd / m as f32;
         for j in 0..m {
             let y0 = cy - hd + j as f32 * st + 0.4;
             let y1 = y0 + st - 0.8;
             if sx < cx {
-                obj.wall_quad([sx, y1], [sx, y0], 0.2, 2.9, GLASS_D);
+                obj.wall_quad([sx, y1], [sx, y0], 0.2, gl, GLASS_D);
             } else {
-                obj.wall_quad([sx, y0], [sx, y1], 0.2, 2.9, GLASS_D);
+                obj.wall_quad([sx, y0], [sx, y1], 0.2, gl, GLASS_D);
             }
         }
     }
@@ -190,7 +235,11 @@ pub fn base_with(
 }
 
 fn floors(base: usize, scale: f32, level: u8) -> usize {
-    let k = if level < 5 { 0.36 } else { 1.0 };
+    let k = match level {
+        0..=3 => 0.3,
+        4 => 0.58,
+        _ => 1.0,
+    };
     ((base as f32 * scale * k).round() as usize).max(8)
 }
 
@@ -214,7 +263,7 @@ fn mast(obj: &mut Obj, x: f32, y: f32, z: f32, h: f32) {
 /// from the centre); `level` below 5 gives the mid-rise version.
 pub fn build(idx: usize, plan: usize, level: u8, scale: f32, wall: Rgb) -> Obj {
     let mut o = Obj::new();
-    let s = STOREY;
+    let s = STOREY_M.with(|b| b.get());
     let hand = if plan.is_multiple_of(2) { 1.0 } else { -1.0 };
     let podium_wall = [CONCRETE, [145, 113, 99], [142, 152, 158], [120, 112, 104]][plan % 4];
     match idx {
@@ -526,6 +575,196 @@ pub fn build(idx: usize, plan: usize, level: u8, scale: f32, wall: Rgb) -> Obj {
     o
 }
 
+// ---- downtown utilities ----
+
+/// A water or power service restyled to stand downtown: a brick waterworks with a banded tank on
+/// its roof, or a brick substation with a row of transformers. No legs, no stacks.
+pub fn downtown_utility(power: bool) -> Obj {
+    let mut o = Obj::new();
+    let brick: Rgb = [140, 78, 62];
+    let (hw, hd) = (8.0, 6.0);
+    let top = if power { 6.5 } else { 10.5 };
+    block(
+        &mut o,
+        &rect_at(0.0, 0.0, hw, hd),
+        0.0,
+        top,
+        brick,
+        Finish::Loft,
+    );
+    for k in 0..4 {
+        let x0 = -hw + 1.4 + k as f32 * 3.8;
+        let n = if power { 1 } else { 3 };
+        for f in 0..n {
+            let z = 1.4 + f as f32 * 3.1;
+            o.wall_quad(
+                [x0, -hd - 0.02],
+                [x0 + 2.0, -hd - 0.02],
+                z,
+                z + 2.0,
+                GLASS_D,
+            );
+        }
+    }
+    o.bx(
+        -hw - 0.3,
+        -hd - 0.3,
+        top - 0.4,
+        hw + 0.3,
+        hd + 0.3,
+        top,
+        CONCRETE,
+    );
+    if power {
+        for k in 0..4 {
+            let x = -hw + 2.0 + k as f32 * 4.2;
+            o.bx(
+                x - 1.0,
+                hd + 0.8,
+                0.0,
+                x + 1.0,
+                hd + 2.6,
+                2.6,
+                [128, 134, 140],
+            );
+            o.bx(
+                x - 0.3,
+                hd + 1.4,
+                2.6,
+                x + 0.3,
+                hd + 2.0,
+                3.4,
+                [190, 190, 196],
+            );
+        }
+    } else {
+        // a wooden banded tank on the roof, capped
+        let ring = circle(2.7, 10);
+        block(&mut o, &ring, top, top + 4.4, [120, 92, 66], Finish::Plain);
+        o.pyramid(0.0, 0.0, top + 4.4, 3.0, 1.8, ROOF, 10, 0.0);
+        o.bx(-3.4, -0.2, top, 3.4, 0.2, top + 0.4, [90, 92, 96]);
+    }
+    o
+}
+
+// ---- street-wall blocks and wall materials ----
+
+/// What a wall material pick (0 to 9, see `TOWER_WALLS`) is made of, as the facade finish that
+/// shows it: blue glass keeps the glass curtain wall, the rest are punched-window finishes.
+pub fn material_finish(pick: usize, residential: bool) -> Finish {
+    match pick % TOWER_WALLS.len() {
+        0..=2 => Finish::CurtainWall,
+        3 | 9 => Finish::Deco,
+        4..=6 => Finish::Loft,
+        7 => {
+            if residential {
+                Finish::Balconies
+            } else {
+                Finish::Loft
+            }
+        }
+        _ => Finish::DarkFacade,
+    }
+}
+
+/// Re-skin a finished tower in material `pick`: every facade finish becomes the material's.
+pub fn apply_material(o: &mut Obj, pick: usize, residential: bool) {
+    let f = material_finish(pick, residential);
+    if f == Finish::CurtainWall {
+        return;
+    }
+    for p in &mut o.polys {
+        if p.finish.has_facade() && p.finish != Finish::DarkFacade {
+            p.finish = f;
+        }
+    }
+}
+
+/// A mid-rise street-wall block that fills the lot to its line: retail ground floor with
+/// shopfronts, `floors` upper storeys of the material, a cornice, a parapet and a rooftop box.
+/// `hx` and `hy` are half the frontage and depth in metres. Neighbours join into a street wall.
+#[allow(clippy::too_many_arguments)]
+pub fn street_block(
+    hx: f32,
+    hy: f32,
+    floors: usize,
+    residential: bool,
+    pick: usize,
+    plan: usize,
+    roll: f32,
+) -> Obj {
+    let mut o = Obj::new();
+    let storey = if residential { RESIDENTIAL } else { STOREY };
+    let wall = tower_wall(1.0, plan, pick);
+    let plinth = [CONCRETE, [145, 113, 99], [142, 152, 158], [120, 112, 104]][plan % 4];
+    shopfront_base(&mut o, 0.0, 0.0, hx, hy, 1, RETAIL, plan, plinth, false);
+    // shopfront glass on the sides too, but only the corner bay: neighbours hide the rest
+    let top = RETAIL + floors as f32 * storey;
+    block(
+        &mut o,
+        &rect_at(0.0, 0.0, hx, hy),
+        RETAIL,
+        top,
+        wall,
+        material_finish(pick, residential),
+    );
+    // pilasters on the front, a cornice at the top and a parapet round the roof
+    let bays = ((2.0 * hx) / 4.2).round().max(2.0) as usize;
+    let step = 2.0 * hx / bays as f32;
+    for i in 0..=bays {
+        let x = -hx + i as f32 * step;
+        o.bx(
+            x - 0.25,
+            -hy - 0.2,
+            RETAIL,
+            x + 0.25,
+            -hy,
+            top,
+            shade(wall, 0.9),
+        );
+    }
+    o.bx(
+        -hx - 0.2,
+        -hy - 0.3,
+        top - 0.5,
+        hx + 0.2,
+        hy + 0.2,
+        top + 0.4,
+        CONCRETE,
+    );
+    let mut roof = top + 0.4;
+    // a third of the taller blocks step back for their top two floors, a terrace in front
+    if floors >= 8 && roll > 0.62 {
+        let (ix, iy) = (hx - 1.6, hy - 1.6);
+        let up = 2.0 * storey;
+        block(
+            &mut o,
+            &rect_at(0.0, 0.0, ix, iy),
+            top + 0.4,
+            top + 0.4 + up,
+            shade(wall, 1.05),
+            material_finish(pick, residential),
+        );
+        roof = top + 0.4 + up;
+    }
+    // rooftop plant: absent on some, small and offset on the rest
+    let k = ((roll * 53.0) as usize) % 4;
+    if k != 0 {
+        let (bw, bd) = (hx * (0.14 + 0.07 * k as f32), hy * (0.13 + 0.05 * k as f32));
+        let ox = (k as f32 - 2.0) * hx * 0.25;
+        o.bx(
+            ox - bw,
+            -bd,
+            roof,
+            ox + bw,
+            bd,
+            roof + 1.6 + 0.4 * k as f32,
+            ROOF,
+        );
+    }
+    o
+}
+
 // ---- district palettes ----
 
 /// Old-core brick, from red to brown.
@@ -537,15 +776,30 @@ const OLD_BRICK: [Rgb; 6] = [
     [150, 100, 80],
     [108, 68, 60],
 ];
-/// Downtown glass and stone: greys and blue-greys.
-const DOWNTOWN: [Rgb; 7] = [
-    [150, 160, 170],
+/// Downtown walls for the low and mid-rise buildings: stone, concrete and a little blue glass.
+const DOWNTOWN: [Rgb; 8] = [
+    [208, 200, 180],
+    [176, 173, 164],
+    [196, 170, 128],
     [118, 134, 152],
-    [196, 198, 200],
-    [96, 112, 132],
-    [170, 176, 184],
-    [132, 146, 150],
-    [202, 194, 178],
+    [150, 150, 146],
+    [92, 94, 100],
+    [190, 184, 170],
+    [158, 122, 100],
+];
+/// Tower wall materials, picked by index: three in ten blue glass, the rest limestone,
+/// sandstone, brick, concrete and dark granite.
+const TOWER_WALLS: [Rgb; 10] = [
+    [96, 122, 150],
+    [110, 138, 168],
+    [84, 108, 136],
+    [208, 200, 180],
+    [196, 170, 128],
+    [158, 78, 62],
+    [118, 82, 72],
+    [176, 173, 164],
+    [92, 94, 100],
+    [190, 184, 170],
 ];
 /// Industrial and warehouse district: sooty brick and concrete.
 const WORKS: [Rgb; 5] = [
@@ -556,13 +810,11 @@ const WORKS: [Rgb; 5] = [
     [110, 118, 124],
 ];
 
-/// The wall colour of a tower for this plan in a district of this density.
-pub fn tower_wall(density: f32, plan: usize, pick: usize) -> Rgb {
-    if density < 0.9 && pick.is_multiple_of(3) {
-        OLD_BRICK[(plan + pick) % OLD_BRICK.len()]
-    } else {
-        DOWNTOWN[(plan * 3 + pick) % DOWNTOWN.len()]
-    }
+/// The wall colour of a tower: material `pick` (0 to 9) of `TOWER_WALLS`, shaded a touch by plan
+/// so two towers of one material are not the same tone.
+pub fn tower_wall(_density: f32, plan: usize, pick: usize) -> Rgb {
+    let base = TOWER_WALLS[pick % TOWER_WALLS.len()];
+    shade(base, 0.94 + (plan % 4) as f32 * 0.03)
 }
 
 /// Pull a finished lot's body colours into its district's palette: brick reds and browns in the

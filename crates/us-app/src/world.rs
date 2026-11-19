@@ -193,6 +193,8 @@ pub struct LiveScene {
     /// Lots with path pieces, by the cell the pieces are in.
     path_cells: HashMap<Cell, Vec<usize>>,
     town: Arc<Town>,
+    /// The tower the town plan gave each lot (no repeats nearby, crowns on the tallest only).
+    slots: Vec<Option<us_render::towers::TowerSlot>>,
     show_hall: bool,
     hall_theta: f32,
     hall_obj: Obj,
@@ -339,9 +341,20 @@ fn lot_model(
     level: u8,
     density: f32,
     downtown: bool,
+    slot: Option<&us_render::towers::TowerSlot>,
 ) -> LotDraw {
     let mut rng = Rng::new(seed ^ 0x5eed_0000, l.src as u64 * 7919 + 13);
     let building = match civic_model(l.civic) {
+        // water towers and power plants do not stand downtown as they do in a yard: they are
+        // restyled as a brick waterworks with a roof tank and a brick substation
+        Some(CivicModel::WaterTower | CivicModel::Standpipe | CivicModel::PowerPlant)
+            if downtown =>
+        {
+            us_render::skyline::downtown_utility(l.civic == Some(CivicKind::Power))
+        }
+        None if downtown && l.civic.is_some() && l.kind == LotKind::Water => {
+            us_render::skyline::downtown_utility(false)
+        }
         Some(m) => build_civic(m, &mut rng),
         None if l.civic.is_some() => kit::build_lot_for(preset, l.kind, l.radius as f32, &mut rng),
         None => us_render::build_lot_level_district(
@@ -351,6 +364,7 @@ fn lot_model(
             l.radius as f32,
             density,
             downtown,
+            slot,
             &mut rng,
         ),
     };
@@ -407,7 +421,16 @@ fn lot_model(
     }
 }
 
+/// Whether a lot stands downtown: in a core district, or dense enough to be its middle. The
+/// density is the town's own (a mayor-placed lot has none of its own).
+fn is_downtown(t: &Town, l: &LotState) -> bool {
+    let zone = t.additions.get(l.addition).map_or(Zone::Inner, |a| a.zone);
+    let density = t.lots.get(l.src).map_or(0.0, |x| x.density as f32);
+    us_render::towers::is_downtown(zone, density)
+}
+
 /// The model to draw for a lot in its current look.
+#[allow(clippy::too_many_arguments)]
 fn look_obj(
     preset: Preset,
     seed: u64,
@@ -416,14 +439,11 @@ fn look_obj(
     look: Look,
     density: f32,
     ground: (&Streetscape, &Town),
+    slot: Option<&us_render::towers::TowerSlot>,
 ) -> LotDraw {
     let level = if l.civic.is_some() { 1 } else { look.level };
-    let downtown = ground
-        .1
-        .additions
-        .get(l.addition)
-        .is_some_and(|a| a.zone == Zone::Core);
-    let mut d = lot_model(preset, seed, l, level, density, downtown);
+    let downtown = is_downtown(ground.1, l);
+    let mut d = lot_model(preset, seed, l, level, density, downtown, slot);
     // the grounds around a finished building, from the model as built
     if l.civic.is_none() && matches!(look.state, 2 | 4) {
         let (yard, drive) = ground.0.lot_yard(ground.1, l.src, &d.building);
@@ -433,13 +453,14 @@ fn look_obj(
     if matches!(look.state, 2..=4)
         && let Some(a) = ground.1.additions.get(l.addition)
     {
-        d.pad = lot_pad(a.zone, l.radius as f32, d.building.footprint());
+        let zone = if downtown { Zone::Core } else { a.zone };
+        d.pad = lot_pad(zone, l.radius as f32, d.building.footprint());
     }
     let mut rng = Rng::new(seed ^ 0xb0b0, i as u64);
     let mut dress = |o: &Obj| match look.state {
         1 => {
             let old = (look.from > 0)
-                .then(|| lot_model(preset, seed, l, look.from, density, downtown).building);
+                .then(|| lot_model(preset, seed, l, look.from, density, downtown, slot).building);
             let tall = look.level >= 4 || l.kind == LotKind::Office;
             building_site_for(o, old.as_ref(), tall, step_progress(look.step))
         }
@@ -689,7 +710,9 @@ impl LiveScene {
             .map(|i| Self::road_draw_state(sim, i))
             .unzip();
         let woods = us_render::woods::Woods::plant(&town, &land);
+        let slots = us_render::towers::plan(&town);
         let mut ls = LiveScene {
+            slots,
             scene,
             scape,
             decos,
@@ -810,11 +833,7 @@ impl LiveScene {
         if l.civic.is_some() || l.exempt {
             return false;
         }
-        let core = self
-            .town
-            .additions
-            .get(l.addition)
-            .is_some_and(|a| a.zone == Zone::Core);
+        let core = is_downtown(&self.town, l);
         core && !matches!(l.kind, LotKind::Warehouse | LotKind::Workshop)
             || matches!(
                 l.kind,
@@ -1697,6 +1716,18 @@ impl LiveScene {
                 let k = self.look[i];
                 let l = &sim.lots()[i];
                 if k.state == 0 {
+                    if l.civic.is_none() && is_downtown(&self.town, l) {
+                        // empty downtown ground is paving, not lawn
+                        let (x, y, th) = (l.pos.x as f32, l.pos.y as f32, l.facing as f32);
+                        let hills = !self.land.is_flat();
+                        let sit = hills.then(|| Sit {
+                            land: &self.land,
+                            z: self.land.sit_height(x, y),
+                        });
+                        if let Some(p) = lot_pad(Zone::Core, l.radius as f32, [0.0; 4]) {
+                            p.emit_on(&mut mesh, &mut next_id, x, y, th, 1.0, sit);
+                        }
+                    }
                     if l.phase == Phase::Vacant && sim.is_planned_lot(i) {
                         let colour = match l.kind {
                             LotKind::House | LotKind::Apartments => [92, 169, 111],
@@ -1730,6 +1761,7 @@ impl LiveScene {
                             k,
                             density,
                             (&self.scape, &self.town),
+                            self.slots.get(l.src).and_then(|s| s.as_ref()),
                         ),
                     ));
                 }

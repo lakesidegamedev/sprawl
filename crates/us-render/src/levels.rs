@@ -254,9 +254,22 @@ pub fn build_lot_level_dense(
     density: f32,
     rng: &mut Rng,
 ) -> Obj {
+    build_lot_level_towered(preset, kind, level, radius, density, None, rng)
+}
+
+/// `build_lot_level_dense`, with the tower the town plan chose for this lot (see `towers::plan`).
+pub fn build_lot_level_towered(
+    preset: us_gen::Preset,
+    kind: LotKind,
+    level: u8,
+    radius: f32,
+    density: f32,
+    slot: Option<&crate::towers::TowerSlot>,
+    rng: &mut Rng,
+) -> Obj {
     let region = Region::of(preset);
     let level = level.clamp(1, MAX_LEVEL);
-    if let Some(model) = crate::architecture::lot(kind, level, density, rng) {
+    if let Some(model) = crate::architecture::lot(kind, level, density, slot, rng) {
         return kit::fit_to_lot(model, radius);
     }
     let tall = (density - 0.75).max(0.0) / 0.25;
@@ -292,6 +305,7 @@ pub fn build_lot_level_dense(
 /// Like `build_lot_level_dense`, for a lot in a downtown (core) district: houses, rowhouses and
 /// works become shop-fronted infill, small buildings widen to the lot line, towers stand on a
 /// shopfront plinth that fills the lot, and the colours follow the district palette.
+#[allow(clippy::too_many_arguments)]
 pub fn build_lot_level_district(
     preset: us_gen::Preset,
     kind: LotKind,
@@ -299,6 +313,7 @@ pub fn build_lot_level_district(
     radius: f32,
     density: f32,
     downtown: bool,
+    slot: Option<&crate::towers::TowerSlot>,
     rng: &mut Rng,
 ) -> Obj {
     let level = level.clamp(1, MAX_LEVEL);
@@ -323,46 +338,63 @@ pub fn build_lot_level_district(
     } else {
         kind
     };
-    let mut o = build_lot_level_dense(preset, kind_eff, level, radius, density, rng);
-    let roll = rng.f32();
     let built = matches!(
         kind_eff,
         LotKind::Shop | LotKind::Office | LotKind::Apartments
     );
     if downtown && built {
-        let fp = o.footprint();
-        let (hx, hy) = (fp[0].abs().max(fp[2].abs()), fp[1].abs().max(fp[3].abs()));
-        let (tx, ty) = (radius * 0.66, radius * 0.62);
-        if top_of(&o) < 24.0 && hx > 1.0 && hy > 1.0 {
-            // low-rise infill: stretch to the lot line so neighbours join into a street wall
-            let kx = (tx / hx).clamp(1.0, 1.9);
-            let ky = (ty / hy).clamp(1.0, 1.7);
-            if kx > 1.05 || ky > 1.05 {
-                o = scaled(&o, kx, ky, 1.0);
-            }
-        } else if hx < tx * 0.9 || hy < ty * 0.9 {
-            // a tower: a two-storey shopfront plinth the width of the lot
-            let wall = [
-                [176, 173, 164],
-                [145, 113, 99],
-                [142, 152, 158],
-                [120, 112, 104],
-            ][(roll * 4.0) as usize % 4];
-            crate::skyline::base_with(
-                &mut o,
-                0.0,
-                0.0,
-                tx,
-                ty,
-                2,
-                3.2,
-                (roll * 12.0) as usize,
-                wall,
-            );
-        }
+        let roll = rng.f32();
+        return downtown_block(kind_eff, level, radius, density, slot, roll);
     }
+    let mut o = build_lot_level_towered(preset, kind_eff, level, radius, density, slot, rng);
+    let roll = rng.f32();
     crate::skyline::recolour(&mut o, kind_eff, density, downtown, roll);
     o
+}
+
+/// Wall materials for a mid-rise or low block: two in ten blue glass, the rest stone, brick,
+/// concrete and granite (indices into `skyline::tower_wall`).
+const BLOCK_WALLS: [usize; 10] = [0, 3, 4, 5, 5, 6, 7, 9, 8, 1];
+
+/// A downtown building: every lot is built to its line so neighbours join into a street wall.
+/// A tower stands on a two-storey full-lot podium; a lot with no tower model free, a lot below
+/// level 4 and the rim of downtown get a street-wall block of the floors their level and place
+/// allow. Shopfronts on the ground floor of every one.
+fn downtown_block(
+    kind: LotKind,
+    level: u8,
+    radius: f32,
+    density: f32,
+    slot: Option<&crate::towers::TowerSlot>,
+    roll: f32,
+) -> Obj {
+    let resid = kind == LotKind::Apartments;
+    let half = radius * 0.93;
+    let plan = (roll * 12.0) as usize % 12;
+    let pick = BLOCK_WALLS[((roll * 97.0) as usize) % BLOCK_WALLS.len()];
+    if level >= 4
+        && let Some(s) = slot
+    {
+        if s.mid_rise {
+            return crate::skyline::street_block(half, half, s.floors, resid, s.wall, s.plan, roll);
+        }
+        let storey = if resid {
+            crate::skyline::RESIDENTIAL
+        } else {
+            3.5
+        };
+        let wall = crate::skyline::tower_wall(density, s.plan, s.wall);
+        let mut shaft = crate::skyline::without_base(storey, || {
+            crate::architecture::build_with(s.family, s.plan, level, s.scale, Some(wall))
+        });
+        crate::skyline::apply_material(&mut shaft, s.wall, resid);
+        let shaft = kit::fit_to_lot(shaft, radius * 0.74);
+        let mut o = crate::skyline::street_block(half, half, 2, resid, s.wall, s.plan, roll);
+        o.add_placed(&shaft, 0.0, 0.0, 0.0);
+        return o;
+    }
+    let floors = [2usize, 3, 4, 6, 8][usize::from(level.clamp(1, 5)) - 1];
+    crate::skyline::street_block(half, half, floors, resid, pick, plan, roll)
 }
 
 /// The model for one lot at a building level from 1 to 5 in a region.
