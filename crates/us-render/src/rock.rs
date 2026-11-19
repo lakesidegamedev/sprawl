@@ -251,7 +251,7 @@ fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     [f(0), f(1), f(2)]
 }
 
-fn smooth(a: f32, b: f32, x: f32) -> f32 {
+pub(crate) fn smooth(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
@@ -259,7 +259,14 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
 impl GroundTint {
     /// Colour of the ground at height `h` metres where the land rises `slope` per metre and sits
     /// `hollow` metres below the average of its surroundings.
-    pub fn colour(&self, look: &RockLook, h: f32, slope: f32, hollow: f32, beach: f32) -> Rgb {
+    pub fn colour(
+        &self,
+        look: &RockLook,
+        h: f32,
+        slope: f32,
+        hollow: f32,
+        (cove, beach): (f32, f32),
+    ) -> Rgb {
         let mut c = self.flat;
         if let Some((cap, from)) = self.cap {
             c = mix(c, cap, smooth(from * 0.6, from, h));
@@ -268,7 +275,7 @@ impl GroundTint {
             c = mix(
                 c,
                 rock,
-                (1.0 - smooth(below * 0.3, below, h)) * (1.0 - beach),
+                (1.0 - smooth(below * 0.3, below, h)) * (1.0 - cove),
             );
         }
         if let Some((sand, below)) = self.beach {
@@ -303,7 +310,7 @@ pub fn vertex_colour(
     look: &RockLook,
     land: &Land,
     height: &dyn Fn(f32, f32) -> f32,
-    beach: &dyn Fn(f32, f32) -> f32,
+    beach: &dyn Fn(f32, f32) -> (f32, f32),
     x: f32,
     y: f32,
 ) -> Rgb {
@@ -346,6 +353,13 @@ fn noise(x: f32, y: f32, cell: f32) -> f32 {
     let a = hash(ix, iy) + (hash(ix + 1, iy) - hash(ix, iy)) * u;
     let b = hash(ix, iy + 1) + (hash(ix + 1, iy + 1) - hash(ix, iy + 1)) * u;
     a + (b - a) * v
+}
+
+/// Slow noise in 0 to 1 that wanders along a coast: wide features a few hundred metres across with
+/// finer ones on top.
+pub(crate) fn wander(x: f32, y: f32) -> f32 {
+    let n = noise(x + 31.0, y - 57.0, 190.0) * 0.7 + noise(x - 12.0, y + 90.0, 60.0) * 0.3;
+    smooth(0.25, 0.75, n)
 }
 
 /// Ground past the map edge in a desert style: patches of dry scrub and pale sand, so it is not

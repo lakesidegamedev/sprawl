@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The land no longer ends in a visible edge: from any camera angle the countryside runs on and fades into haze at a flat horizon. Cliff strata and cracks keep their scale on every face instead of stretching into streaks.
+- In a harbour town the breakwaters now grow out of the shore, boats are tied up along the piers and breakwaters instead of floating at random, each pier has a paved path to the shore road, and the beach is wide in some places and a thin strip in others.
 - The countryside is no longer bare grass. Forests, pine woods, copses and lone trees stand on the open land around every town, in amounts that suit each landscape. The town fells them where it builds a street or a building, and land opened for building keeps a few old trees between the houses.
 - Lighting has more depth. Shadows have soft edges, sunlit faces are warm and shade is filled with cool sky light, more so when the sun is low. Buildings and trees darken the ground at their feet, and corners between close buildings gather shade. Colours are a little richer.
 - Tree crowns are rounded and lit as one mass instead of facet by facet. Grassland has lusher hollows, drier rises, tussocks close up and wild flowers in spring and summer. Outlines take a darker shade of the surface they border instead of one flat ink colour.

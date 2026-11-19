@@ -38,8 +38,16 @@ pub fn ground_terrain(g: &mut Ground, land: &Land, t: &Town) {
         Some(look) if look.ground.is_some() && !land.is_flat() => {
             // a beach only on the inner shore of a harbour cove: elsewhere the shore is rock
             let beach = |x: f32, y: f32| match t.terrain.rock_coast() {
-                us_gen::RockCoast::Coast(c) => c.beach_weight(x as f64, y as f64) as f32,
-                _ => 1.0,
+                us_gen::RockCoast::Coast(c) => {
+                    let cove = c.beach_weight(x as f64, y as f64) as f32;
+                    // the beach is wide in one place and a thin strip in the next: its inland
+                    // edge lies 12 to 100 m from the water, wandering with noise along the coast
+                    let d = c.inland(x as f64, y as f64) as f32;
+                    let wide = 12.0 + 88.0 * crate::rock::wander(x, y);
+                    let narrow = 1.0 - crate::rock::smooth(wide, wide + 26.0, d.max(0.0));
+                    (cove, cove * narrow)
+                }
+                _ => (1.0, 1.0),
             };
             // past the map edge a coast keeps going: the cliffs and the sea follow the terrain
             let size = land.size();
