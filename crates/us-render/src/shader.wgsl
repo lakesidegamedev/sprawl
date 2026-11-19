@@ -635,7 +635,7 @@ fn season_leaf(dark: bool, season: i32) -> vec3<f32> {
 // Natural ground of a land with a rock look: grass on gentle slopes, forest on the lower
 // mountainsides, stone below faces, rock on steep slopes (stepped strata, or fractured granite),
 // bare ground above the tree line and a clean snow cap above the snow line.
-fn terrain_look(world: vec3<f32>, n: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
+fn terrain_look(world: vec3<f32>, n: vec3<f32>, facet: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
     // `base` is the gentle ground: grass for the mountain looks, the vertex colour for looks whose
     // flats, washes and beaches are coloured on the CPU
     let grass = base;
@@ -666,10 +666,28 @@ fn terrain_look(world: vec3<f32>, n: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
     }
     if (s > talus_s) {
         let tilt = world.x * 0.061 + world.y * 0.035;
-        let joint_axis = world.x * 0.56 + world.y * 0.82;
-        let cleavage = vnoise(vec2<f32>(joint_axis / 14.0, z / 55.0));
+        // Joints, cracks and fragments are drawn triplanar: each is projected along the dominant
+        // axis of the true face normal, so a face looking along any axis keeps the scale of its
+        // strata and cracks instead of smearing into streaks down the wall.
+        let raw_w = pow(abs(facet), vec3<f32>(6.0)) + vec3<f32>(0.0001);
+        let tw = raw_w / (raw_w.x + raw_w.y + raw_w.z);
+        var cleavage = 0.0;
+        var fragments = 0.0;
+        if (tw.x > 0.02) {
+            // a face looking along x: the wall runs along y
+            cleavage += tw.x * vnoise(vec2<f32>(world.y / 14.0 + 3.1, z / 55.0));
+            fragments += tw.x * vnoise(vec2<f32>(world.y / 3.6 + 7.7, z / 7.8));
+        }
+        if (tw.y > 0.02) {
+            cleavage += tw.y * vnoise(vec2<f32>(world.x / 14.0, z / 55.0));
+            fragments += tw.y * vnoise(vec2<f32>(world.x / 3.6, z / 7.8));
+        }
+        if (tw.z > 0.02) {
+            // a top or a gentle slope: seen from above, with cells as wide as they are tall
+            cleavage += tw.z * vnoise(world.xy / 14.0 + vec2<f32>(11.3, 5.9));
+            fragments += tw.z * vnoise(world.xy / 3.6 + vec2<f32>(2.2, 9.4));
+        }
         let lithology = vnoise(world.xy / 74.0 + vec2<f32>(z / 40.0, -z / 71.0));
-        let fragments = vnoise(vec2<f32>(joint_axis / 3.6, z / 7.8));
         var colour = mix(g.rock[0].rgb, g.rock[3].rgb, smoothstep(0.12, 0.91, lithology));
         if (g.rock[7].x < 0.5) {
             let warp = (vnoise(world.xy / 60.0 + vec2<f32>(8.0, -1.0)) - 0.5) * 18.0;
@@ -1064,7 +1082,7 @@ fn fs_main(v: VOut) -> FOut {
         }
     }
     if (ground && abs(col.r * 255.0 - 116.0) < 0.6 && abs(col.g * 255.0 - 172.0) < 0.6 && abs(col.b * 255.0 - 95.0) < 0.6) {
-        col = terrain_look(v.world, n, vec3<f32>(116.0, 172.0, 92.0) / 255.0);
+        col = terrain_look(v.world, n, facet, vec3<f32>(116.0, 172.0, 92.0) / 255.0);
         if (g.rock[5].w > 0.5 && g.look.z < 0.5 && n.z < 0.9) {
             l = dot(facet, g.sun.xyz);
         }
@@ -1080,11 +1098,11 @@ fn fs_main(v: VOut) -> FOut {
             }
             l = dot(n, g.sun.xyz);
         }
-        col = terrain_look(v.world, n, col);
+        col = terrain_look(v.world, n, facet, col);
     }
     if (coastal_rock && g.look.z < 0.5) {
         let wall_normal = normalize(vec3<f32>(n.xy, 0.28));
-        col = terrain_look(v.world, wall_normal, col);
+        col = terrain_look(v.world, wall_normal, facet, col);
     }
     var emissive = false;
     let season = i32(g.look.x + 0.5);
@@ -2055,6 +2073,10 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
     }
     if (g.look.z < 0.5 && (g.resolve.w > 0.5 || g.weather_flow.z > 0.02)) {
         col = aerial_perspective(col, p, centre.x);
+    }
+    if (g.look.z < 0.5 && centre.x > 2400.0 && centre.x < 100000.0) {
+        // far land dissolves into the sky, so no edge of the world is ever drawn
+        col = mix(col, sky_dome(p), smoothstep(2400.0, 11000.0, centre.x));
     }
     if (g.look.z < 0.5 && g.resolve.w > 0.5) {
         col = sun_shafts(col, p, centre.x);

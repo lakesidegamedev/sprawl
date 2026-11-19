@@ -23,6 +23,11 @@ pub const BRIDGE_ID_BASE: u32 = 0x00E0_0000;
 pub const CONCRETE: Rgb = [176, 172, 164];
 pub const CONCRETE_DARK: Rgb = [138, 136, 134];
 
+/// How far the land runs past the map edge, in metres, for a flat horizon.
+const FAR_REACH: f32 = 60_000.0;
+/// Rings of the skirt beyond the apron, outermost first.
+const SKIRT: [f32; 4] = [FAR_REACH, 24_000.0, 9_000.0, 3_800.0];
+
 #[derive(Default)]
 pub struct Ground {
     pub mesh: Mesh,
@@ -293,7 +298,7 @@ impl Ground {
         apron: f32,
         look: &crate::rock::RockLook,
         height: &dyn Fn(f32, f32) -> f32,
-        beach: &dyn Fn(f32, f32) -> f32,
+        beach: &dyn Fn(f32, f32) -> (f32, f32),
     ) {
         self.terrain_with(
             land,
@@ -313,7 +318,8 @@ impl Ground {
         let color = colour(0.0, 0.0);
         if self.land.is_none() {
             let s = land.size();
-            self.rect(-apron, -apron, s + apron, s + apron, layer::BASE, color);
+            let reach = apron.max(FAR_REACH);
+            self.rect(-reach, -reach, s + reach, s + reach, layer::BASE, color);
             return;
         }
         let (n, step, size) = (land.n(), land.step(), land.size());
@@ -321,9 +327,13 @@ impl Ground {
         let cuts = [
             1.0f32, 0.75, 0.52, 0.34, 0.22, 0.14, 0.09, 0.055, 0.034, 0.018, 0.009, 0.004,
         ];
-        let mut xs: Vec<f32> = cuts.iter().map(|k| -apron * k).collect();
+        // and a skirt of a few very wide rings past it, so the land runs on to a flat horizon
+        // (the shader hazes it into the sky) instead of ending in a visible edge
+        let mut xs: Vec<f32> = SKIRT.iter().map(|d| -d.max(apron)).collect();
+        xs.extend(cuts.iter().map(|k| -apron * k));
         xs.extend((0..n).map(|i| i as f32 * step));
         xs.extend(cuts.iter().rev().map(|k| size + apron * k));
+        xs.extend(SKIRT.iter().rev().map(|d| size + d.max(apron)));
         let m = xs.len();
         let base = self.mesh.vertices.len() as u32;
         for &y in &xs {
