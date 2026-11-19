@@ -26,6 +26,7 @@
 - Contact shading follows the Shadows setting, so it is off by default on phones. Woods are drawn in a much lighter form when zoomed out.
 - Downtown gets taller landmarks, offset atrium towers, and stepped residential terraces. Their façades show different window patterns, and smaller buildings pick up more distinct brick, siding, roof seams, and shingles.
 - Tall buildings use fewer triangles for their windows. Large, well-served City Planning districts can reach the same skyline tier as established Town Growth centers.
+- Downtown skylines have a peak: a few landmark towers rise well above the rest (one to three in a town of about 6,000 people, more and taller in a big one), and buildings step down steadily from the town hall to the edge of downtown. Empty downtown lots are a mix of squares, fenced building sites and a few car parks, paved into their block, and glass towers are about a quarter of the mix. Public passages with shopfronts and lamps can now be dressed for the new street layout.
 
 ## 1.4.3 (2026-11-18)
 

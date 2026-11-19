@@ -48,7 +48,66 @@ const CAP_LINE: [(f32, f32); 9] = [
 /// blocks.
 pub const TOWER_MIN: usize = 14;
 /// A spire or crown needs at least this many storeys.
-pub const CROWN_MIN: usize = 30;
+pub const CROWN_MIN: usize = 18;
+
+/// (population, storeys of a landmark tower) anchors. A landmark is one of the one to three
+/// most central lots (`TowerSlot::rank`); it rises well above the storey cap so the skyline has
+/// a peak. A town of 5,800 gets about 24 storeys, one of 30,000 about 46.
+const LANDMARK_LINE: [(f32, f32); 6] = [
+    (1500.0, 8.0),
+    (3000.0, 15.0),
+    (5800.0, 24.0),
+    (12000.0, 32.0),
+    (30000.0, 46.0),
+    (80000.0, 64.0),
+];
+
+/// How many landmark towers a town of this population has: none in a hamlet, one up to 4,000
+/// people, two up to 9,000, three up to 15,000, then one more for every 3,000 people, at most 12.
+pub fn landmark_count(pop: u32) -> usize {
+    match pop {
+        0..=1499 => 0,
+        1500..=3999 => 1,
+        4000..=8999 => 2,
+        9000..=14999 => 3,
+        _ => (3 + (pop - 15000) / 3000).min(12) as usize,
+    }
+}
+
+/// How many ranks can stand as landmarks when the most central lots are not built to level 5
+/// yet: half as many again, and three times as many in a big town, whose centre may be a field
+/// while its towers stand further out.
+pub fn landmark_reach(count: usize) -> usize {
+    if count >= 6 {
+        count * 3
+    } else {
+        count + count.div_ceil(2)
+    }
+}
+
+/// Landmark candidates the plan marks: four times the largest count, so a hole in the middle of
+/// downtown (a lot not built yet) does not cost the skyline its peak.
+pub const LANDMARK_CANDIDATES: usize = 48;
+
+/// Storeys of the landmark of this rank (0 is the most central) in a town of this population.
+pub fn landmark_storeys(pop: u32, rank: u8) -> usize {
+    let p = pop as f32;
+    let mut out = LANDMARK_LINE[0].1;
+    if p >= LANDMARK_LINE[LANDMARK_LINE.len() - 1].0 {
+        out = LANDMARK_LINE[LANDMARK_LINE.len() - 1].1;
+    } else if p >= LANDMARK_LINE[0].0 {
+        for w in LANDMARK_LINE.windows(2) {
+            if p < w[1].0 {
+                out = w[0].1 + (w[1].1 - w[0].1) * (p - w[0].0) / (w[1].0 - w[0].0);
+                break;
+            }
+        }
+    }
+    // the second and third are 14 percent lower each, the rest 3 percent lower again each
+    let r = f32::from(rank);
+    let f = (1.0 - 0.14 * r.min(3.0) - 0.03 * (r - 3.0).max(0.0)).max(0.55);
+    (out * f).round() as usize
+}
 
 /// Storeys of the tallest building a town of this population can have (a level 5 lot in the very
 /// middle of downtown): 3 at nothing, 9 at 4000 people, 14 at 7000, 30 at 20000, 60 at 80000.
@@ -64,6 +123,17 @@ pub fn storey_cap(pop: u32) -> u8 {
     out.round() as u8
 }
 
+/// The town's size as a small integer (hundreds of people), what a downtown lot remembers so it
+/// is rebuilt when the town has grown.
+pub fn size_key(pop: u32) -> u16 {
+    (pop / 100).min(u32::from(u16::MAX)) as u16
+}
+
+/// The population a size key stands for (the middle of its hundred).
+pub fn key_pop(key: u16) -> u32 {
+    u32::from(key) * 100 + 50
+}
+
 /// Share of the storey cap a lot of this building level reaches.
 pub fn level_share(level: u8) -> f32 {
     [0.3, 0.45, 0.62, 0.85, 1.0][usize::from(level.clamp(1, 5)) - 1]
@@ -76,11 +146,52 @@ pub fn centre_share(density: f32) -> f32 {
     0.18 + 0.82 * e.powf(2.2)
 }
 
+/// Share of the storey cap for a lot at this centrality (`Centre::at`: 0 at the rim of downtown,
+/// 1 at the town hall). Density saturates near the middle of a big town, so height follows the
+/// distance instead: the edge is 28 percent of the cap (a mid-rise band) and the middle all of it.
+pub fn position_share(c: f32) -> f32 {
+    0.28 + 0.72 * c.clamp(0.0, 1.0).powf(1.8)
+}
+
 /// Storeys of a downtown building: the town's cap times what the lot's level and its place in
 /// downtown allow, a little roll for variety, never under 2.
 pub fn lot_storeys(cap: u8, level: u8, density: f32, roll: f32) -> usize {
-    let s = f32::from(cap) * level_share(level) * centre_share(density) * (0.88 + 0.24 * roll);
+    lot_storeys_at(cap, level, centre_share(density), roll)
+}
+
+/// Like `lot_storeys`, with the share of the cap given (see `position_share`).
+pub fn lot_storeys_at(cap: u8, level: u8, share: f32, roll: f32) -> usize {
+    let s = f32::from(cap) * level_share(level) * share * (0.88 + 0.24 * roll);
     (s.round() as usize).max(2)
+}
+
+/// The middle of a town's downtown and how far it reaches: the town hall, and the distance
+/// within which nine in ten of the dense lots lie.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Centre {
+    pub x: f64,
+    pub y: f64,
+    pub reach: f64,
+}
+
+impl Centre {
+    pub fn of(t: &Town) -> Centre {
+        let (x, y) = (t.hall.x, t.hall.y);
+        let mut d: Vec<f64> = t
+            .lots
+            .iter()
+            .filter(|l| l.density as f32 >= CORE_EDGE)
+            .map(|l| l.centre.dist(t.hall))
+            .collect();
+        d.sort_by(f64::total_cmp);
+        let reach = d.get(d.len() * 9 / 10).copied().unwrap_or(150.0).max(120.0);
+        Centre { x, y, reach }
+    }
+
+    /// 1 at the middle, 0 at and beyond the reach.
+    pub fn at(&self, x: f64, y: f64) -> f32 {
+        (1.0 - (x - self.x).hypot(y - self.y) / self.reach).clamp(0.0, 1.0) as f32
+    }
 }
 
 /// A choice of building for one downtown lot.
@@ -93,6 +204,11 @@ pub struct TowerSlot {
     /// Stretch of the floor count: well under 1 at the edge of downtown, over 1 for the tallest.
     pub scale: f32,
     pub crown: bool,
+    /// 0 to `LANDMARK_CANDIDATES` - 1 for the landmark candidates, most central first; 255 for
+    /// every other lot.
+    pub rank: u8,
+    /// How central the lot is: 1 at the town hall, 0 at the rim of downtown (`Centre::at`).
+    pub centre: f32,
     /// No tower model was free here: the lot gets a street-wall block.
     pub mid_rise: bool,
 }
@@ -215,6 +331,18 @@ pub fn plan(t: &Town) -> Vec<Option<TowerSlot>> {
             crowns.push(i);
         }
     }
+    // landmark candidates: the most central lots, at least 80 m apart
+    let mut marks: Vec<usize> = Vec::new();
+    for &i in &dense {
+        if marks.len() < LANDMARK_CANDIDATES
+            && marks
+                .iter()
+                .all(|&j| t.lots[i].centre.dist(t.lots[j].centre) > 80.0)
+        {
+            marks.push(i);
+        }
+    }
+    let centre = Centre::of(t);
     let cls = classes();
     // (lot, class) of the towers placed so far
     let mut placed: Vec<(usize, usize)> = Vec::new();
@@ -222,8 +350,13 @@ pub fn plan(t: &Town) -> Vec<Option<TowerSlot>> {
         let l = &t.lots[i];
         let mut rng = Rng::new(t.seed ^ 0x70_77_e5, i as u64 + 1);
         let crown = crowns.contains(&i);
-        let edge = ((l.density as f32 - DOWNTOWN) / (1.0 - DOWNTOWN)).clamp(0.0, 1.0);
-        let wall = rng.below(10);
+        let edge = centre.at(l.centre.x, l.centre.y);
+        // a quarter blue glass (picks 0 to 2), the rest stone, brick, concrete and granite
+        let wall = if rng.below(4) == 0 {
+            rng.below(3)
+        } else {
+            3 + rng.below(7)
+        };
         let free: Vec<usize> = (0..cls.len())
             .filter(|&c| cls[c].crown == crown)
             .filter(|&c| {
@@ -239,13 +372,15 @@ pub fn plan(t: &Town) -> Vec<Option<TowerSlot>> {
             })
             .collect();
         // towers belong to the middle: the outer rim of downtown is mid-rise whatever is free
-        let tower_ok = crown || edge >= 0.18;
+        let tower_ok = crown || edge >= 0.22;
         let mut slot = TowerSlot {
             family: 0,
             plan: 0,
             wall,
             scale: 0.0,
             crown,
+            rank: marks.iter().position(|&j| j == i).map_or(255, |r| r as u8),
+            centre: edge,
             mid_rise: true,
         };
         if !free.is_empty() && tower_ok {
@@ -391,6 +526,80 @@ mod tests {
     }
 
     #[test]
+    fn landmarks_rise_well_above_the_cap_and_scale_with_population() {
+        // the owner's numbers for a town of about 5,800: one to three towers over 20 storeys
+        assert_eq!(landmark_count(5800), 2);
+        assert!(landmark_storeys(5800, 0) >= 20 && landmark_storeys(5800, 0) <= 28);
+        assert!(landmark_storeys(5800, 1) >= 20);
+        assert_eq!(landmark_count(15000 + 3000), 4);
+        assert!(landmark_storeys(5800, 0) > usize::from(storey_cap(5800)) + 8);
+        assert_eq!(landmark_count(500), 0);
+        let mut last = 0;
+        for p in [1500u32, 3000, 5800, 12000, 30000, 80000, 500000] {
+            let n = landmark_storeys(p, 0);
+            assert!(n >= last, "{p}: {n}");
+            last = n;
+        }
+        assert_eq!(size_key(5800), 58);
+        assert_eq!(key_pop(size_key(5800)), 5850);
+    }
+
+    #[test]
+    fn a_big_town_has_more_and_taller_landmarks() {
+        assert!(landmark_count(40000) >= 8 && landmark_count(40000) <= 12);
+        assert!(landmark_count(500_000) == 12);
+        assert!(landmark_storeys(40000, 0) > landmark_storeys(5800, 0));
+        // lower ranks are lower, but never below the cap of the town
+        let mut last = usize::MAX;
+        for r in 0..12u8 {
+            let n = landmark_storeys(40000, r);
+            assert!(n <= last && n >= usize::from(storey_cap(40000)) / 2);
+            last = n;
+        }
+    }
+
+    #[test]
+    fn downtown_falls_off_with_the_distance_from_the_hall() {
+        let t = us_gen::generate(us_gen::Preset::Grid, 3);
+        let c = Centre::of(&t);
+        let slots = plan(&t);
+        // mean centre share by ring: the middle is clearly taller than the edge
+        let mut ring = [(0.0f32, 0usize); 4];
+        for (i, s) in slots.iter().enumerate() {
+            let Some(s) = s else { continue };
+            let k = ((c.at(t.lots[i].centre.x, t.lots[i].centre.y)) * 3.99) as usize;
+            ring[k].0 += position_share(s.centre);
+            ring[k].1 += 1;
+        }
+        let mean = |k: usize| ring[k].0 / ring[k].1.max(1) as f32;
+        assert!(ring[0].1 > 10 && ring[3].1 > 3, "{ring:?}");
+        assert!(mean(3) > 2.0 * mean(0), "{} vs {}", mean(3), mean(0));
+        // at the same level the middle of a town of 40,000 is over three times the edge
+        let mid = lot_storeys_at(44, 5, position_share(1.0), 0.5);
+        let rim = lot_storeys_at(44, 5, position_share(0.0), 0.5);
+        assert!(mid >= 3 * rim, "{mid} vs {rim}");
+    }
+
+    #[test]
+    fn glass_is_about_a_quarter_of_the_walls() {
+        for (preset, seed) in TOWNS {
+            let t = us_gen::generate(preset, seed);
+            let slots = plan(&t);
+            let walls: Vec<usize> = slots.iter().flatten().map(|s| s.wall).collect();
+            let glass = walls.iter().filter(|&&w| w < 3).count();
+            let share = glass as f32 / walls.len() as f32;
+            eprintln!(
+                "{preset:?} {seed}: {glass}/{} glass = {share:.2}",
+                walls.len()
+            );
+            assert!(
+                walls.len() > 100 && (0.15..=0.33).contains(&share),
+                "{share}"
+            );
+        }
+    }
+
+    #[test]
     fn height_falls_off_from_the_centre_and_grows_with_level() {
         for cap in [9u8, 20, 44] {
             let mut last = usize::MAX;
@@ -434,7 +643,7 @@ mod tests {
             if !is_downtown(l.zone, l.density as f32) {
                 continue;
             }
-            for cap in [3u8, 9, 14, 30, 60] {
+            for cap in [0u16, 10, 40, 150, 400, 900] {
                 for level in [1u8, 3, 4, 5] {
                     let mut rng = Rng::new(9, i as u64);
                     let o = crate::build_lot_level_district(

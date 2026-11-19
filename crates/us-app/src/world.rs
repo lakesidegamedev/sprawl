@@ -42,9 +42,9 @@ pub struct Look {
     pub step: u8,
     /// Level of the building being replaced while a site, 0 for a bare lot.
     pub from: u8,
-    /// The town's storey cap while this lot is downtown and drawn, 0 elsewhere: a downtown lot
-    /// is rebuilt when the town grows into a taller cap.
-    pub cap: u8,
+    /// The town's size key (`towers::size_key`) while this lot is downtown and drawn, 0 elsewhere: a downtown lot
+    /// is rebuilt when the town grows by a few hundred people.
+    pub cap: u16,
 }
 
 /// Roadworks on one road run.
@@ -198,6 +198,7 @@ pub struct LiveScene {
     town: Arc<Town>,
     /// The tower the town plan gave each lot (no repeats nearby, crowns on the tallest only).
     slots: Vec<Option<us_render::towers::TowerSlot>>,
+    centre: us_render::towers::Centre,
     show_hall: bool,
     hall_theta: f32,
     hall_obj: Obj,
@@ -350,7 +351,7 @@ fn lot_model(
     density: f32,
     downtown: bool,
     slot: Option<&us_render::towers::TowerSlot>,
-    cap: u8,
+    cap: u16,
 ) -> LotDraw {
     let mut rng = Rng::new(seed ^ 0x5eed_0000, l.src as u64 * 7919 + 13);
     let building = match civic_model(l.civic) {
@@ -725,8 +726,10 @@ impl LiveScene {
             .unzip();
         let woods = us_render::woods::Woods::plant(&town, &land);
         let slots = us_render::towers::plan(&town);
+        let centre = us_render::towers::Centre::of(&town);
         let mut ls = LiveScene {
             slots,
+            centre,
             scene,
             scape,
             decos,
@@ -1115,6 +1118,45 @@ impl LiveScene {
 
     pub fn land(&self) -> &Land {
         &self.land
+    }
+
+    /// Test scene for pictures: a hand-placed public passage between two downtown blocks, on a
+    /// paved stage at the middle of the grid cell holding (`x`, `y`). The street layout will
+    /// supply real passages; this shows the dressing until it does.
+    pub fn add_test_passage(&mut self, x: f32, y: f32) -> (f32, f32) {
+        use us_render::blocks::{Passage, passage, street_block};
+        let c = cell_of(x as f64, y as f64);
+        let (cx, cy) = ((c.0 as f32 + 0.5) * CELL, (c.1 as f32 + 0.5) * CELL);
+        let mut o = Obj::new();
+        let p = Passage {
+            a: [-32.0, 0.0],
+            b: [32.0, 0.0],
+            width: 7.0,
+        };
+        let pad = |o: &mut Obj, x0: f32, y0: f32, x1: f32, y1: f32| {
+            o.poly(
+                &[
+                    [x0, y0, 0.03],
+                    [x1, y0, 0.03],
+                    [x1, y1, 0.03],
+                    [x0, y1, 0.03],
+                ],
+                [206, 202, 194],
+                false,
+                false,
+                true,
+            );
+        };
+        pad(&mut o, -45.0, -34.0, 45.0, 34.0);
+        o.add_placed(&passage(&p, 5), 0.0, 0.0, 0.0);
+        // a block on each side, set behind the passage's own ground floor shell
+        let north = street_block(32.0, 20.0, 5, false, 5, 3, 0.41, false);
+        o.add_placed(&north, 0.0, 3.5 + 1.6 + 20.0, 0.0);
+        let south = street_block(32.0, 20.0, 8, false, 7, 1, 0.77, false);
+        o.add_placed(&south, 0.0, -(3.5 + 1.6 + 20.0), std::f32::consts::PI);
+        self.stations.push((o, cx, cy, 0.0, c));
+        self.mark(c);
+        (cx, cy)
     }
 
     /// The ground height at a point of the town.
@@ -1658,7 +1700,7 @@ impl LiveScene {
         self.sync_woods(sim);
         self.refresh_open(sim);
         let day = sim.day;
-        let cap = us_render::towers::storey_cap(sim.population().max(0) as u32);
+        let cap = us_render::towers::size_key(sim.population().max(0) as u32);
         for (i, l) in sim.lots().iter().enumerate() {
             let mut k = look_of(l, day, l.fire.is_some() && sim.is_burning(i));
             if k.state != 0 && l.civic.is_none() && is_downtown(&self.town, l) {
@@ -1749,6 +1791,17 @@ impl LiveScene {
                         if paved && let Some(p) = lot_pad(Zone::Core, l.radius as f32, [0.0; 4]) {
                             p.emit_on(&mut mesh, &mut next_id, x, y, th, 1.0, sit);
                         }
+                        if !sim.is_planned_lot(i) {
+                            us_render::decor::interim_pad(l.radius as f32).emit_on(
+                                &mut mesh,
+                                &mut next_id,
+                                x,
+                                y,
+                                th,
+                                1.0,
+                                sit,
+                            );
+                        }
                         // until it is built, the land has a use: a car park, a fenced lot or a
                         // small square
                         // only in the true centre and only on some lots: a young town is
@@ -1759,7 +1812,12 @@ impl LiveScene {
                         if !sim.is_planned_lot(i) && central && some {
                             let mut vr = Rng::new(seed ^ 0xfa11, i as u64 + 1);
                             let roll = vr.f32();
-                            let u = us_render::blocks::vacant_lot(l.radius as f32, roll, &mut vr);
+                            let u = us_render::blocks::vacant_lot(
+                                l.radius as f32,
+                                roll,
+                                self.centre.at(l.pos.x, l.pos.y),
+                                &mut vr,
+                            );
                             u.emit_on(&mut mesh, &mut next_id, x, y, th, 1.0, sit);
                         }
                     }

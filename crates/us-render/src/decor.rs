@@ -950,6 +950,16 @@ impl Streetscape {
     }
 }
 
+/// The paving under an empty downtown lot that has an interim use: plain paving a good deal wider
+/// than the lot, so the empty lots of a block run into one paved block with its neighbours
+/// instead of standing as islands on lawn. Local to the lot.
+pub fn interim_pad(r: f32) -> Obj {
+    let mut o = Obj::new();
+    let e = r * 1.5;
+    quad(&mut o, -e, -e, e, e, 0.028, crate::scene::PAVING_CORE);
+    o
+}
+
 /// The paved ground under one built lot in a downtown, industrial or mall district: a pad the
 /// size of the lot, so land that is not built on stays natural. Local to the lot.
 pub fn lot_pad(zone: Zone, r: f32, footprint: [f32; 4]) -> Option<Obj> {

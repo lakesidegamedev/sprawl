@@ -957,6 +957,13 @@ impl Game {
                     self.hour = n as f32;
                     self.hour_frozen = true;
                 }
+                "passage" => {
+                    // a hand-placed public passage `n` metres east of the town hall, for pictures
+                    let h = self.town.hall;
+                    let (x, y) = (h.x as f32 + n as f32, h.y as f32);
+                    let (cx, cy) = self.live.add_test_passage(x, y);
+                    self.cam.look_at(Vec2::new(cx, cy), 200.0);
+                }
                 "pause" => self.speed = 0,
                 "town" => {
                     // the town hall from `n` metres away, for a screenshot

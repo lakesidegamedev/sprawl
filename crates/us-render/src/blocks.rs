@@ -236,17 +236,9 @@ fn ground_floor(
 }
 
 /// What sits on a roof of `r` (x0, y0, x1, y1) at height `z`, chosen by the roll: a plant room,
-/// stepped parapet, rooftop tank, terrace, skylights or a pitched or mansard roof on a low
+/// stepped parapet, solar array or greenhouse, terrace, skylights or a pitched or mansard roof on a low
 /// building.
-fn roof_top(
-    o: &mut Obj,
-    r: [f32; 4],
-    z: f32,
-    floors: usize,
-    masonry: bool,
-    brick: bool,
-    roll: f32,
-) {
+fn roof_top(o: &mut Obj, r: [f32; 4], z: f32, floors: usize, masonry: bool, roll: f32) {
     let (x0, y0, x1, y1) = (r[0], r[1], r[2], r[3]);
     let (w, d) = (x1 - x0, y1 - y0);
     let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
@@ -292,12 +284,9 @@ fn roof_top(
         }
         return;
     }
-    let mut kind = (k * 6.0) as usize;
+    let mut kind = (k * 10.0) as usize;
     if kind == 1 && !masonry {
         kind = 3;
-    }
-    if kind == 2 && !(brick && floors <= 8) {
-        kind = if hv(roll, 16) > 0.5 { 3 } else { 4 };
     }
     match kind {
         0 => {
@@ -350,21 +339,61 @@ fn roof_top(
             );
         }
         2 => {
-            // a wooden tank on legs, capped
-            let (tx, ty) = (cx + (hv(roll, 14) - 0.5) * w * 0.5, cy + d * 0.1);
-            for (lx, ly) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            // a solar array: rows of dark panels on low frames, with an inverter box; or, on
+            // every other roof, a glazed greenhouse pavilion with a ridge
+            if hv(roll, 14) < 0.5 {
+                let rows = ((d / 2.6) as usize).clamp(2, 5);
+                let (ax0, ax1) = (x0 + w * 0.12, x1 - w * 0.12);
+                for i in 0..rows {
+                    let y = y0 + d * 0.18 + (d * 0.64) * i as f32 / rows as f32;
+                    o.bx(ax0, y, z, ax1, y + 0.1, z + 0.45, [90, 92, 96]);
+                    o.bx_top(
+                        ax0,
+                        y,
+                        z + 0.45,
+                        ax1,
+                        y + 1.5,
+                        z + 0.95,
+                        [34, 50, 84],
+                        [48, 70, 112],
+                    );
+                }
+                o.bx(ax0, y1 - 1.8, z, ax0 + 1.2, y1 - 0.8, z + 1.0, PLANT);
+            } else {
+                let (gw, gd) = (w * 0.22, d * 0.2);
+                let gx = cx + (hv(roll, 15) - 0.5) * w * 0.3;
                 o.bx(
-                    tx + lx - 0.1,
-                    ty + ly - 0.1,
+                    gx - gw,
+                    cy - gd,
                     z,
-                    tx + lx + 0.1,
-                    ty + ly + 0.1,
-                    z + 1.4,
-                    [90, 92, 96],
+                    gx + gw,
+                    cy + gd,
+                    z + 0.5,
+                    [150, 152, 150],
+                );
+                o.bx_top(
+                    gx - gw,
+                    cy - gd,
+                    z + 0.5,
+                    gx + gw,
+                    cy + gd,
+                    z + 2.4,
+                    GLASS_D,
+                    [190, 210, 214],
+                );
+                o.gable(
+                    gx - gw,
+                    cy - gd,
+                    gx + gw,
+                    cy + gd,
+                    z + 2.4,
+                    1.0,
+                    [190, 210, 214],
+                    [170, 190, 196],
+                    false,
+                    0.0,
                 );
             }
-            o.prism(tx, ty, z + 1.4, z + 4.2, 1.7, [126, 98, 70], 10, None);
-            o.pyramid(tx, ty, z + 4.2, 1.9, 1.1, [86, 70, 56], 10, 0.0);
         }
         3 => {
             // a roof terrace: a rail round the front half, planters and a pergola
@@ -446,6 +475,129 @@ fn roof_top(
             }
             o.bx(x1 - 3.4, y1 - 2.8, z, x1 - 1.4, y1 - 0.8, z + 1.6, PLANT);
         }
+        6 => {
+            // a roof garden: a lawn with a path, benches and two small trees
+            let (gx0, gx1, gy0, gy1) = (x0 + 0.8, x1 - 0.8, y0 + 0.8, y1 - 0.8);
+            o.slab(gx0, gy0, z, gx1, gy1, z + 0.1, [118, 144, 100]);
+            o.slab(
+                cx - 0.6,
+                gy0,
+                z + 0.1,
+                cx + 0.6,
+                gy1,
+                z + 0.14,
+                [196, 190, 176],
+            );
+            for sx in [-1.0f32, 1.0] {
+                o.bx(
+                    cx + sx * 2.0 - 0.8,
+                    cy - 0.3,
+                    z + 0.1,
+                    cx + sx * 2.0 + 0.8,
+                    cy + 0.3,
+                    z + 0.55,
+                    [140, 112, 84],
+                );
+            }
+            let t = crate::kit::tree(1.2, 3.4, [88, 150, 76]);
+            o.add_placed(&t, cx - w * 0.28, cy + d * 0.18, z + 0.1);
+            o.add_placed(&t, cx + w * 0.26, cy - d * 0.2, z + 0.1);
+        }
+        7 => {
+            // a lattice mast with two dishes on a plant shed
+            let (mx, my) = (x0 + w * (0.25 + 0.5 * hv(roll, 17)), cy + d * 0.15);
+            o.bx_top(
+                mx - 1.6,
+                my - 1.2,
+                z,
+                mx + 1.6,
+                my + 1.2,
+                z + 2.4,
+                PLANT,
+                ROOF,
+            );
+            for (lx, ly) in [(-0.3f32, -0.3f32), (0.3, -0.3), (0.3, 0.3), (-0.3, 0.3)] {
+                o.bx(
+                    mx + lx - 0.04,
+                    my + ly - 0.04,
+                    z + 2.4,
+                    mx + lx + 0.04,
+                    my + ly + 0.04,
+                    z + 8.0,
+                    [150, 152, 156],
+                );
+            }
+            o.bx(
+                mx - 0.34,
+                my - 0.34,
+                z + 5.0,
+                mx + 0.34,
+                my + 0.34,
+                z + 5.1,
+                [150, 152, 156],
+            );
+            o.prism(
+                mx + 1.0,
+                my - 1.6,
+                z + 2.4,
+                z + 2.9,
+                0.9,
+                [226, 228, 230],
+                10,
+                None,
+            );
+            o.prism(
+                mx - 1.0,
+                my + 1.6,
+                z + 2.4,
+                z + 2.9,
+                0.7,
+                [226, 228, 230],
+                10,
+                None,
+            );
+        }
+        8 => {
+            // a glazed penthouse set back from the edge under a flat overhanging roof
+            let (px0, px1) = (cx - w * 0.28, cx + w * 0.28);
+            let (py0, py1) = (cy - d * 0.2, cy + d * 0.2);
+            o.bx_top(px0, py0, z, px1, py1, z + 3.0, GLASS_D, ROOF);
+            o.slab(
+                px0 - 0.8,
+                py0 - 0.8,
+                z + 3.0,
+                px1 + 0.8,
+                py1 + 0.8,
+                z + 3.25,
+                [176, 173, 164],
+            );
+        }
+        9 => {
+            // a row of cooling units along the back with a duct run
+            let n = ((w - 2.0) / 3.0).clamp(2.0, 5.0) as usize;
+            for i in 0..n {
+                let x = x0 + 1.0 + (w - 2.0) * (i as f32 + 0.5) / n as f32;
+                o.bx_top(
+                    x - 1.1,
+                    y1 - 2.2,
+                    z,
+                    x + 1.1,
+                    y1 - 0.6,
+                    z + 1.5,
+                    shade(PLANT, 0.8),
+                    [120, 124, 130],
+                );
+            }
+            o.bx(
+                x0 + 1.0,
+                y1 - 3.0,
+                z + 0.5,
+                x1 - 1.0,
+                y1 - 2.7,
+                z + 0.8,
+                [150, 152, 156],
+            );
+        }
         _ => {
             // a stair bulkhead and a pair of cooling units
             o.bx_top(
@@ -497,7 +649,6 @@ pub fn street_block(
     let wall = tower_wall(1.0, plan, pick);
     let finish = material_finish(pick, residential);
     let glass = finish == Finish::CurtainWall;
-    let brick = matches!(pick % 10, 5 | 6);
     let plinth = PLINTHS[(plan + (hv(roll, 3) * 6.0) as usize) % PLINTHS.len()];
     block(
         &mut o,
@@ -668,7 +819,7 @@ pub fn street_block(
         }
     }
     if !tower {
-        roof_top(&mut o, rect, z, floors, masonry, brick, roll);
+        roof_top(&mut o, rect, z, floors, masonry, roll);
     }
     o
 }
@@ -805,20 +956,29 @@ fn chamfer(hw: f32, hd: f32, c: f32) -> Vec<[f32; 2]> {
     ]
 }
 
+/// Shares of vacant lots that are a car park and a fenced lot (the rest are squares) at this
+/// centrality: 8 percent car parks in the middle, 22 percent at the rim.
+pub fn vacant_split(centre: f32) -> (f32, f32) {
+    let c = centre.clamp(0.0, 1.0);
+    (0.22 - 0.14 * c, 0.38 + 0.12 * c)
+}
+
 /// What stands on vacant downtown land until it is built: a surface car park with marked bays, a
-/// fenced empty lot or a small planned square, chosen by the roll. `r` is the lot radius.
-pub fn vacant_lot(r: f32, roll: f32, rng: &mut crate::rng::Rng) -> Obj {
+/// fenced empty lot or a small planned square, chosen by the roll. `r` is the lot radius and
+/// `centre` how central the lot is (0 at the rim of downtown, 1 in the middle): car parks are a
+/// minority everywhere and rare in the middle, where squares and fenced building plots win.
+pub fn vacant_lot(r: f32, roll: f32, centre: f32, rng: &mut crate::rng::Rng) -> Obj {
     let h = r * 0.88;
     let mut o = Obj::new();
+    let (park, fence) = vacant_split(centre);
     let k = hv(roll, 70);
-    if k < 0.45 {
+    if k < park {
         // a car park: bays in rows with a few cars, kerb round it
         o = crate::kit_misc::parking(h * 2.0, h * 2.0, rng);
         return o;
     }
-    if k < 0.8 {
-        // a fenced empty lot: a post and rail fence on every side, a gate, a heap of spoil, a
-        // few pallets and a site sign
+    if k < park + fence {
+        // a fenced empty lot: a post and rail fence on every side, a gate and a site sign
         let post = [96, 100, 106];
         let rail = [140, 144, 150];
         let n = ((h * 2.0) / 3.0).round().max(2.0) as usize;
@@ -839,20 +999,104 @@ pub fn vacant_lot(r: f32, roll: f32, rng: &mut crate::rng::Rng) -> Obj {
         o.bx(-h - 0.03, -h, 1.8, -h + 0.03, h, 1.9, rail);
         o.bx(h - 0.03, -h, 1.8, h + 0.03, h, 1.9, rail);
         o.bx(-h, -h - 0.03, 0.3, h, -h + 0.03, 0.4, rail);
-        let (mx, my) = (h * 0.3 * (hv(roll, 71) - 0.5) * 2.0, h * 0.2);
-        o.pyramid(mx, my, 0.0, h * 0.35, 1.6, [152, 134, 108], 6, 0.0);
+        // a construction site: levelled gravel, a site cabin with a window, a skip, a stack of
+        // concrete blocks, a floodlight mast; nothing brown, nothing heaped
+        o.bx(-h, -h, 0.0, h, h, 0.05, [176, 172, 164]);
+        let side = if hv(roll, 71) < 0.5 { -1.0f32 } else { 1.0 };
+        let cx = side * h * 0.45;
+        o.bx(
+            cx - 2.4,
+            h * 0.45,
+            0.05,
+            cx + 2.4,
+            h * 0.45 + 2.4,
+            2.7,
+            [214, 216, 218],
+        );
+        o.bx(
+            cx - 2.5,
+            h * 0.45 - 0.05,
+            2.7,
+            cx + 2.5,
+            h * 0.45 + 2.5,
+            2.85,
+            [120, 126, 134],
+        );
+        o.bx(
+            cx - 1.6,
+            h * 0.45 - 0.08,
+            1.1,
+            cx - 0.4,
+            h * 0.45 + 0.02,
+            2.0,
+            [92, 128, 150],
+        );
+        o.bx(
+            cx + 0.6,
+            h * 0.45 - 0.08,
+            0.05,
+            cx + 1.5,
+            h * 0.45 + 0.02,
+            2.0,
+            [86, 96, 112],
+        );
+        o.bx(
+            -side * h * 0.5 - 1.6,
+            h * 0.2,
+            0.05,
+            -side * h * 0.5 + 1.6,
+            h * 0.2 + 1.2,
+            1.0,
+            [214, 168, 52],
+        );
+        o.bx(
+            -side * h * 0.5 - 1.5,
+            h * 0.2 + 0.1,
+            0.9,
+            -side * h * 0.5 + 1.5,
+            h * 0.2 + 1.1,
+            1.0,
+            [60, 58, 54],
+        );
         for i in 0..3 {
-            let px = -h * 0.5 + i as f32 * 1.7;
+            let bx = side * h * 0.3 - 1.2 + i as f32 * 0.85;
             o.bx(
-                px,
-                -h * 0.4,
-                0.0,
-                px + 1.2,
-                -h * 0.4 + 1.0,
-                0.45,
-                [150, 112, 78],
+                bx,
+                -h * 0.35,
+                0.05,
+                bx + 0.8,
+                -h * 0.35 + 0.8,
+                0.55,
+                [150, 150, 148],
             );
         }
+        o.bx(
+            side * h * 0.3 - 0.8,
+            -h * 0.35 + 0.05,
+            0.55,
+            side * h * 0.3 + 1.7,
+            -h * 0.35 + 0.75,
+            1.0,
+            [150, 150, 148],
+        );
+        o.bx(
+            -side * h * 0.1 - 0.06,
+            -h * 0.1 - 0.06,
+            0.05,
+            -side * h * 0.1 + 0.06,
+            -h * 0.1 + 0.06,
+            4.5,
+            [60, 64, 72],
+        );
+        o.bx(
+            -side * h * 0.1 - 0.3,
+            -h * 0.1 - 0.3,
+            4.5,
+            -side * h * 0.1 + 0.3,
+            -h * 0.1 + 0.3,
+            4.8,
+            [236, 226, 170],
+        );
         o.bx(-1.6, -h - 0.4, 0.0, 1.6, -h - 0.3, 0.2, [90, 94, 100]);
         o.bx(-1.4, -h - 0.45, 1.0, 1.4, -h - 0.35, 2.0, [210, 200, 170]);
         return o;
@@ -904,6 +1148,201 @@ pub fn vacant_lot(r: f32, roll: f32, rng: &mut crate::rng::Rng) -> Obj {
     o
 }
 
+/// A public pedestrian passage cut through a downtown block: a straight route from one street to
+/// the next, in plan metres. The street layout will supply a list of these; `passage` dresses one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Passage {
+    pub a: [f32; 2],
+    pub b: [f32; 2],
+    /// Clear width between the two frontages, 6 to 8 m.
+    pub width: f32,
+}
+
+impl Passage {
+    pub fn len(&self) -> f32 {
+        (self.b[0] - self.a[0]).hypot(self.b[1] - self.a[1])
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() < 1.0
+    }
+    pub fn mid(&self) -> [f32; 2] {
+        [(self.a[0] + self.b[0]) / 2.0, (self.a[1] + self.b[1]) / 2.0]
+    }
+    /// Heading of the route in radians, as the angle to emit its model at.
+    pub fn theta(&self) -> f32 {
+        libm::atan2f(self.b[1] - self.a[1], self.b[0] - self.a[0])
+    }
+}
+
+/// The dressing of one passage, in its own frame: the origin is the passage's middle and the x
+/// axis runs along it. Emit it at `Passage::mid` with `Passage::theta`. A paved route with a
+/// kerbed footway on each side, shopfront bays all along both frontages (separate shops with
+/// awnings, signs and entrances, over a masonry ground floor that joins the buildings either
+/// side), lamp posts, strings of festoon lights across it and planters. The buildings above the
+/// ground floor belong to the lots either side. About 400 to 700 polys for 40 m.
+pub fn passage(p: &Passage, seed: u32) -> Obj {
+    let mut o = Obj::new();
+    let len = p.len();
+    let w = p.width.clamp(6.0, 8.0);
+    let (hl, hw) = (len / 2.0, w / 2.0);
+    let roll = hv(seed as f32 * 0.137 + 0.31, 1);
+    let g = RETAIL;
+    let plinth = PLINTHS[(hv(roll, 3) * 6.0) as usize % PLINTHS.len()];
+    // paving, with a darker footway strip along each frontage
+    let quad = |o: &mut Obj, y0: f32, y1: f32, z: f32, c: Rgb| {
+        o.poly(
+            &[[-hl, y0, z], [hl, y0, z], [hl, y1, z], [-hl, y1, z]],
+            c,
+            false,
+            false,
+            true,
+        );
+    };
+    quad(&mut o, -hw, hw, 0.04, crate::scene::PAVING_CORE);
+    for sy in [-1.0f32, 1.0] {
+        quad(
+            &mut o,
+            sy * (hw - 1.1).min(hw - 0.4),
+            sy * (hw - 0.1),
+            0.06,
+            crate::roadpaint::SIDEWALK,
+        );
+    }
+    // paving joints: a line across every 4 m
+    let mut x = -hl + 2.0;
+    while x < hl - 1.0 {
+        o.poly(
+            &[
+                [x - 0.04, -hw, 0.07],
+                [x + 0.04, -hw, 0.07],
+                [x + 0.04, hw, 0.07],
+                [x - 0.04, hw, 0.07],
+            ],
+            shade(crate::scene::PAVING_CORE, 0.9),
+            false,
+            false,
+            true,
+        );
+        x += 4.0;
+    }
+    // frontages: a ground-floor shell 1.6 m deep with shop bays, on both sides
+    for (k, sy) in [(0u32, 1.0f32), (1, -1.0)] {
+        let sx = -sy;
+        let e = Edge::new([-hl * sx, sy * hw], [hl * sx, sy * hw]);
+        // the shell lies behind the frontage (away from the passage)
+        let ring = [
+            [-hl, sy * hw],
+            [hl, sy * hw],
+            [hl, sy * (hw + 1.6)],
+            [-hl, sy * (hw + 1.6)],
+        ];
+        block(&mut o, &ring, 0.0, g, plinth, Finish::Plain);
+        ground_floor(
+            &mut o,
+            &e,
+            [0.0, len],
+            g,
+            plinth,
+            roll,
+            600 + 300 * k,
+            false,
+        );
+        // a continuous fascia cornice over the bays, and a lit soffit line under the awnings
+        e.bx(
+            &mut o,
+            [0.0, len],
+            [0.0, 0.25],
+            [g, g + 0.3],
+            shade(plinth, 0.7),
+        );
+    }
+    // lamp posts, alternate sides, every 9 m
+    let mut i = 0;
+    let mut x = -hl + 4.0;
+    while x < hl - 2.0 {
+        let sy = if i % 2 == 0 { 1.0 } else { -1.0 };
+        let y = sy * (hw - 0.7);
+        o.bx(x - 0.3, y - 0.3, 0.0, x + 0.3, y + 0.3, 0.3, [96, 98, 104]);
+        o.bx(
+            x - 0.08,
+            y - 0.08,
+            0.3,
+            x + 0.08,
+            y + 0.08,
+            3.8,
+            [52, 56, 66],
+        );
+        o.bx(
+            x - 0.25,
+            y - 0.25,
+            3.8,
+            x + 0.25,
+            y + 0.25,
+            4.3,
+            crate::instances::LAMP_LENS,
+        );
+        o.bx(
+            x - 0.35,
+            y - 0.35,
+            4.3,
+            x + 0.35,
+            y + 0.35,
+            4.42,
+            [52, 56, 66],
+        );
+        x += 9.0;
+        i += 1;
+    }
+    // festoon lights: a wire across the passage at 5.2 m every 12 m, with a bulb every metre
+    let mut x = -hl + 6.0;
+    while x < hl - 3.0 {
+        o.bx(x - 0.02, -hw, 5.15, x + 0.02, hw, 5.2, [52, 56, 66]);
+        let mut y = -hw + 0.8;
+        while y < hw - 0.4 {
+            o.bx(
+                x - 0.1,
+                y - 0.1,
+                4.95,
+                x + 0.1,
+                y + 0.1,
+                5.15,
+                crate::instances::LAMP_LENS,
+            );
+            y += 1.0;
+        }
+        x += 12.0;
+    }
+    // planters between the bays, kept to the footway and clear of the middle
+    let mut x = -hl + 7.0;
+    let mut j = 0;
+    while x < hl - 3.0 {
+        let sy = if j % 2 == 0 { -1.0 } else { 1.0 };
+        let y = sy * (hw - 1.0);
+        o.bx(x - 0.6, y - 0.4, 0.0, x + 0.6, y + 0.4, 0.55, [120, 96, 80]);
+        o.bx(x - 0.5, y - 0.3, 0.55, x + 0.5, y + 0.3, 0.95, LEAF);
+        x += 14.0;
+        j += 1;
+    }
+    o
+}
+
+/// The dressing of every passage in a list: each as (model, middle x, middle y, heading).
+pub fn passages(list: &[Passage], seed: u32) -> Vec<(Obj, f32, f32, f32)> {
+    list.iter()
+        .enumerate()
+        .filter(|(_, p)| !p.is_empty())
+        .map(|(i, p)| {
+            let m = p.mid();
+            (
+                passage(p, seed.wrapping_add(i as u32 * 31)),
+                m[0],
+                m[1],
+                p.theta(),
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -916,7 +1355,7 @@ mod tests {
                 let h = crate::levels::top_of(&o);
                 let lo = RETAIL + floors as f32 * STOREY;
                 assert!(
-                    h >= lo && h < lo + 8.5,
+                    h >= lo && h < lo + 10.0,
                     "{floors} floors: {h} m, wanted {lo}+"
                 );
                 for v in o.polys.iter().flat_map(|p| &p.pts) {
@@ -960,7 +1399,7 @@ mod tests {
     fn every_vacant_use_is_a_real_object() {
         for roll in [0.1f32, 0.5, 0.9] {
             let mut rng = crate::rng::Rng::new(3, 4);
-            let o = vacant_lot(9.0, roll, &mut rng);
+            let o = vacant_lot(9.0, roll, 0.5, &mut rng);
             assert!(o.polys.len() > 10);
             assert!(
                 o.polys
@@ -969,5 +1408,68 @@ mod tests {
                     .all(|v| v.iter().all(|c| c.is_finite()))
             );
         }
+    }
+
+    #[test]
+    fn a_passage_is_a_paved_lit_route_with_shopfronts_both_sides() {
+        let p = Passage {
+            a: [0.0, 0.0],
+            b: [42.0, 0.0],
+            width: 7.0,
+        };
+        let o = passage(&p, 3);
+        assert!(
+            o.polys.len() > 200 && o.polys.len() < 1500,
+            "{}",
+            o.polys.len()
+        );
+        assert!(
+            o.polys
+                .iter()
+                .flat_map(|q| &q.pts)
+                .all(|v| v.iter().all(|c| c.is_finite()))
+        );
+        // nothing stands in the clear route between the awnings: the middle metre stays open
+        let blocked = o.polys.iter().any(|q| {
+            q.pts.iter().all(|v| v[1].abs() < 0.5) && q.pts.iter().any(|v| v[2] > 0.3 && v[2] < 4.5)
+        });
+        assert!(!blocked, "the middle of the passage is open");
+        // lit: lamp lens colours on both sides, bays on both sides
+        for sy in [-1.0f32, 1.0] {
+            assert!(
+                o.polys
+                    .iter()
+                    .any(|q| q.color == crate::instances::LAMP_LENS
+                        && q.pts.iter().all(|v| v[1] * sy > 0.0))
+            );
+            assert!(
+                o.polys
+                    .iter()
+                    .any(|q| q.pts.iter().all(|v| v[1] * sy > 2.0)
+                        && q.pts.iter().any(|v| v[2] > 2.0))
+            );
+        }
+        let all = passages(
+            &[
+                p,
+                Passage {
+                    a: [5.0, 5.0],
+                    b: [5.0, 5.0],
+                    width: 7.0,
+                },
+            ],
+            1,
+        );
+        assert_eq!(all.len(), 1, "a zero length passage is skipped");
+    }
+
+    #[test]
+    fn car_parks_are_a_minority_and_rarer_in_the_middle() {
+        for c in [0.0f32, 0.18, 0.5, 1.0] {
+            let (park, fence) = vacant_split(c);
+            assert!(park < 0.25 && park + fence < 1.0, "{c}");
+        }
+        assert!(vacant_split(1.0).0 < vacant_split(0.0).0);
+        assert!(vacant_split(1.0).0 < 0.1);
     }
 }
