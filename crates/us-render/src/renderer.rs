@@ -1856,7 +1856,7 @@ impl Renderer {
                 if map_view { 1.0 } else { self.adapted_exposure },
                 if map_view { 0.0 } else { 1.0 },
             ],
-            seasons: [f32::from(cal.is_some()), 0.0, 0.0, 0.0],
+            seasons: [f32::from(cal.is_some()), wide_occlusion_on(), 0.0, 0.0],
             rock: scene
                 .land
                 .rock()
@@ -2458,6 +2458,19 @@ fn light_matrix(scene: &Scene, view: &View, sun: Vec3, size: u32) -> (Mat4, f32,
     let (near, far) = (-hi.z - 120.0, -lo.z + 120.0);
     let proj = Mat4::orthographic_rh(cx - half, cx + half, cy - half, cy + half, near, far);
     (proj * lv, texel, far - near)
+}
+
+/// The wide occlusion band is on unless the smoke picture switch `URBAN_SPRAWL_SMOKE_WIDE_AO=0`
+/// turns it off, so one view can be shown with and without it.
+fn wide_occlusion_on() -> f32 {
+    static ON: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        if std::env::var("URBAN_SPRAWL_SMOKE_WIDE_AO").is_ok_and(|v| v == "0") {
+            0.0
+        } else {
+            1.0
+        }
+    })
 }
 
 #[cfg(test)]

@@ -836,7 +836,20 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], context: &[RoadDraw]) {
                 {
                     continue;
                 }
-                g.ribbon(r.points, 1.0, side * (hw + 1.5), z::SIDEWALK, SIDEWALK);
+                // the blue runs 181 (road side) to 191 (outer side) across the strip so the winter
+                // shader can wear a footpath along it; the colour is the sidewalk colour to the eye
+                let (right, left) = if side > 0.0 {
+                    (
+                        [SIDEWALK[0], SIDEWALK[1], 181],
+                        [SIDEWALK[0], SIDEWALK[1], 191],
+                    )
+                } else {
+                    (
+                        [SIDEWALK[0], SIDEWALK[1], 191],
+                        [SIDEWALK[0], SIDEWALK[1], 181],
+                    )
+                };
+                g.ribbon_across(r.points, 1.0, side * (hw + 1.5), z::SIDEWALK, right, left);
                 g.ribbon(r.points, 0.18, side * (hw + 0.4), z::KERB, KERB);
             }
         }

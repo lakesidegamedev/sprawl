@@ -61,7 +61,7 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], hw_of: &dyn Fn(usize) -> f32, r
             } else {
                 (bank_colour(1.0), bank_colour(0.0))
             };
-            g.ribbon_across(r.points, 0.8, side * (hw + 0.35), Z_BANK, right, left);
+            g.ribbon_across(r.points, 1.05, side * (hw + 0.55), Z_BANK, right, left);
         }
     }
 }

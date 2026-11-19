@@ -104,8 +104,13 @@ fn tuft(h: f32, step: u8) -> Obj {
     plain(o, false, false)
 }
 
+/// Bushes and hedges keep their own greens (blue steps 0 to 3), so they stay dark green and
+/// snow-dusted in winter instead of dropping their leaves with the broadleaf trees.
+pub const BUSH: Rgb = [58, 116, 62];
+pub const BUSH_D: Rgb = [48, 100, 56];
+
 fn bush(shape: usize, dark: bool, step: u8) -> Obj {
-    let c = m(if dark { kit::TREE_D } else { kit::TREE }, step);
+    let c = m(if dark { BUSH_D } else { BUSH }, step);
     let mut o = Obj::new();
     match shape {
         0 => {
@@ -241,7 +246,7 @@ fn row_piece(len: f32, col: Rgb) -> Obj {
 }
 
 fn hedge_piece(len: f32, h: f32, step: u8, dark: bool) -> Obj {
-    let c = m(if dark { kit::TREE_D } else { kit::TREE }, step);
+    let c = m(if dark { BUSH_D } else { BUSH }, step);
     let mut o = Obj::new();
     let l = len / 2.0;
     o.bx(-l, -0.5, 0.0, l, 0.5, h, c);
