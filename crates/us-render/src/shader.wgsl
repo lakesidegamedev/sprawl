@@ -8,7 +8,7 @@ struct Globals {
     eye: vec4<f32>,     // xyz camera position, w near plane
     fog: vec4<f32>,     // rgb atmospheric light, w mist density
     terrain: vec4<f32>, // elevation base and range, inverse map size and texture size
-    local_lights: vec4<f32>, // world tile origin, streetlight and headlight strength
+    local_lights: vec4<f32>, // world tile origin, streetlight and headlight strength, contact shade on
     resolve: vec4<f32>, // xy native to world pixel conversion
     sun: vec4<f32>,    // xyz toward the sun, w shadow texel size in metres
     ink: vec4<f32>,    // rgb ink colour, a ink width in pixels (1 or 2)
@@ -19,8 +19,9 @@ struct Globals {
     wx: vec4<f32>,     // x snow cover 0 to 1, y wet ground, zw wind (east, north) in m/s
     precipitation: vec4<f32>, // rain, snow and the lower corner of the weather grid
     weather_flow: vec4<f32>,   // wind displacement, storm strength and tilt shift
-    lightning: vec4<f32>,     // strike position and intensity
+    lightning: vec4<f32>,     // strike position and intensity, w ink softness
     temporal: vec4<f32>,     // history weight, bloom intensity, exposure, tone mapping
+    seasons: vec4<f32>,      // x 1 when a calendar is running, so season 0 is a real winter, y 1 for the wide occlusion band, z 1 for all occlusion (picture switches)
     rock: array<vec4<f32>, 8>, // rows 0 to 3 strata colours, 4 talus, 5 (snow line, tree line, band height, on), 6 (snow rgb, winter drop)
 };
 
@@ -64,11 +65,51 @@ fn sway(p: vec3<f32>, c: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(p.x + w.x * k, p.y + w.y * k, p.z);
 }
 
+// Where a broadleaf crown has lost its leaves the vertex is thrown outside the view, so every
+// triangle of the crown collapses to nothing and casts no shadow. The bark skeleton inside it
+// is left standing. All of a crown's vertices share a colour family, so a face never mixes.
+fn crown_colour(c: vec3<f32>) -> bool {
+    return leaf_step(c, 88.0, 150.0, 76.0) >= 0 || leaf_step(c, 70.0, 128.0, 66.0) >= 0;
+}
+
+fn haze_step(c: vec3<f32>, r: f32, gr: f32, b: f32) -> i32 {
+    let d = c * 255.0 - vec3<f32>(r, gr, b);
+    if (abs(d.x) < 0.6 && abs(d.y) < 0.6 && d.z > 7.4 && d.z < 11.6) {
+        return i32(round(d.z)) - 8;
+    }
+    return -1;
+}
+
+// 1 while the leaves are on, 0 when they are down. Neighbourhoods turn at different moments
+// (the same landscape field the palettes use), so leaves come and go patch by patch.
+fn leaf_presence(world: vec3<f32>) -> f32 {
+    let season = i32(g.look.x + 0.5);
+    if (g.seasons.x < 0.5) { return 1.0; }
+    // leaves drop early in the winter weeks and return late in the spring ones
+    if (season == 0) { return 1.0 - smoothstep(0.05, 0.65, season_phase(world)); }
+    if (season == 2) { return smoothstep(0.35, 0.95, season_phase(world)); }
+    return 1.0;
+}
+
+// `limit` is the leaf cover below which the crown is dropped: a thinning crown stops casting its
+// solid shadow earlier than it stops being drawn.
+fn crown_gone(c: vec3<f32>, world: vec3<f32>, limit: f32) -> bool {
+    if (g.look.z > 0.5 || (g.look.x > 0.5 && g.look.x < 1.5) || (g.look.x > 2.5)) {
+        return false;
+    }
+    return crown_colour(c) && leaf_presence(world) < limit;
+}
+
+const FOLDED: vec4<f32> = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+
 @vertex
 fn vs_main(v: VIn) -> VOut {
     var o: VOut;
     let p = sway(v.pos, v.color.rgb * 255.0);
     o.clip = g.view_proj * vec4<f32>(p, 1.0);
+    if (crown_gone(v.color.rgb, p, 0.02)) {
+        o.clip = FOLDED;
+    }
     o.world = p;
     o.normal = v.normal;
     o.color = v.color;
@@ -100,6 +141,9 @@ fn vs_inst(v: VIn, i: Inst) -> VOut {
     let s = sin(i.pos_theta.w);
     let c = cos(i.pos_theta.w);
     o.clip = g.view_proj * vec4<f32>(w, 1.0);
+    if (crown_gone(v.color.rgb, w, 0.02)) {
+        o.clip = FOLDED;
+    }
     o.world = w;
     o.normal = vec3<f32>(c * v.normal.x - s * v.normal.y, s * v.normal.x + c * v.normal.y, v.normal.z);
     o.color = v.color;
@@ -116,12 +160,20 @@ fn vs_inst(v: VIn, i: Inst) -> VOut {
 
 @vertex
 fn vs_inst_shadow(v: VIn, i: Inst) -> @builtin(position) vec4<f32> {
-    return g.light_vp * vec4<f32>(inst_world(v, i), 1.0);
+    let w = inst_world(v, i);
+    if (crown_gone(v.color.rgb, w, 0.6)) {
+        return FOLDED;
+    }
+    return g.light_vp * vec4<f32>(w, 1.0);
 }
 
 @vertex
 fn vs_shadow(v: VIn) -> @builtin(position) vec4<f32> {
-    return g.light_vp * vec4<f32>(sway(v.pos, v.color.rgb * 255.0), 1.0);
+    let p = sway(v.pos, v.color.rgb * 255.0);
+    if (crown_gone(v.color.rgb, p, 0.6)) {
+        return FOLDED;
+    }
+    return g.light_vp * vec4<f32>(p, 1.0);
 }
 
 // Fraction of the comparison footprint that the sun reaches.
@@ -135,7 +187,32 @@ fn lit(world: vec3<f32>, n: vec3<f32>) -> f32 {
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || c.z > 1.0) {
         return 1.0;
     }
-    return textureSampleCompareLevel(shadow_tex, shadow_cmp, uv, c.z - g.shade.y);
+    // A soft edge: each tap is already a filtered comparison, and the ring widens the
+    // penumbra to about three texels so shadow edges stop stepping along the texel grid.
+    let texel = 1.0 / f32(textureDimensions(shadow_tex).x);
+    let depth = c.z - g.shade.y;
+    let centre = textureSampleCompareLevel(shadow_tex, shadow_cmp, uv, depth);
+    if (g.resolve.w < 0.5 && g.local_lights.w < 0.5) {
+        // the light preset (phones by default) keeps the single filtered comparison
+        return centre;
+    }
+    var sum = centre * 2.0;
+    let r = texel * 1.4;
+    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(r, r * 0.4), depth);
+    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(-r * 0.4, r), depth);
+    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(-r, -r * 0.4), depth);
+    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(r * 0.4, -r), depth);
+    if (g.resolve.w < 0.5) {
+        return sum / 6.0;
+    }
+    // the wide ring reaches further across a sloping face, so it compares with more slack
+    let far_depth = depth - g.shade.y * 1.6;
+    let q = texel * 2.6;
+    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(q, -q * 0.3), far_depth);
+    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(q * 0.3, q), far_depth);
+    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(-q, q * 0.3), far_depth);
+    sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(-q * 0.3, -q), far_depth);
+    return sum / 10.0;
 }
 
 fn packed_surface(n: vec3<f32>, material: u32) -> u32 {
@@ -335,35 +412,58 @@ fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist:
         k = 0.955;
     }
     if (snowy) {
-        // soft blue shadows in the lee of drifts, no sparkle
-        let d = vnoise(w / 7.0) * 0.6 + vnoise(w / 2.3) * 0.4;
-        var s = vec3<f32>(1.0);
-        if (d < 0.36) {
-            s = vec3<f32>(0.88, 0.93, 1.02);
-        } else if (d < 0.46) {
-            s = vec3<f32>(0.95, 0.97, 1.01);
-        }
+        // a faint cool shade on the lee of a drift only: the drift height is the same noise the
+        // cover uses, and the shade follows its slope away from the sun, so it never sits
+        // in blotches of its own
+        let away = -normalize(g.sun.xy + vec2<f32>(0.0001, 0.0)) * 2.4;
+        let here = vnoise(w / 16.0) * 0.7 + vnoise(w / 5.0) * 0.3;
+        let past = vnoise((w + away) / 16.0) * 0.7 + vnoise((w + away) / 5.0) * 0.3;
+        let lee = clamp((here - past) * 5.0, 0.0, 1.0);
+        let s = mix(vec3<f32>(1.0), vec3<f32>(0.93, 0.955, 1.0), lee * 0.8);
         return c * s;
     }
     if (kind == 1 || kind == 4) {
+        // Grassland: a continuous spectrum of variation instead of two glade sizes, so the
+        // ground reads as pasture with lusher hollows and drier rises, not as painted blots.
         let footprint = g.screen.z * dist;
-        let large = vnoise(w / 163.0 + vec2<f32>(4.1, 22.8));
-        let meadow = large * 0.65 + vnoise(w / 39.0) * 0.35;
-        let damp_meadow = vec3<f32>(0.32, 0.43, 0.32);
-        let dry_meadow = vec3<f32>(0.52, 0.54, 0.36);
-        let seasonal = mix(damp_meadow, dry_meadow, smoothstep(0.19, 0.82, meadow));
-        let lush = mix(c, seasonal, select(0.57, 0.43, kind == 4));
+        let rich = g.resolve.w > 0.5 || g.local_lights.w > 0.5;
+        var warp = vec2<f32>(0.0);
+        if (rich) {
+            warp = vec2<f32>(vnoise(w / 97.0 + vec2<f32>(13.0, 5.0)), vnoise(w / 97.0 + vec2<f32>(-7.0, 31.0))) - 0.5;
+        }
+        let broad = vnoise(w / 260.0 + vec2<f32>(4.1, 22.8));
+        let field = vnoise((w + warp * 70.0) / 74.0);
+        let glade = vnoise((w + warp * 24.0) / 21.0 + vec2<f32>(9.0, 2.0));
+        var clump = 0.5;
+        if (rich) {
+            clump = vnoise(w / 6.1 + vec2<f32>(3.0, 17.0));
+        }
+        let meadow = broad * 0.40 + field * 0.33 + glade * 0.18 + clump * 0.09;
+        let lush_green = vec3<f32>(0.25, 0.39, 0.21);
+        let dry_green = vec3<f32>(0.46, 0.48, 0.28);
+        let seasonal = mix(lush_green, dry_green, smoothstep(0.24, 0.78, meadow));
+        var grass = mix(c, seasonal * (c.g / 0.66), select(0.70, 0.45, kind == 4));
         let detail = 1.0 - smoothstep(0.06, 0.32, footprint);
-        let tufts = 1.0 - smoothstep(0.15, 0.68, footprint);
+        let tufts = 1.0 - smoothstep(0.18, select(0.68, 0.95, rich), footprint);
         var grain = 0.0;
         if (tufts > 0.0) {
-            grain += (vnoise(w * 0.29 + vec2<f32>(2.9, -8.1)) - 0.5) * 0.109 * tufts;
+            // tussocks about a metre and a half across, combed a little by the wind
+            let comb = w + vec2<f32>(w.y * 0.28, 0.0);
+            let tussock = vnoise(comb / vec2<f32>(1.9, 1.3) + vec2<f32>(2.9, -8.1));
+            grain += (tussock - 0.5) * 0.17 * tufts;
         }
         if (detail > 0.0) {
-            grain += (vnoise(w * vec2<f32>(5.6, 2.8) + vec2<f32>(0.5, 13.0)) - 0.5) * 0.23 * detail;
+            grain += (vnoise(w * vec2<f32>(5.6, 2.8) + vec2<f32>(0.5, 13.0)) - 0.5) * 0.24 * detail;
+            // wild flowers gather in the lusher ground
+            let speck = hash2(vec2<i32>(floor(w * 3.1)));
+            let bloom = smoothstep(0.52, 0.66, glade) * (1.0 - smoothstep(0.50, 0.70, field)) * detail;
+            if (kind == 1 && speck > 0.965 && i32(g.look.x + 0.5) >= 2) {
+                let petal = mix(vec3<f32>(0.96, 0.90, 0.46), vec3<f32>(0.95, 0.95, 0.90), step(0.985, speck));
+                grass = mix(grass, petal, bloom * 0.8);
+            }
         }
-        let cut = 1.0 + select(0.0, 0.032 * sin((w.x + w.y * 0.22) * 0.64), kind == 4);
-        return lush * cut * (0.94 + 0.09 * meadow + grain);
+        let cut = 1.0 + select(0.0, 0.05 * sign(sin((w.x + w.y * 0.22) * 0.9)) , kind == 4);
+        return grass * cut * (0.90 + 0.17 * meadow + grain);
     }
     if (kind == 2) {
         // crop rows: rows run one way per field colour, a broad band of tone per row
@@ -550,7 +650,7 @@ fn grass_soil(colour: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, px: f32) -
     let meadow_patch = vnoise(world.xy * 0.016);
     let sward = vnoise(world.xy * 0.18);
     let dry = smoothstep(0.43, 0.81, meadow_patch * 0.76 + sward * 0.24 + hill * 0.22);
-    let bare = dry * (0.24 + 0.34 * hill) * (1.0 - g.wx.x);
+    let bare = dry * (0.07 + 0.50 * hill) * (1.0 - g.wx.x);
     let detail = 1.0 - smoothstep(0.15, 0.65, px);
     var litter = 0.0;
     if (detail > 0.0) {
@@ -587,7 +687,7 @@ fn season_leaf(dark: bool, season: i32) -> vec3<f32> {
 // Natural ground of a land with a rock look: grass on gentle slopes, forest on the lower
 // mountainsides, stone below faces, rock on steep slopes (stepped strata, or fractured granite),
 // bare ground above the tree line and a clean snow cap above the snow line.
-fn terrain_look(world: vec3<f32>, n: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
+fn terrain_look(world: vec3<f32>, n: vec3<f32>, facet: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
     // `base` is the gentle ground: grass for the mountain looks, the vertex colour for looks whose
     // flats, washes and beaches are coloured on the CPU
     let grass = base;
@@ -618,10 +718,28 @@ fn terrain_look(world: vec3<f32>, n: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
     }
     if (s > talus_s) {
         let tilt = world.x * 0.061 + world.y * 0.035;
-        let joint_axis = world.x * 0.56 + world.y * 0.82;
-        let cleavage = vnoise(vec2<f32>(joint_axis / 14.0, z / 55.0));
+        // Joints, cracks and fragments are drawn triplanar: each is projected along the dominant
+        // axis of the true face normal, so a face looking along any axis keeps the scale of its
+        // strata and cracks instead of smearing into streaks down the wall.
+        let raw_w = pow(abs(facet), vec3<f32>(6.0)) + vec3<f32>(0.0001);
+        let tw = raw_w / (raw_w.x + raw_w.y + raw_w.z);
+        var cleavage = 0.0;
+        var fragments = 0.0;
+        if (tw.x > 0.02) {
+            // a face looking along x: the wall runs along y
+            cleavage += tw.x * vnoise(vec2<f32>(world.y / 14.0 + 3.1, z / 55.0));
+            fragments += tw.x * vnoise(vec2<f32>(world.y / 3.6 + 7.7, z / 7.8));
+        }
+        if (tw.y > 0.02) {
+            cleavage += tw.y * vnoise(vec2<f32>(world.x / 14.0, z / 55.0));
+            fragments += tw.y * vnoise(vec2<f32>(world.x / 3.6, z / 7.8));
+        }
+        if (tw.z > 0.02) {
+            // a top or a gentle slope: seen from above, with cells as wide as they are tall
+            cleavage += tw.z * vnoise(world.xy / 14.0 + vec2<f32>(11.3, 5.9));
+            fragments += tw.z * vnoise(world.xy / 3.6 + vec2<f32>(2.2, 9.4));
+        }
         let lithology = vnoise(world.xy / 74.0 + vec2<f32>(z / 40.0, -z / 71.0));
-        let fragments = vnoise(vec2<f32>(joint_axis / 3.6, z / 7.8));
         var colour = mix(g.rock[0].rgb, g.rock[3].rgb, smoothstep(0.12, 0.91, lithology));
         if (g.rock[7].x < 0.5) {
             let warp = (vnoise(world.xy / 60.0 + vec2<f32>(8.0, -1.0)) - 0.5) * 18.0;
@@ -666,17 +784,35 @@ fn terrain_look(world: vec3<f32>, n: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
 
 // World-space phase offsets spread activity across blocks. Each polygon also
 // has a stable room anchor, independent of outline IDs assigned during rebuilds.
-fn window_glow(anchor: vec3<f32>, shop: bool) -> f32 {
-    let block = vnoise(anchor.xy / 145.0);
+// A room's own roll, 0 to 1, from where it is: picks whether its light is on and what colour.
+fn room_roll(anchor: vec3<f32>) -> f32 {
     let quantized = vec3<i32>(floor(anchor * 16.0 + 0.5));
     let room = hash_u(bitcast<u32>(quantized.x) ^ (bitcast<u32>(quantized.y) * 165557u)
         ^ (bitcast<u32>(quantized.z) * 224171u));
-    let choice = f32(room % 1000u) / 1000.0;
-    let schedule = clamp(g.tone.w * (0.87 + block * 0.36) + select(0.0, 0.16, shop), 0.0, 1.0);
+    return f32(room % 1000u) / 1000.0;
+}
+
+// The colour of a lit room: tungsten, warm white, cool white and now and then a screen's blue.
+fn window_colour(roll: f32) -> vec3<f32> {
+    let r = fract(roll * 7.31 + 0.37);
+    var c = vec3<f32>(1.0, 0.70, 0.36);
+    c = mix(c, vec3<f32>(1.0, 0.86, 0.58), smoothstep(0.28, 0.40, r));
+    c = mix(c, vec3<f32>(0.90, 0.94, 1.0), smoothstep(0.72, 0.80, r));
+    c = mix(c, vec3<f32>(0.62, 0.78, 1.0), smoothstep(0.93, 0.97, r));
+    return c;
+}
+
+fn window_glow(anchor: vec3<f32>, shop: bool, office: bool) -> f32 {
+    let block = vnoise(anchor.xy / 145.0);
+    let choice = room_roll(anchor);
+    // a third to two thirds of the windows are lit once the evening is in, block by block
+    // offices keep 15 to 35 percent of their windows lit, homes 30 to 60, shopfronts a little more
+    let share = select(mix(0.30, 0.60, block), mix(0.15, 0.35, block), office) + select(0.0, 0.08, shop);
+    let schedule = clamp(g.tone.w / 0.75, 0.0, 1.0);
     // Individual rooms fade over several simulation minutes rather than crossing a binary cutoff.
-    let onset = mix(0.10, 1.04, choice);
-    let awake = smoothstep(onset - 0.062, onset + 0.062, schedule);
-    return awake * smoothstep(0.015, 0.18, g.tone.w);
+    let awake = smoothstep(choice - 0.035, choice + 0.035, share * schedule);
+    let brightness = 0.50 + 0.50 * fract(choice * 13.7);
+    return awake * brightness * smoothstep(0.015, 0.18, g.tone.w);
 }
 
 fn night_illumination(world: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
@@ -708,7 +844,7 @@ fn night_illumination(world: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
         let tint = select(vec3<f32>(1.0, 0.75, 0.43), vec3<f32>(0.74, 0.83, 1.0), aimed);
         light += tint * intensity;
     }
-    return light * g.local_lights.z;
+    return light * g.local_lights.z * 2.1;
 }
 
 fn road_weather_decals(w: vec2<f32>, footprint: f32) -> f32 {
@@ -733,8 +869,15 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
         let repair = vnoise(w * 0.34);
         let dust = vnoise(w * 0.95 + vec2<f32>(19.0, 7.0));
         let specks = hash2(vec2<i32>(floor(w * 7.0))) - 0.5;
-        var paved = col * vec3<f32>(0.87, 0.89, 0.90)
-            * (0.89 + 0.17 * repair + 0.13 * dust + 0.20 * specks * aggregate);
+        // old repairs: now and then a squared-off patch of newer, darker asphalt
+        let slab = w / vec2<f32>(11.0, 7.0);
+        let slab_id = vec2<i32>(floor(slab));
+        let slab_roll = hash2(slab_id + vec2<i32>(91, 13));
+        let inset = abs(fract(slab) - 0.5);
+        let mend = step(0.83, slab_roll) * (1.0 - smoothstep(0.26, 0.29, max(inset.x, inset.y)))
+            * (1.0 - smoothstep(0.3, 1.2, px));
+        var paved = col * vec3<f32>(0.80, 0.80, 0.76)
+            * (0.95 + 0.05 * repair + 0.06 * dust + 0.20 * specks * aggregate - 0.06 * mend);
         if (g.wx.y > 0.05) {
             let pool = vnoise(w * 0.54) * 0.7 + vnoise(w * 1.32) * 0.3;
             let puddle = smoothstep(0.77 - 0.15 * g.wx.y, 0.84 - 0.15 * g.wx.y, pool) * g.wx.y;
@@ -761,9 +904,10 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
         let variation = hash2(vec2<i32>(floor(cell))) - 0.5;
         let fade = 1.0 - smoothstep(0.2, 0.62, px);
         let stone = vec3<f32>(0.76, 0.73, 0.68) * (1.0 - 0.22 * g.wx.y);
-        return stone * (0.97 + 0.08 * vnoise(w * 0.32) + fade * (0.11 * variation - 0.22 * seam));
+        var paving = stone * (0.97 + 0.08 * vnoise(w * 0.32) + fade * (0.11 * variation - 0.22 * seam));
+        return paving;
     }
-    if (near(base, 128.0, 104.0, 84.0) || near(base, 198.0, 194.0, 186.0)) {
+    if (near(base, 124.0, 120.0, 114.0) || near(base, 198.0, 194.0, 186.0) || is_sidewalk(base)) {
         let grains = hash2(vec2<i32>(floor(w * 6.0)));
         return col * (0.92 + 0.14 * vnoise(w * 1.2) + (grains - 0.5) * 0.24 * aggregate);
     }
@@ -773,7 +917,23 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
     if (!object || !cel || px > 0.49) {
         return col;
     }
+    var col_weather = 1.0;
     let fade = 1.0 - smoothstep(0.15, 0.49, px);
+    if (normal.z > 0.95 && !is_green(base) && base.r + base.g + base.b < 2.5) {
+        // a flat roof: gravel, the seams of the roofing sheets and old water stains
+        let sheet = w / 3.4;
+        let edge = min(min(fract(sheet.x), 1.0 - fract(sheet.x)), min(fract(sheet.y), 1.0 - fract(sheet.y)));
+        let seam = 1.0 - smoothstep(0.0, 0.035, edge);
+        let stain = vnoise(w * 0.21 + vec2<f32>(7.0, 3.0));
+        let gravel = hash2(vec2<i32>(floor(w * 5.0))) - 0.5;
+        return col * (1.0 + fade * (0.10 * (stain - 0.5) + 0.12 * gravel * aggregate - 0.13 * seam));
+    }
+    if (abs(normal.z) < 0.12) {
+        // walls weather: faint streaks run down them and the foot of the wall is darker
+        let run = dot(w, vec2<f32>(-normal.y, normal.x));
+        let streak = vnoise(vec2<f32>(run * 1.3, world.z * 0.11));
+        col_weather = 1.0 + fade * (0.05 * (streak - 0.5));
+    }
     if (abs(normal.z) < 0.08 && base.r - base.g > 0.11 && base.g - base.b > 0.03
         && base.r < 0.83 && base.g < 0.65) {
         let along = dot(w, vec2<f32>(-normal.y, normal.x));
@@ -782,7 +942,7 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
         let edge = min(min(fract(course), 1.0 - fract(course)), min(fract(block), 1.0 - fract(block)));
         let mortar = 1.0 - smoothstep(0.02, 0.13, edge);
         let kiln = hash2(vec2<i32>(i32(floor(block)), i32(floor(course))));
-        return mix(col * (1.0 + (kiln - 0.5) * 0.23 * fade), vec3<f32>(0.64, 0.59, 0.52), mortar * fade * 0.4);
+        return mix(col * (1.0 + (kiln - 0.5) * 0.23 * fade), vec3<f32>(0.64, 0.59, 0.52), mortar * fade * 0.4) * col_weather;
     }
     if (normal.z > 0.42 && normal.z < 0.94 && !is_green(base)) {
         let run = normalize(normal.xy);
@@ -791,20 +951,42 @@ fn textured_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, normal: v
         let tile = vec2<i32>(i32(floor(dot(w, vec2<f32>(-run.y, run.x)) * 1.8 + 0.5 * floor(row))), i32(floor(row)));
         return col * (1.0 + fade * ((hash2(tile) - 0.5) * 0.22 - seam * 0.24));
     }
-    return col;
+    return col * col_weather;
+}
+
+// Window glass: a dark room behind, a band of sky light across the upper pane, a diagonal
+// glare and a shadow under the head of the opening. `pane` is 0 to 1 across and up the window.
+fn glass_look(base: vec3<f32>, pane: vec2<f32>, seed: f32, world: vec3<f32>, n: vec3<f32>, px: f32, neutral: f32) -> vec3<f32> {
+    let day = smoothstep(-0.05, 0.3, g.sun.z);
+    let eye = normalize(g.eye.xyz - world);
+    let grazing = pow(1.0 - max(0.0, dot(eye, n)), 2.0);
+    var sky = sky_radiance(normalize(vec3<f32>(n.xy, 0.55)));
+    sky = mix(sky, vec3<f32>(dot(sky, vec3<f32>(0.3, 0.59, 0.11))) * vec3<f32>(1.0, 0.98, 0.95), 0.6 * neutral);
+    let room = base * mix(vec3<f32>(0.34, 0.40, 0.50), vec3<f32>(0.40, 0.40, 0.41), neutral);
+    // some panes have blinds drawn part of the way down
+    let blind = step(0.72, seed) * (1.0 - smoothstep(0.45 + 0.4 * fract(seed * 7.3), 0.5 + 0.4 * fract(seed * 7.3), 1.0 - pane.y));
+    let sharp = 1.0 - smoothstep(0.25, 0.9, px);
+    var col = mix(room, sky * (0.72 + 0.3 * seed), (0.30 + 0.45 * grazing) * smoothstep(0.15, 0.95, pane.y));
+    col = mix(col, vec3<f32>(0.86, 0.84, 0.78) * (0.55 + 0.35 * day), blind * 0.8 * sharp);
+    let band = pane.x * 0.9 + pane.y - 0.55 - 0.5 * seed;
+    let glare = (1.0 - smoothstep(0.0, 0.13, abs(band))) + 0.5 * (1.0 - smoothstep(0.0, 0.05, abs(band - 0.26)));
+    col += vec3<f32>(0.20, 0.23, 0.25) * 0.5 * glare * day * sharp * (0.5 + 0.5 * max(0.0, dot(n.xy, g.sun.xy)));
+    // the head of the opening shades the top of the glass
+    col *= 1.0 - 0.30 * smoothstep(0.84, 0.98, pane.y) * sharp;
+    return mix(base * mix(vec3<f32>(0.62, 0.70, 0.80), vec3<f32>(0.70, 0.71, 0.72), neutral), col, 0.35 + 0.65 * sharp);
 }
 
 // Finish codes come from Obj::Finish. These materials are projected in metres
 // so masonry and windows keep their scale across camera movement.
 fn dressed_surface(col: vec3<f32>, finish: u32, world: vec3<f32>, anchor: vec3<f32>,
     normal: vec3<f32>, px: f32) -> vec3<f32> {
-    if (px >= 0.65) { return col; }
+    if (px >= 0.5) { return col; }
     let roof = finish >= 247u && finish <= 249u;
     let offset = world - anchor;
     let tangent = normalize(vec2<f32>(-normal.y, normal.x) + vec2<f32>(0.00001, 0.0));
     let wall = vec2<f32>(dot(offset.xy, tangent), offset.z);
     let uv = select(wall, offset.xy, roof);
-    let fade = 1.0 - smoothstep(0.10, 0.65, px);
+    let fade = 1.0 - smoothstep(0.10, 0.5, px);
     let mottling = vnoise(uv * 0.76 + anchor.xy * 0.17);
     var pattern = 0.91 + 0.15 * mottling;
     if (finish == 240u || finish == 247u) {
@@ -831,17 +1013,18 @@ struct FacadeLook {
     colour: vec3<f32>,
     glass: f32,
     glow: f32,
+    roll: f32,
 };
 
 fn facing_facade(col: vec3<f32>, finish: u32, world: vec3<f32>, anchor: vec3<f32>,
     normal: vec3<f32>, px: f32) -> FacadeLook {
     let warm = finish == 244u || finish == 246u;
     let dark = finish == 251u;
-    let glass_base = mix(select(vec3<f32>(0.22, 0.35, 0.45), vec3<f32>(0.13, 0.15, 0.18), dark), col, 0.42);
-    let detail = 1.0 - smoothstep(0.63, 1.55, px);
+    let glass_base = mix(select(select(vec3<f32>(0.22, 0.35, 0.45), vec3<f32>(0.20, 0.22, 0.24), warm), vec3<f32>(0.13, 0.15, 0.18), dark), col, 0.42);
+    let detail = 1.0 - smoothstep(0.34, 0.9, px);
     let average = mix(col, glass_base, select(0.45, 0.26, warm));
     if (detail <= 0.0) {
-        return FacadeLook(average, 0.0, 0.0);
+        return FacadeLook(average, 0.0, 0.0, 0.0);
     }
     let tangent = vec2<f32>(-normal.y, normal.x);
     let offset = world - anchor;
@@ -852,11 +1035,13 @@ fn facing_facade(col: vec3<f32>, finish: u32, world: vec3<f32>, anchor: vec3<f32
     let uv = vec2<f32>(dot(offset.xy, tangent) / spacing, offset.z / storey);
     let cell = floor(uv);
     let part = fract(uv);
-    let reveal = select(select(0.10, 0.22, warm || balcony), 0.048, ribbon);
+    // the frames and piers between windows thin out at night so the material still shows
+    let night = clamp(g.look.w * 1.25, 0.0, 1.0);
+    let reveal = select(select(0.10, 0.22, warm || balcony), 0.048, ribbon) * (1.0 - 0.75 * night);
     let border = max(0.014, px / spacing * 0.36);
     let jamb = min(part.x, 1.0 - part.x);
-    let sill = select(select(0.15, 0.31, ribbon), 0.37, balcony);
-    let head = select(0.93, 0.83, ribbon || balcony);
+    let sill = select(select(0.15, 0.31, ribbon), 0.37, balcony) * (1.0 - 0.45 * night);
+    let head = mix(select(0.93, 0.83, ribbon || balcony), 0.975, 0.7 * night);
     let glazing = smoothstep(reveal - border, reveal + border, jamb)
         * smoothstep(sill - border, sill + border, part.y)
         * (1.0 - smoothstep(head - border, head + border, part.y));
@@ -864,22 +1049,37 @@ fn facing_facade(col: vec3<f32>, finish: u32, world: vec3<f32>, anchor: vec3<f32
     if (finish == 244u || finish == 246u) {
         frame -= (1.0 - smoothstep(0.012, 0.04 + border, abs(part.x - 0.5))) * 0.50;
     }
-    let glass = glazing * frame;
+    let glass = glazing * frame * (1.0 - 0.0 * night);
     let seed_cell = cell + floor(anchor.xy * 1.7 + anchor.z * vec2<f32>(0.53, 1.07));
     let pane_seed = hash2(vec2<i32>(seed_cell));
-    let tint = glass_base * (0.83 + 0.33 * pane_seed);
+    let inner = vec2<f32>(
+        clamp((part.x - reveal) / max(0.05, 1.0 - 2.0 * reveal), 0.0, 1.0),
+        clamp((part.y - sill) / max(0.05, head - sill), 0.0, 1.0));
+    let tint = glass_look(glass_base * 1.5, inner, pane_seed, world, normal, px, select(0.0, 1.0, warm));
     let ledge = 1.0 - smoothstep(0.018, 0.077 + border * 0.3, min(part.y, 1.0 - part.y));
     let ribs = select(0.08, 0.20, finish == 244u || balcony);
     let rail = (1.0 - smoothstep(0.028, 0.078, abs(part.y - 0.22))) * select(0.0, 0.20, balcony);
     let fin = (1.0 - smoothstep(0.06, 0.16, jamb)) * select(0.0, 0.18, finish == 244u);
-    let cladding = col * (0.94 + 0.09 * pane_seed + ledge * ribs + rail + fin);
+    let cladding = col * (0.94 + 0.09 * pane_seed + ledge * ribs * (1.0 - 0.6 * night) + rail + fin);
     var glow = 0.0;
+    var roll = 0.0;
     if (!dark && g.tone.w > 0.0 && glass > 0.01) {
         let room_offset = tangent * ((cell.x + 0.5) * spacing);
         let room = anchor + vec3<f32>(room_offset, (cell.y + 0.5) * storey);
-        glow = window_glow(room, finish == 246u) * glass * detail;
+        glow = window_glow(room, finish == 246u, finish == 250u || finish == 251u || finish == 243u) * glass * detail;
+        roll = room_roll(room);
+        // blinds drawn down from the head of some lit windows, with slats, and a flickering
+        // screen light in a few
+        let blinds = step(0.62, fract(roll * 3.7 + 0.13));
+        let drawn = 0.25 + 0.55 * fract(roll * 9.1);
+        let covered = blinds * smoothstep(1.0 - drawn - 0.03, 1.0 - drawn + 0.03, inner.y);
+        let slats = 0.70 + 0.30 * step(0.5, fract(inner.y * 9.0));
+        glow = glow * mix(1.0, 0.30 * slats, covered);
     }
-    return FacadeLook(mix(average, mix(cladding, tint, glass), detail), glass * detail, glow);
+    // dark windows read as a pattern of black squares at night: unlit glass settles most of the
+    // way to the wall colour so only the lit rooms stand out
+    let unlit_tint = mix(tint, cladding * 0.92, 0.62 * night);
+    return FacadeLook(mix(average, mix(cladding, unlit_tint, glass), detail), glass * detail, glow, roll);
 }
 
 fn previous_season(season: i32) -> i32 {
@@ -942,6 +1142,214 @@ fn leaf_palette(base: vec3<f32>, step: i32, dark: bool, season: i32) -> vec3<f32
     return season_leaf(dark, season);
 }
 
+
+// ---- winter dressing ----
+
+fn is_bark(c: vec3<f32>) -> bool {
+    return near(c, 134.0, 114.0, 98.0);
+}
+
+// Bushes, hedges and yard shrubs: greens of their own, not the broadleaf colours, so they stay
+// in leaf all winter under a heavy coat of snow.
+fn is_shrub(c: vec3<f32>) -> bool {
+    return near(c, 66.0, 122.0, 64.0) || near(c, 84.0, 140.0, 70.0)
+        || leaf_step(c, 58.0, 116.0, 62.0) >= 0 || leaf_step(c, 48.0, 100.0, 56.0) >= 0;
+}
+
+// The sidewalk strip is drawn in the sidewalk colour with its blue running 181 to 191 across it
+// (outer edge high), so winter can wear a footpath into it. Plain 186 is a sidewalk with no path.
+fn is_sidewalk(c: vec3<f32>) -> bool {
+    let d = c * 255.0;
+    return abs(d.x - 198.0) < 0.6 && abs(d.y - 194.0) < 0.6 && d.z > 180.0 && d.z < 191.6;
+}
+
+// 0 not paving, 1 sidewalk, 2 plaza and forecourt paving, 3 kerb and barrier stone, 4 gravel shoulder.
+fn paving_kind(c: vec3<f32>) -> i32 {
+    if (is_sidewalk(c)) { return 1; }
+    if (near(c, 206.0, 202.0, 194.0) || near(c, 194.0, 192.0, 202.0) || near(c, 208.0, 200.0, 198.0)
+        // the darker squares of the downtown checker (0.93 of each paving colour) are paving too,
+        // or they would take the snow differently and show a checkerboard under it
+        || near(c, 194.0, 190.0, 182.0) || near(c, 191.0, 188.0, 180.0) || near(c, 180.0, 178.0, 188.0)
+        || near(c, 193.0, 186.0, 184.0)
+        // the town square: sand, light and dark flags and a pale edge
+        || near(c, 216.0, 198.0, 162.0) || near(c, 204.0, 200.0, 192.0) || near(c, 188.0, 184.0, 178.0)
+        || near(c, 226.0, 222.0, 214.0)) { return 2; }
+    if (near(c, 166.0, 162.0, 158.0) || near(c, 170.0, 168.0, 164.0)) { return 3; }
+    if (near(c, 150.0, 141.0, 118.0)) { return 4; }
+    return 0;
+}
+
+// Snow on paving: sidewalks lie under snow with a trodden footpath worn along them, plazas keep
+// winding desire lines through the snow, kerb stone and shoulders are mostly buried. Cleared and
+// trodden snow shows wet stone, never grass.
+fn paving_snow(col: vec3<f32>, kind: i32, base: vec3<f32>, world: vec3<f32>, px: f32) -> vec3<f32> {
+    let cover = smoothstep(0.06, 0.7, g.wx.x);
+    if (cover <= 0.0 || kind == 0) { return col; }
+    let w = world.xy;
+    let lumps = vnoise(w / 2.4 + vec2<f32>(5.0, 1.0)) * 0.6 + vnoise(w / 0.8) * 0.4;
+    var amount = 0.0;
+    var trodden = 0.0;
+    if (kind == 1) {
+        amount = 0.86;
+        // the footpath: a band along the strip, with gaps where it is drifted over
+        let u = clamp((base.b * 255.0 - 181.0) / 10.0, 0.0, 1.0);
+        let off = abs(base.b * 255.0 - 186.0) < 0.5;
+        let band = 1.0 - smoothstep(0.10, 0.19, abs(u - 0.70));
+        trodden = select(band, 0.0, off) * smoothstep(0.18, 0.40, lumps + 0.35);
+        amount = amount * (0.88 + 0.12 * lumps);
+    } else if (kind == 2) {
+        // an even blanket with a little texture, so no tile reads as bare while its neighbour is white
+        amount = 0.90 * (0.92 + 0.08 * lumps);
+        // wide cleared paths across the open paving, and two wheel tracks along the lot
+        let line = abs(vnoise(w / 17.0 + vec2<f32>(3.0, 8.0)) - 0.5);
+        let line2 = abs(vnoise(w / 23.0 + vec2<f32>(9.0, 2.0)) - 0.5);
+        let paths = max(1.0 - smoothstep(0.008, 0.024, line), 1.0 - smoothstep(0.007, 0.02, line2));
+        let lane = fract(w.y / 11.0 + 0.3 * vnoise(vec2<f32>(w.x / 30.0, 1.0)));
+        let wheels = max(1.0 - smoothstep(0.02, 0.05, abs(lane - 0.40)), 1.0 - smoothstep(0.02, 0.05, abs(lane - 0.56)))
+            * smoothstep(0.35, 0.6, vnoise(vec2<f32>(w.x / 14.0, w.y / 40.0) + vec2<f32>(2.0, 5.0)));
+        trodden = max(paths * 0.85, wheels * 0.6);
+    } else if (kind == 3) {
+        amount = 0.62 * smoothstep(0.1, 0.5, lumps);
+    } else {
+        amount = 0.80 * smoothstep(0.05, 0.4, lumps + 0.25);
+    }
+    let wet = col * vec3<f32>(0.80, 0.82, 0.86);
+    var c = mix(col, vec3<f32>(0.945, 0.962, 0.984), amount * cover * (1.0 - trodden));
+    c = mix(c, wet, trodden * cover * 0.8);
+    // the packed edge of a footpath: a slightly bluer rim of heaped snow
+    return c;
+}
+
+// Snow on any surface that faces up, by the world-up direction of the face rather than by asset:
+// roofs, ledges, tower tops, setbacks, lawns, car roofs and the top of every branch. Paving is
+// only dusted and pines keep their dark green underneath a white cap.
+fn snow_on_surface(col: vec3<f32>, base: vec3<f32>, world: vec3<f32>, n: vec3<f32>, exempt: bool) -> vec3<f32> {
+    if (crown_colour(base)) {
+        return col;
+    }
+    let reach = g.wx.x * 1.3 - 0.15;
+    let pine = near(base, 46.0, 104.0, 72.0);
+    let bark = is_bark(base);
+    let shrub = is_shrub(base);
+    // neighbourhoods fill at slightly different depths
+    let h = vnoise(world.xy / 21.0) * 0.5 + 0.12;
+    let cover = smoothstep(h - 0.12, h + 0.12, reach);
+    var up = smoothstep(0.30, 0.75, n.z);
+    if (pine) {
+        // heavy snow on the upper part of each tier (the normal swings up towards the tip of a
+        // smooth cone), and a patchy dusting on the flat faces of the street pines
+        let patchy = 0.55 * smoothstep(0.3, 0.5, n.z)
+            * smoothstep(0.30, 0.55, vnoise(world.xy * 1.4 + vec2<f32>(world.z * 1.1, 2.0)));
+        up = max(smoothstep(0.64, 0.84, n.z), patchy);
+    }
+    if (bark) {
+        // snow rides the top of a branch, and a thin line of it on the upper flank
+        up = smoothstep(-0.15, 0.40, n.z);
+    }
+    if (shrub) {
+        // a bush under snow: the top is white and the sides are plastered in clumps, with a
+        // little dark green showing through
+        let clumps = smoothstep(0.25, 0.55, vnoise(world.xy * 2.1 + vec2<f32>(world.z * 3.0, 1.0)));
+        up = max(smoothstep(0.35, 0.8, n.z), 0.80 * clumps);
+    }
+    var amount = up * cover;
+    if (bark) {
+        amount = amount * (0.72 + 0.28 * vnoise(world.xy * 1.7 + vec2<f32>(world.z * 2.0, 0.0)));
+    }
+    let sat = max(base.r, max(base.g, base.b)) - min(base.r, min(base.g, base.b));
+    let pk = paving_kind(base);
+    if (pk != 0 && n.z > 0.8) {
+        return paving_snow(col, pk, base, world, 0.1);
+    }
+    if (exempt && n.z > 0.9 && sat < 0.12 && !is_green(base) && !bark) {
+        // paving: a dusting with cleared patches, not a blanket
+        amount = amount * 0.7 * smoothstep(0.28, 0.58, vnoise(world.xy / 2.3 + vec2<f32>(4.0, 9.0)));
+    }
+    return mix(col, vec3<f32>(0.945, 0.962, 0.984), amount);
+}
+
+// Surface of open snow: long soft drifts laid by the wind, lighter on their crests and a little
+// cooler in the hollows, fading out as a pixel covers more ground.
+fn snow_relief(col: vec3<f32>, w: vec2<f32>, amount: f32) -> vec3<f32> {
+    let wind = g.wx.zw;
+    let wl = length(wind);
+    let dir = select(vec2<f32>(0.8, 0.6), wind / max(wl, 0.01), wl > 0.5);
+    let along = dot(w, dir);
+    let across = dot(w, vec2<f32>(-dir.y, dir.x));
+    let ridge = vnoise(vec2<f32>(along / 13.0, across / 3.4)) * 0.55
+        + vnoise(vec2<f32>(along / 4.6, across / 1.25)) * 0.30
+        + vnoise(w / 0.7) * 0.15;
+    let hollow = 1.0 - smoothstep(0.32, 0.55, ridge);
+    let broad = vnoise(w / 46.0 + vec2<f32>(11.0, 4.0)) * 0.65 + vnoise(w / 19.0 + vec2<f32>(2.0, 7.0)) * 0.35;
+    var c = col * (0.93 + 0.14 * ridge) * (0.90 + 0.16 * broad);
+    c = mix(c, c * vec3<f32>(0.88, 0.93, 1.04), hollow * 0.75);
+    c = mix(c, c * vec3<f32>(0.96, 0.97, 0.94), smoothstep(0.62, 0.8, broad) * 0.5);
+    return mix(col, c, amount);
+}
+
+// The ploughed banks along a kerb (kind 1) and the worn lanes of a cleared road (kind 2). The
+// geometry carries a position across the strip in its blue channel.
+fn road_dress(kind: i32, kb: vec3<f32>, world: vec3<f32>, n: vec3<f32>, px: f32, gradb: vec2<f32>) -> vec3<f32> {
+    let w = world.xy;
+    let cover = smoothstep(0.06, 0.7, g.wx.x) * select(0.0, 1.0, g.look.y > 0.5);
+    if (kind == 3) {
+        // junction paving: the same wet asphalt with slush lying in patches
+        let asphalt = vec3<f32>(108.0, 108.0, 120.0) / 255.0;
+        let paved = textured_surface(asphalt, asphalt, world, n, px, true, false);
+        let patch_ = vnoise(w / 3.0) * 0.6 + vnoise(w / 1.0) * 0.4;
+        let slush = cover * 0.30 * smoothstep(0.42, 0.74, patch_);
+        let wet_patch = cover * smoothstep(0.30, 0.58, vnoise(w / 4.5 + vec2<f32>(6.0, 2.0)));
+        let wetter = mix(paved, paved * vec3<f32>(0.62, 0.64, 0.70), wet_patch * 0.8);
+        return mix(wetter, vec3<f32>(0.70, 0.72, 0.76), slush);
+    }
+    if (kind == 1) {
+        let t = clamp((kb.b - 140.0) / 113.0, 0.0, 1.0);
+        let wob = vnoise(w / 3.3) * 0.6 + vnoise(w / 1.1) * 0.4;
+        // the outer edge of the bank wanders, and the bank grows with the cover
+        let width = (0.55 + 0.45 * wob) * smoothstep(0.02, 0.45, cover);
+        if (t > width + 0.03 || cover < 0.03) {
+            discard;
+        }
+        // a heaped ridge: it rises from the road side, crests, and slopes off to the outer side.
+        // The fake slope is lit by the sun so the bank reads as relief, not a flat band.
+        let tt = t / max(width, 0.1);
+        let slope = select(-1.0, 1.0, tt < 0.42) * (1.0 - smoothstep(0.0, 0.5, abs(tt - 0.42)));
+        let dir = normalize(gradb + vec2<f32>(0.0001, 0.0));
+        let nn = normalize(vec3<f32>(-dir * slope * 1.3, 1.0));
+        let relief = clamp(dot(nn, g.sun.xyz) - g.sun.z, -0.5, 0.5);
+        // dirty grey at the road side, clean white on the crest
+        var c = mix(vec3<f32>(0.58, 0.57, 0.58), vec3<f32>(0.82, 0.86, 0.93), smoothstep(0.02, 0.18, tt));
+        c = mix(c, vec3<f32>(0.955, 0.968, 0.99), smoothstep(0.16, 0.40, tt));
+        c *= 1.0 + relief * 0.8 - 0.14 * (1.0 - smoothstep(0.06, 0.5, tt)) * vnoise(w * 2.6);
+        return c;
+    }
+    let hw = (kb.r - 200.0) / 4.0;
+    let u = clamp((kb.b - 20.0) / 230.0, 0.0, 1.0);
+    let asphalt = vec3<f32>(108.0, 108.0, 120.0) / 255.0;
+    let paved = textured_surface(asphalt, asphalt, world, n, px, true, false);
+    let x = abs(u * 2.0 - 1.0) * hw;
+    let lanes = max(1.0, round(hw / 3.6));
+    let lw = hw / lanes;
+    let c = x - (floor(x / lw) + 0.5) * lw;
+    let detail = 1.0 - smoothstep(0.10, 0.45, px);
+    // two wheel paths in every lane, bare and wet, with snow left between them and at the kerb
+    let track = (1.0 - smoothstep(0.10, 0.36, abs(abs(c) - 0.88))) * detail;
+    let kerb = smoothstep(hw - 1.6, hw - 0.5, x);
+    let crown = mix(0.45, 1.0 - smoothstep(0.3, 0.9, abs(c)), detail);
+    let broken = 0.85 + 0.3 * vnoise(w / 2.6 + vec2<f32>(3.0, 1.0));
+    let slush = cover * clamp((0.07 + 0.24 * crown + 0.72 * kerb) * (1.0 - 0.8 * track) * broken, 0.0, 0.9);
+    let wet = mix(paved, paved * 0.80, track * cover);
+    // a pale salt haze dries out along the edges in broken streaks
+    let edge_band = smoothstep(hw - 4.2, hw - 1.4, x) * (1.0 - smoothstep(hw - 1.0, hw - 0.3, x));
+    let streak = smoothstep(0.35, 0.70, vnoise(vec2<f32>(w.x / 2.4, w.y / 2.4) + vec2<f32>(4.0, 9.0)));
+    let haze = cover * edge_band * (0.20 + 0.20 * streak);
+    let salted = mix(wet, vec3<f32>(0.66, 0.67, 0.69), haze);
+    // grey slush where the road meets the bank
+    let gutter = cover * smoothstep(hw - 0.9, hw - 0.1, x);
+    let dirty = mix(salted, vec3<f32>(0.50, 0.50, 0.52), gutter * 0.55);
+    return mix(dirty, vec3<f32>(0.70, 0.71, 0.73), slush * (1.0 - gutter * 0.5));
+}
+
 @fragment
 fn fs_main(v: VOut) -> FOut {
     var n = normalize(v.normal);
@@ -950,11 +1358,40 @@ fn fs_main(v: VOut) -> FOut {
     // gradients that interpolated vertex normals give on a coarse grid
     let world_dx = dpdx(v.world);
     let world_dy = dpdy(v.world);
+    var gradb = vec2<f32>(1.0, 0.0);
+    {
+        // how the blue channel (a marker for the position across a strip) grows over the ground
+        let db = vec2<f32>(dpdx(v.color.b), dpdy(v.color.b)) * 255.0;
+        let det = world_dx.x * world_dy.y - world_dx.y * world_dy.x;
+        if (abs(det) > 1e-9) {
+            gradb = vec2<f32>(db.x * world_dy.y - db.y * world_dx.y,
+                -db.x * world_dy.x + db.y * world_dx.x) / det;
+        }
+    }
     var facet = normalize(cross(world_dx, world_dy));
     if (dot(facet, n) < 0.0) {
         facet = -facet;
     }
-    var col = v.color.rgb;
+    var rc = v.color.rgb;
+    if (v.id == 0u && v.color.a > 0.5 && rc.r > 0.72 && abs(rc.g - 0.5) < 0.06 && rc.b < 0.34) {
+        // the road works edge: a dull striped barrier, never a bright orange line
+        let stripe = step(0.5, fract((v.world.x + v.world.y) / 1.4));
+        rc = mix(vec3<f32>(0.30, 0.28, 0.27), vec3<f32>(0.55, 0.41, 0.31), stripe);
+    }
+    var haze = false;
+    let hz = max(haze_step(rc, 88.0, 150.0, 76.0), haze_step(rc, 70.0, 128.0, 66.0));
+    if (hz >= 0) {
+        // a far crown: the same colour as the near one, eight steps up in blue
+        haze = true;
+        rc.b = rc.b - 8.0 / 255.0;
+    }
+    var col = rc;
+    if (is_bark(rc)) {
+        // bark runs from warm brown to silver grey from tree to tree, and a little in lightness
+        let cell = vec2<i32>(floor(v.world.xy / 4.5));
+        col = mix(vec3<f32>(0.55, 0.45, 0.36), vec3<f32>(0.52, 0.50, 0.48), hash2(cell))
+            * (0.88 + 0.22 * hash2(cell + vec2<i32>(7, 3)));
+    }
     let a = v.color.a;
     let code = u32(round(a * 255.0));
     let finish = select(0u, code, code >= 240u && code <= 251u);
@@ -962,6 +1399,25 @@ fn fs_main(v: VOut) -> FOut {
     let keep = finish == 0u && a > 0.001 && a < 0.999;
     let ground = v.id == 0u;
     let exempt = v.id == 16777215u;
+    var dress = 0;
+    if (ground && cel) {
+        let kb = rc * 255.0;
+        if (abs(kb.r - 247.0) < 0.6 && abs(kb.g - 248.0) < 0.6 && kb.b > 135.0) {
+            dress = 1;
+        } else if (abs(kb.g - 246.0) < 0.6 && kb.r > 199.0 && kb.r < 253.0 && kb.b > 12.0) {
+            dress = 2;
+        } else if (abs(kb.r - 108.0) < 0.3 && abs(kb.g - 108.0) < 0.3 && abs(kb.b - 121.0) < 0.3) {
+            // junction paving: asphalt with a blue of 121, told apart only for winter
+            dress = 3;
+        }
+    }
+    let snowy_view = g.look.y > 0.5 && g.look.z < 0.5;
+    if (dress == 1 && !snowy_view) {
+        discard;
+    }
+    if (dress == 3 && !snowy_view) {
+        dress = 0;
+    }
     let coastal_rock = !ground && near(col, 143.0, 138.0, 129.0);
     if (v.tint != 0u) {
         if (near(col, 255.0, 0.0, 255.0)) {
@@ -969,7 +1425,7 @@ fn fs_main(v: VOut) -> FOut {
         }
     }
     if (ground && abs(col.r * 255.0 - 116.0) < 0.6 && abs(col.g * 255.0 - 172.0) < 0.6 && abs(col.b * 255.0 - 95.0) < 0.6) {
-        col = terrain_look(v.world, n, vec3<f32>(116.0, 172.0, 92.0) / 255.0);
+        col = terrain_look(v.world, n, facet, vec3<f32>(116.0, 172.0, 92.0) / 255.0);
         if (g.rock[5].w > 0.5 && g.look.z < 0.5 && n.z < 0.9) {
             l = dot(facet, g.sun.xyz);
         }
@@ -985,13 +1441,14 @@ fn fs_main(v: VOut) -> FOut {
             }
             l = dot(n, g.sun.xyz);
         }
-        col = terrain_look(v.world, n, col);
+        col = terrain_look(v.world, n, facet, col);
     }
     if (coastal_rock && g.look.z < 0.5) {
         let wall_normal = normalize(vec3<f32>(n.xy, 0.28));
-        col = terrain_look(v.world, wall_normal, col);
+        col = terrain_look(v.world, wall_normal, facet, col);
     }
     var emissive = false;
+    var haze_twigs = false;
     let season = i32(g.look.x + 0.5);
     let previous = previous_season(season);
     var gkind = 0;
@@ -1000,6 +1457,16 @@ fn fs_main(v: VOut) -> FOut {
         wkind = water_kind(col);
         if (wkind == 0) {
             gkind = ground_kind(col);
+        }
+    }
+    var dressed = false;
+    if (dress != 0) {
+        gkind = 0;
+        dressed = true;
+        col = road_dress(dress, rc * 255.0, v.world, n, g.screen.z * v.dist, gradb);
+        if (g.look.z > 0.5 && dress >= 2) {
+            // map views take the plain road colour
+            col = vec3<f32>(108.0, 108.0, 120.0) / 255.0;
         }
     }
     let pstep = patch_step(col);
@@ -1063,6 +1530,23 @@ fn fs_main(v: VOut) -> FOut {
             let s1 = leaf_step(col, 88.0, 150.0, 76.0);
             let s2 = leaf_step(col, 70.0, 128.0, 66.0);
             if (s1 >= 0 || s2 >= 0) {
+                let presence = leaf_presence(v.world);
+                if (presence < 0.999) {
+                    // leaves go in clumps: the crown thins into holes, then nothing
+                    let clump = hash2(vec2<i32>(floor(v.world.xy * 1.7 + v.world.z * vec2<f32>(0.9, 1.3))));
+                    if (clump >= presence) {
+                        if (!haze) {
+                            discard;
+                        }
+                        // far away the bare crown is a soft haze of twigs: a sparse, steady
+                        // screen door of grey brown, not single pixel lines
+                        let door = hash2(vec2<i32>(floor(v.clip.xy * 0.5)));
+                        if (door > 0.44 * (1.0 - presence)) {
+                            discard;
+                        }
+                        haze_twigs = true;
+                    }
+                }
                 let step = max(s1, s2);
                 let dark = s2 >= 0;
                 col = mix(leaf_palette(col, step, dark, previous), leaf_palette(col, step, dark, season), season_phase(v.world));
@@ -1073,13 +1557,16 @@ fn fs_main(v: VOut) -> FOut {
                 }
                 let foliage = vnoise(v.world.xy * 0.95 + v.world.z * 0.63);
                 col = col * (0.86 + foliage * 0.29);
+                if (haze_twigs) {
+                    col = vec3<f32>(0.50, 0.44, 0.40) * (0.88 + 0.24 * foliage);
+                }
             }
         }
         // Buildings brighten in neighborhoods, followed by continuously lit
         // lamps and vehicles. A window or paired set of lights never samples an outline id.
         if (!cel && g.tone.w > 0.0 && (near(col, 98.0, 156.0, 204.0) || near(col, 64.0, 88.0, 118.0))) {
-            glow = vec3<f32>(1.0, 0.84, 0.52);
-            glow_amount = window_glow(v.room_anchor, near(col, 64.0, 88.0, 118.0));
+            glow = window_colour(room_roll(v.room_anchor));
+            glow_amount = window_glow(v.room_anchor, near(col, 64.0, 88.0, 118.0), false);
         }
         if (!cel && near(col, 255.0, 236.0, 150.0)) {
             glow = vec3<f32>(1.0, 0.95, 0.76);
@@ -1097,14 +1584,13 @@ fn fs_main(v: VOut) -> FOut {
                 if (col.g > col.b + 0.08 && col.g > col.r - 0.06) {
                     // drifts with rounded edges that join up as the cover deepens
                     let h = vnoise(v.world.xy / 16.0) * 0.7 + vnoise(v.world.xy / 5.0) * 0.3;
-                    col = mix(col, vec3<f32>(236.0, 241.0, 247.0) / 255.0, smoothstep(h - 0.11, h + 0.11, reach));
+                    // planted medians and lot edges are covered first, not last
+                    let whiteness = smoothstep(h - 0.11, h + 0.11, reach + 0.3);
+                    col = mix(col, vec3<f32>(236.0, 241.0, 247.0) / 255.0, whiteness);
                 }
             } else if (is_cover) {
                 let h = vnoise(v.world.xy / 16.0) * 0.7 + vnoise(v.world.xy / 5.0) * 0.3;
                 col = mix(col, vec3<f32>(228.0, 235.0, 244.0) / 255.0, smoothstep(h - 0.11, h + 0.11, reach));
-            } else if (cel && !exempt && v.tint == 0u && n.z > 0.35) {
-                let h = f32(hash_u(v.id / 16u) % 1000u) / 1000.0;
-                col = mix(col, vec3<f32>(238.0, 242.0, 248.0) / 255.0, smoothstep(h - 0.13, h + 0.13, reach));
             }
         }
         // rain: wet roads and ground are darker and a little bluer, wet roofs slightly so
@@ -1129,26 +1615,62 @@ fn fs_main(v: VOut) -> FOut {
         col = water_colour(wkind, v.world, water_px, n);
     } else if (gkind > 0) {
         let snowy = min(col.r, min(col.g, col.b)) > 0.88;
-        col = ground_detail(col, v.color.rgb, gkind, v.world.xy, v.dist, snowy);
+        col = ground_detail(col, rc, gkind, v.world.xy, v.dist, snowy);
+        if (snowy) {
+            col = snow_relief(col, v.world.xy, 1.0 - 0.8 * smoothstep(0.8, 3.0, g.screen.z * v.dist));
+        }
         if ((gkind == 1 || gkind == 4) && !snowy) {
             col = grass_soil(col, v.world, n, g.screen.z * v.dist);
         }
     }
     var facade_glass = 0.0;
-    if (!emissive && g.look.z < 0.5 && v.tint == 0u && wkind == 0) {
+    let window_pane = !cel && !ground && v.tint == 0u
+        && (near(rc, 98.0, 156.0, 204.0) || near(rc, 64.0, 88.0, 118.0));
+    if (window_pane && g.look.z < 0.5 && abs(n.z) < 0.5) {
+        // a window drawn as its own face: its first corner is the anchor, so the pane's own
+        // width and height are not known; a typical window is assumed
+        let along = dot(v.world.xy - v.room_anchor.xy, vec2<f32>(-n.y, n.x));
+        let pane = vec2<f32>(fract(abs(along) / 1.4), clamp(abs(v.world.z - v.room_anchor.z) / 1.5, 0.0, 1.0));
+        let seed = hash2(vec2<i32>(floor(v.room_anchor.xy * 3.1 + v.room_anchor.z * 1.7)));
+        let footprint = sqrt(max(dot(world_dx, world_dx), dot(world_dy, world_dy)));
+        col = glass_look(col, pane, seed, v.world, n, footprint, 0.0);
+        // glass in sun is shaded with everything else below; glass turned away is dimmer
+        if (l <= 0.02) {
+            col *= 0.80;
+        }
+    }
+    if (!emissive && g.look.z < 0.5 && v.tint == 0u && wkind == 0 && !dressed) {
         if (finish == 0u) {
-            col = textured_surface(col, v.color.rgb, v.world, n, g.screen.z * v.dist, cel, !ground && !exempt);
+            let plain = col;
+            col = textured_surface(col, rc, v.world, n, g.screen.z * v.dist, cel, !ground && !exempt);
+            if (cel && !ground) {
+                // brick courses, tile seams and streaks are noise up close on a lit face and
+                // shimmer far away: less contrast in the sun, none at a distance
+                let calm = (1.0 - smoothstep(0.10, 0.36, g.screen.z * v.dist))
+                    * (1.0 - 0.45 * smoothstep(0.2, 0.7, l));
+                col = mix(plain, col, calm);
+            }
         } else {
             let footprint = sqrt(max(dot(world_dx, world_dx), dot(world_dy, world_dy)));
             if ((finish >= 243u && finish <= 246u) || finish >= 250u) {
                 let facade = facing_facade(col, finish, v.world, v.room_anchor, n, footprint);
                 col = facade.colour;
                 facade_glass = facade.glass;
-                glow = vec3<f32>(1.0, 0.85, 0.58);
+                glow = window_colour(facade.roll);
                 glow_amount = facade.glow;
             } else {
                 col = dressed_surface(col, finish, v.world, v.room_anchor, n, footprint);
             }
+        }
+    }
+    if (g.look.y > 0.5 && g.look.z < 0.5 && (cel || is_green(rc)) && !ground && !emissive
+        && v.tint == 0u && wkind == 0 && !is_cover) {
+        col = snow_on_surface(col, rc, v.world, n, exempt);
+    }
+    if (g.look.y > 0.5 && g.look.z < 0.5 && ground && cel && wkind == 0 && !dressed) {
+        let pk = paving_kind(rc);
+        if (pk != 0) {
+            col = paving_snow(col, pk, rc, v.world, g.screen.z * v.dist);
         }
     }
     var k = 1.0;
@@ -1162,19 +1684,34 @@ fn fs_main(v: VOut) -> FOut {
         let rock_grade = smoothstep(0.68, 0.95, n.z);
         k = clamp(1.0 + d * mix(0.42, 1.25, rock_grade), 0.71, 1.12);
     } else if (cel && wkind == 0) {
-        // top brightest, sun side, shade side: three steps
-        if (n.z > 0.9) {
-            k = 1.0;
-        } else if (l > 0.45) {
-            k = 0.93;
-        } else if (l > 0.1) {
-            k = 0.8;
+        if (g.look.z > 0.5) {
+            // map views keep the three flat steps
+            if (n.z > 0.9) {
+                k = 1.0;
+            } else if (l > 0.45) {
+                k = 0.93;
+            } else if (l > 0.1) {
+                k = 0.8;
+            } else {
+                k = 0.66;
+            }
         } else {
-            k = 0.66;
+            // a continuous tone by how the face meets the sun: roofs and sunlit walls bright,
+            // walls turned away settle into a deep shade that the sky fill then colours
+            let facing = smoothstep(-0.12, 0.62, l);
+            let up = smoothstep(0.55, 0.95, n.z);
+            k = mix(0.60, 0.97, facing) + 0.05 * up;
         }
     }
+    if (cel && wkind == 0 && g.look.z < 0.5) {
+        // moon and sky fill: faces turned from the moon keep their shape instead of going black
+        let moon_fill = clamp(g.look.w * 1.25, 0.0, 1.0);
+        k = mix(k, max(k, 0.90), moon_fill);
+    }
+    var sunlit = 1.0;
     if (l > 0.02 && k > g.shade.x && wkind == 0) {
-        k = mix(g.shade.x, k, lit(v.world, n));
+        sunlit = lit(v.world, n);
+        k = mix(g.shade.x, k, sunlit);
     }
     if (g.resolve.w > 0.5 && g.look.z < 0.5 && v.dist * g.screen.z < 0.23) {
         let footprint = v.dist * g.screen.z;
@@ -1184,16 +1721,32 @@ fn fs_main(v: VOut) -> FOut {
     }
     let material_colour = col;
     col = col * k;
-    if (k < 0.97 && !emissive && g.look.z < 0.5) {
-        // cool sky fill in shade: shadowed colour leans blue instead of just darker
-        let sh = clamp((0.97 - k) * 3.0, 0.0, 1.0);
-        col = col * mix(vec3<f32>(1.0), vec3<f32>(0.9, 0.96, 1.08), sh);
+    if (!emissive && g.look.z < 0.5 && wkind == 0) {
+        // warm sun against cool sky: lit faces lean a little golden (more when the sun is
+        // low), shade is filled by the blue of the sky instead of only getting darker
+        let sh = clamp((0.97 - k) * 2.6, 0.0, 1.0);
+        let low_sun = 1.0 - smoothstep(0.12, 0.62, g.sun.z);
+        let warm = mix(vec3<f32>(1.035, 1.0, 0.945), vec3<f32>(1.10, 0.985, 0.83), low_sun);
+        let cool = mix(vec3<f32>(0.84, 0.93, 1.13), vec3<f32>(0.80, 0.88, 1.20), low_sun);
+        let clear = 1.0 - g.shade.w;
+        let dusk = clamp(g.look.w * 1.25, 0.0, 1.0);
+        let cool_night = mix(cool, vec3<f32>(0.95, 0.99, 1.04), 0.75 * dusk);
+        col = col * mix(vec3<f32>(1.0), mix(warm, cool_night, sh), clear);
     }
     if (!emissive) {
         let sun_visibility = cloud_sunlight(v.world);
-        col *= g.tone.rgb * sun_visibility;
+        // at night the whole picture is pulled towards neutral, so warm rooms and lamps carry
+        // the colour instead of a blue wash over every wall
+        let night_k = clamp(g.look.w * 1.25, 0.0, 1.0);
+        let tone_lum = dot(g.tone.rgb, vec3<f32>(0.3, 0.59, 0.11));
+        col *= mix(g.tone.rgb, vec3<f32>(tone_lum), 0.72 * night_k) * sun_visibility;
+        if (ground && g.local_lights.z > 0.01 && wkind == 0) {
+            // at night the ground is dark and the street lamps do the lighting
+            col *= mix(1.0, 0.58, clamp(g.local_lights.z, 0.0, 1.0));
+        }
         if (g.resolve.w > 0.5 && g.look.z < 0.5 && wkind == 0) {
-            let sky_fill = sky_radiance(normalize(n + vec3<f32>(0.0, 0.0, 0.25)));
+            var sky_fill = sky_radiance(normalize(n + vec3<f32>(0.0, 0.0, 0.25)));
+            sky_fill = mix(sky_fill, vec3<f32>(dot(sky_fill, vec3<f32>(0.3, 0.59, 0.11))), 0.5 * night_k);
             let ambient = 0.12 + 0.17 * max(0.0, 1.0 - l);
             col = mix(col, col * (0.80 + 0.39 * sky_fill), ambient);
         }
@@ -1208,10 +1761,34 @@ fn fs_main(v: VOut) -> FOut {
         // remains in display space. Materials keep their colour in the lit area.
         col = sqrt(col * col + material_colour * material_colour * incoming);
     }
+    if (g.local_lights.z > 0.01 && g.look.z < 0.5 && !ground && n.z > 0.9 && v.world.z > 26.0
+        && v.world.z - terrain_height(v.world.xy) > 34.0
+        && hash2(vec2<i32>(floor(v.room_anchor.xy / 5.0))) < 0.55) {
+        // red aviation beacon on the roof of a tall tower, blinking slowly
+        // the lit spot grows with distance so it is always a few pixels across
+        let d = length(v.world.xy - v.room_anchor.xy);
+        let size = max(1.6, g.screen.z * v.dist * 5.0);
+        let phase = fract(g.screen.w * 0.55);
+        let on = smoothstep(0.0, 0.06, phase) * (1.0 - smoothstep(0.42, 0.52, phase));
+        let beacon = (1.0 - smoothstep(0.35 * size, size, d)) * on;
+        if (beacon > 0.0) {
+            glow = mix(glow, vec3<f32>(1.0, 0.12, 0.08), beacon);
+            glow_amount = max(glow_amount, beacon * clamp(g.local_lights.z * 1.5, 0.0, 1.0));
+        }
+    }
+    if (!emissive && g.look.z < 0.5) {
+        // by night the eye loses colour: unlit surfaces, autumn leaves most of all, go toward
+        // a cool grey so lit windows and lamps carry the picture
+        let night = smoothstep(0.08, 0.6, 1.0 - g.tone.r);
+        let luma = dot(col, vec3<f32>(0.3, 0.59, 0.11));
+        col = mix(col, vec3<f32>(luma) * vec3<f32>(0.88, 0.96, 1.12), night * 0.6);
+        // roofs and other upward faces fall back at night: the streets and windows carry the light
+        col *= 1.0 - 0.32 * night * smoothstep(0.6, 0.95, n.z);
+    }
     col = mix(col, glow, glow_amount) + glow * glow_amount * 0.33;
     var o: FOut;
-    let raw_colour = v.color.rgb;
-    let wet_road = g.wx.y > 0.10 && near(raw_colour, 108.0, 108.0, 120.0);
+    let raw_colour = rc;
+    let wet_road = g.wx.y > 0.10 && (near(raw_colour, 108.0, 108.0, 120.0) || dress >= 2);
     let glazing = glow_amount < 0.12 && n.z < 0.68 && !emissive
         && (facade_glass > 0.45 || (finish == 0u
             && raw_colour.b > raw_colour.r + 0.10 && raw_colour.g > raw_colour.r + 0.045));
@@ -1398,8 +1975,13 @@ fn low_fog(eye: vec3<f32>, dir: vec3<f32>, limit: f32, coarse: bool) -> vec2<f32
             let curls = textureSampleLevel(cloud_tex, cloud_sampler, curl_pos / 161.0, 0.0).r;
             let billow = smoothstep(0.29, 0.69, front * 0.65 + curls * 0.35);
             let ceiling = 4.0 + (7.0 + 31.0 * pool) * billow * g.fog.w;
-            let layer = 1.0 - smoothstep(0.9, ceiling, above);
-            let density = layer * billow * mix(0.48, 1.15, pool) * g.fog.w * 0.19;
+            // the top of the mist thins out gradually, so it never cuts a building in a flat sheet
+            let rise = clamp(above / (ceiling * 1.9), 0.0, 1.0);
+            let layer = (1.0 - rise) * (1.0 - rise);
+            // and it thins as the camera gets close (never to nothing: street level keeps its mist), so
+            // what the player built is always in view
+            let clear = mix(0.4, 1.0, smoothstep(70.0, 460.0, distance(point, eye)));
+            let density = layer * clear * billow * mix(0.48, 1.15, pool) * g.fog.w * 0.19;
             let scatter = remaining * (1.0 - exp(-density * (start - end)));
             remaining -= scatter;
             centroid += point * scatter;
@@ -1521,6 +2103,10 @@ fn atmosphere(pixel: vec2<f32>, depth: f32, coarse: bool) -> vec3<f32> {
             cloud *= 1.0 - thick * (0.18 + 0.33 * g.weather_flow.z) * (1.0 - distant);
         }
         cloud *= cloud_view;
+        if (surface) {
+            // cloud over the ground right below the camera thins away, so the town is never hidden
+            cloud *= mix(0.2, 1.0, smoothstep(260.0, 1150.0, limit));
+        }
     }
     return vec3<f32>(fog.x, fog.y * (1.0 - cloud.x) * 0.68 + cloud.y * 1.37, cloud.x);
 }
@@ -1601,7 +2187,7 @@ fn contact(p: vec2<i32>, px: f32, a: vec2<f32>) -> f32 {
         let idb = u32(b.y);
         // a real object (not ground, not flat paint) that is close to the ground point in depth
         if (idb != 0u && idb != EXEMPT && abs(b.x - a.x) < 2.5 + tol) {
-            return 0.88;
+            return 0.80;
         }
     }
     return 1.0;
@@ -1653,32 +2239,36 @@ fn lightning_bolt(p: vec2<i32>, depth: f32) -> f32 {
 }
 
 fn near_geometry_light(p: vec2<i32>, centre: vec2<f32>) -> f32 {
-    let contact = 1.0 - smoothstep(0.75, 1.9, centre.x * g.screen.z);
-    if (contact <= 0.0) {
+    let footprint = centre.x * g.screen.z;
+    let contact = 1.0 - smoothstep(1.6, 4.2, footprint);
+    if (contact <= 0.0 || centre.x > 100000.0) {
         return 1.0;
     }
     let point = world_at(p, centre.x);
     let value = textureLoad(aux_tex, p, 0).y;
     let normal = surface_normal(value);
-    let radius = i32(clamp(1.9 / max(g.screen.z * centre.x, 0.035), 2.0, 10.0));
+    // two rings: about a metre and a half for creases, and about four metres for the soft
+    // shade that gathers at the foot of a wall and between close buildings
+    let radius = clamp(1.5 / max(footprint, 0.03), 1.5, 14.0);
     let bounds = vec2<i32>(g.screen.xy) - vec2<i32>(1);
-    let directions = array<vec2<i32>, 8>(
-        vec2<i32>(1, 0), vec2<i32>(-1, 0), vec2<i32>(0, 1), vec2<i32>(0, -1),
-        vec2<i32>(1, 1), vec2<i32>(-1, 1), vec2<i32>(1, -1), vec2<i32>(-1, -1));
+    let directions = array<vec2<f32>, 8>(
+        vec2<f32>(1.0, 0.0), vec2<f32>(-1.0, 0.0), vec2<f32>(0.0, 1.0), vec2<f32>(0.0, -1.0),
+        vec2<f32>(0.71, 0.71), vec2<f32>(-0.71, 0.71), vec2<f32>(0.71, -0.71), vec2<f32>(-0.71, -0.71));
     var blocked = 0.0;
     for (var i = 0; i < 8; i++) {
-        let q = clamp(p + directions[i] * radius * (1 + i / 4), vec2<i32>(0), bounds);
+        let reach = select(1.0, 2.7, i >= 4);
+        let q = clamp(p + vec2<i32>(directions[i] * radius * reach), vec2<i32>(0), bounds);
         let sample = aux_at(q, 0);
-        if (sample.x > 100000.0 || abs(sample.x - centre.x) > 13.0) {
+        if (sample.x > 100000.0 || abs(sample.x - centre.x) > 16.0) {
             continue;
         }
         let offset = world_at(q, sample.x) - point;
         let distance = length(offset);
         let elevation = dot(normal, offset / max(0.01, distance));
-        blocked += smoothstep(0.14, 0.75, elevation) * (1.0 - smoothstep(1.5, 8.0, distance));
+        blocked += smoothstep(0.10, 0.70, elevation) * (1.0 - smoothstep(2.0, 11.0, distance));
     }
     var shade = 0.0;
-    if (g.sun.z > 0.12 && dot(normal, g.sun.xyz) > 0.13) {
+    if (g.resolve.w > 0.5 && g.sun.z > 0.12 && dot(normal, g.sun.xyz) > 0.13) {
         for (var i = 1; i <= 4; i++) {
             let ray = point + normal * 0.25 + g.sun.xyz * (0.62 * f32(i));
             let q = project_pixel(ray);
@@ -1693,7 +2283,93 @@ fn near_geometry_light(p: vec2<i32>, centre: vec2<f32>) -> f32 {
             }
         }
     }
-    return 1.0 - (blocked * 0.049 + shade) * contact;
+    return 1.0 - (min(0.58, blocked * 0.125) + shade) * contact;
+}
+
+// A wide band of occlusion, 10 to 25 metres out: towers darken the streets and courtyards
+// between them, and the lower walls, even from the wide town view. Looks for ground and walls
+// standing well above this point in twelve directions at two reaches. Returns x the open share
+// (1 open) and y a lee share for snow (1 in the shelter of something tall, downwind).
+// Not run on the light preset, and the smoke picture switch `seasons.y` turns it off.
+fn wide_occlusion(p: vec2<i32>, centre: vec2<f32>) -> vec2<f32> {
+    if (g.seasons.y < 0.5 || g.resolve.w < 0.5 || centre.x > 100000.0) {
+        return vec2<f32>(1.0, 0.0);
+    }
+    let footprint = max(centre.x * g.screen.z, 0.02);
+    let value = textureLoad(aux_tex, p, 0).y;
+    let normal = surface_normal(value);
+    let point = world_at(p, centre.x);
+    let bounds = vec2<i32>(g.screen.xy) - vec2<i32>(1);
+    var blocked = 0.0;
+    var counted = 0.0;
+    for (var ring = 0; ring < 2; ring++) {
+        let metres = select(11.0, 23.0, ring == 1);
+        let reach = metres / footprint;
+        if (reach < 5.0 || reach > 360.0) {
+            continue;
+        }
+        for (var i = 0; i < 6; i++) {
+            let a = (f32(i) + 0.5 * f32(ring)) * 1.0472 + 0.3;
+            let q = clamp(p + vec2<i32>(vec2<f32>(cos(a), -sin(a)) * reach), vec2<i32>(0), bounds);
+            let sample = aux_at(q, 0);
+            counted += 1.0;
+            if (sample.x > 100000.0) {
+                continue;
+            }
+            let w = world_at(q, sample.x);
+            let dz = w.z - point.z;
+            let run = max(length(w.xy - point.xy), 2.0);
+            blocked += smoothstep(0.30, 1.5, dz / run) * smoothstep(3.0, 9.0, dz);
+        }
+    }
+    if (counted < 1.0) {
+        return vec2<f32>(1.0, 0.0);
+    }
+    let strength = 0.5 + 0.5 * max(normal.z, 0.0);
+    let open = 1.0 - min(0.50, 1.6 * blocked / counted) * strength;
+    // the lee: something tall a few metres upwind
+    var lee = 0.0;
+    let wind = g.wx.zw;
+    let wl = length(wind);
+    let upwind = select(vec2<f32>(-0.8, -0.6), -wind / max(wl, 0.01), wl > 0.5);
+    for (var k = 1; k <= 3; k++) {
+        let metres = 2.5 * f32(k) + 1.0;
+        let dq = vec2<f32>(upwind.x, -upwind.y) * metres / footprint;
+        let q = clamp(p + vec2<i32>(dq), vec2<i32>(0), bounds);
+        let sample = aux_at(q, 0);
+        if (sample.x > 100000.0) {
+            continue;
+        }
+        let w = world_at(q, sample.x);
+        lee = max(lee, smoothstep(1.2, 3.5, w.z - point.z) * (1.0 - smoothstep(7.0, 17.0, length(w.xy - point.xy))));
+    }
+    return vec2<f32>(open, lee);
+}
+
+// Light thrown onto the ground by lit windows and shopfronts beside it, taken from the lit
+// pixels around a ground pixel at night.
+fn window_spill(p: vec2<i32>, centre: vec2<f32>) -> vec3<f32> {
+    let footprint = max(centre.x * g.screen.z, 0.03);
+    if (footprint > 1.5 || centre.x > 100000.0) {
+        return vec3<f32>(0.0);
+    }
+    let bounds = vec2<i32>(g.screen.xy) - vec2<i32>(1);
+    var spill = vec3<f32>(0.0);
+    for (var i = 0; i < 8; i++) {
+        let a = f32(i) * 0.7854 + 0.2;
+        let metres = select(3.0, 7.5, (i & 1) == 1);
+        let q = clamp(p + vec2<i32>(vec2<f32>(cos(a), -sin(a)) * metres / footprint), vec2<i32>(0), bounds);
+        let sample = aux_at(q, 0);
+        if (sample.y < 0.5 || abs(sample.x - centre.x) > 14.0) {
+            continue;
+        }
+        let c = textureLoad(colour_tex, q, 0).rgb;
+        let peak = max(c.r, max(c.g, c.b));
+        let warm = smoothstep(0.0, 0.25, c.r - c.b);
+        spill += vec3<f32>(1.0, 0.76, 0.46) * smoothstep(0.55, 0.95, peak) * warm
+            * (1.0 - 0.35 * f32(i & 1));
+    }
+    return spill * 0.11;
 }
 
 fn temporal_colour(colour: vec3<f32>, p: vec2<i32>, depth: f32, volume: f32) -> vec3<f32> {
@@ -1778,6 +2454,74 @@ fn aerial_perspective(colour: vec3<f32>, p: vec2<i32>, depth: f32) -> vec3<f32> 
     return mix(colour, sky * mix(g.tone.rgb, vec3<f32>(1.0), 0.27), opacity);
 }
 
+// Whether the sun reaches a point in the air: the shadow map without any surface offset.
+fn sun_reaches(world: vec3<f32>) -> f32 {
+    let c = g.light_vp * vec4<f32>(world, 1.0);
+    let uv = vec2<f32>(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || c.z > 1.0) {
+        return 1.0;
+    }
+    return textureSampleCompareLevel(shadow_tex, shadow_cmp, uv, c.z - g.shade.y);
+}
+
+// Sun shafts: the air between the eye and the surface is lit where the sun reaches it and
+// dark behind buildings, trees, hills and clouds. Sunlit air glows a little and shaded air
+// dims a little, so beams show without a veil over the whole picture. Strongest with a low
+// sun and damp air.
+fn sun_shafts(colour: vec3<f32>, p: vec2<i32>, depth: f32) -> vec3<f32> {
+    let low = 1.0 - smoothstep(0.16, 0.66, g.sun.z);
+    // by day only (at night the light vector is the moon's), and only while the shadow pass
+    // is drawing: under heavy cloud it stops and the map would be stale
+    let daylight = 1.0 - smoothstep(0.02, 0.22, g.tone.w);
+    let strength = (0.16 + 0.84 * low) * smoothstep(0.03, 0.12, g.sun.z)
+        * (1.0 - 0.75 * g.shade.w) * (1.0 + 1.6 * g.fog.w) * daylight;
+    if (strength < 0.02 || g.shade.x >= 0.985) {
+        return colour;
+    }
+    let ray = ray_for_pixel(vec2<f32>(p) + 0.5);
+    let reach = min(depth, 2400.0);
+    // interleaved gradient noise spreads the steps so eight of them read as a smooth beam
+    let dither = fract(52.9829189 * fract(dot(vec2<f32>(p), vec2<f32>(0.06711056, 0.00583715))));
+    var lit_air = 0.0;
+    var weight = 0.0;
+    for (var i = 0; i < 8; i++) {
+        let t = (f32(i) + dither) / 8.0;
+        let at = g.eye.xyz + ray * (reach * t);
+        // the air is thicker near the ground
+        let thick = exp(-max(0.0, at.z - terrain_height(at.xy)) / 48.0);
+        lit_air += sun_reaches(at) * cloud_sunlight(at) * thick;
+        weight += thick;
+    }
+    let air = weight / 8.0;
+    let sunlit = lit_air / max(weight, 0.001);
+    let toward = max(0.0, dot(normalize(ray), g.sun.xyz));
+    let amount = (1.0 - exp(-reach * 0.0042 * air)) * strength * (0.40 + 1.2 * toward * toward);
+    let beam = mix(vec3<f32>(1.0, 0.93, 0.80), vec3<f32>(1.0, 0.74, 0.46), low);
+    let dimmed = colour * (1.0 - 0.62 * amount * (1.0 - sunlit));
+    // open, clear air glows only faintly: the light gathers where there is mist or where
+    // something stands in the beam, so ordinary play is not veiled
+    let presence = 0.22 + 0.78 * min(1.0, g.fog.w * 8.0 + (1.0 - sunlit) * 3.0);
+    return dimmed + beam * amount * sunlit * 0.42 * presence;
+}
+
+// The sky where no land is drawn: a gradient to a pale horizon, the sun and its glow.
+fn sky_dome(p: vec2<i32>) -> vec3<f32> {
+    let ray = normalize(ray_for_pixel(vec2<f32>(p) + 0.5));
+    let up = vec3<f32>(ray.xy, max(ray.z, 0.0));
+    var sky = sky_radiance(normalize(up + vec3<f32>(0.0, 0.0, 0.02)));
+    let day = smoothstep(-0.08, 0.3, g.sun.z) * (1.0 - smoothstep(0.05, 0.45, g.tone.w));
+    let low = (1.0 - smoothstep(0.05, 0.5, g.sun.z)) * day;
+    let haze = mix(vec3<f32>(0.16, 0.20, 0.30), vec3<f32>(0.80, 0.85, 0.88), day)
+        + vec3<f32>(0.20, 0.06, -0.06) * low;
+    sky = mix(sky, haze, pow(1.0 - clamp(ray.z, 0.0, 1.0), 6.0) * 0.85);
+    let toward = max(0.0, dot(ray, g.sun.xyz));
+    let clear = 1.0 - 0.8 * g.shade.w;
+    sky += mix(vec3<f32>(1.0, 0.95, 0.85), vec3<f32>(1.0, 0.62, 0.30), low)
+        * (pow(toward, 14.0) * 0.14 + pow(toward, 180.0) * 0.35 + smoothstep(0.9993, 0.9997, toward) * 2.0)
+        * day * clear;
+    return sky * mix(g.tone.rgb, vec3<f32>(1.0), 0.4);
+}
+
 fn tilt_focus(colour: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     let y = (f32(p.y) + 0.5) / g.screen.y;
     let blur = smoothstep(0.24, 0.49, abs(y - 0.48));
@@ -1809,7 +2553,7 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
     let inked = px < 1.5;
     var ao = 1.0;
     if (inked) {
-        ao = contact(p, px, centre);
+        ao = mix(1.0, contact(p, px, centre), g.seasons.z);
     }
     for (var s = 0; s < SAMPLE_COUNT; s = s + 1) {
         var ink = false;
@@ -1820,19 +2564,52 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
             }
         }
         if (ink) {
+            // a soft line is the face's own colour gone darker and a little cooler, which
+            // keeps edges crisp without a black cartoon outline. The line stays one pixel wide
+            // and fades as a pixel covers more world, so far buildings do not turn into ink.
             let face = textureLoad(colour_tex, p, s).rgb;
-            acc = acc + mix(g.ink.rgb, face, 0.28);
+            let flat_ink = mix(g.ink.rgb, face, 0.28);
+            let own = face * vec3<f32>(0.52, 0.55, 0.62);
+            let strength = 1.0 - 0.8 * smoothstep(0.35, 1.45, px);
+            acc = acc + mix(face, mix(flat_ink, own, g.lightning.w), strength);
         } else {
             acc = acc + textureLoad(colour_tex, p, s).rgb * ao;
         }
     }
     var col = acc / f32(SAMPLE_COUNT);
+    if (g.look.z < 0.5 && (g.resolve.w > 0.5 || g.local_lights.w > 0.5)) {
+        // occluded light is lost from the warm end first, so creases lean cool
+        let open_sky = mix(1.0, near_geometry_light(p, centre), g.seasons.z);
+        col *= mix(vec3<f32>(0.90, 0.96, 1.06) * open_sky, vec3<f32>(1.0), open_sky * open_sky);
+    }
     if (g.look.z < 0.5 && g.resolve.w > 0.5) {
-        col *= near_geometry_light(p, centre);
+        let wide = wide_occlusion(p, centre);
+        col *= wide.x * mix(vec3<f32>(0.92, 0.96, 1.06), vec3<f32>(1.0), wide.x);
+        // open snow in the lee of a building or tree lies in a cool, softly rippled drift
+        let snowy = min(col.r, min(col.g, col.b)) > 0.66 && g.look.y > 0.5;
+        if (snowy && wide.y > 0.01 && u32(centre.y) == 0u) {
+            let w = world_at(p, centre.x);
+            let ripple = 0.5 + 0.5 * sin(dot(w.xy, vec2<f32>(0.7, 0.5)) * 2.4 + vnoise(w.xy * 0.4) * 5.0);
+            col = mix(col, col * vec3<f32>(0.84, 0.91, 1.05), wide.y * (0.55 + 0.45 * ripple));
+            col *= 1.0 + 0.05 * wide.y * smoothstep(0.55, 0.9, ripple);
+        }
+        if (g.local_lights.z > 0.01 && u32(centre.y) == 0u) {
+            col += window_spill(p, centre) * g.local_lights.z;
+        }
         col = screen_reflection(col, p, centre.x);
+    }
+    if (g.look.z < 0.5 && centre.x > 100000.0) {
+        col = sky_dome(p);
     }
     if (g.look.z < 0.5 && (g.resolve.w > 0.5 || g.weather_flow.z > 0.02)) {
         col = aerial_perspective(col, p, centre.x);
+    }
+    if (g.look.z < 0.5 && centre.x > 2400.0 && centre.x < 100000.0) {
+        // far land dissolves into the sky, so no edge of the world is ever drawn
+        col = mix(col, sky_dome(p), smoothstep(2400.0, 11000.0, centre.x));
+    }
+    if (g.look.z < 0.5 && g.resolve.w > 0.5) {
+        col = sun_shafts(col, p, centre.x);
     }
     if (g.look.z < 0.5 && g.weather_flow.w > 0.5) {
         col = tilt_focus(col, p);
@@ -1882,6 +2659,11 @@ fn fs_present(e: EOut) -> @location(0) vec4<f32> {
     }
     col *= g.temporal.z;
     if (g.temporal.w > 0.5) {
+        // the grade: a gentle S curve for depth and a little more colour in the midtones
+        let c = clamp(col, vec3<f32>(0.0), vec3<f32>(1.0));
+        col += (c * c * (3.0 - 2.0 * c) - c) * 0.30;
+        let luma = dot(col, vec3<f32>(0.2126, 0.7152, 0.0722));
+        col = max(vec3<f32>(0.0), mix(vec3<f32>(luma), col, 1.09));
         let peak = max(col.r, max(col.g, col.b));
         let shoulder = max(0.0, peak - 0.83);
         let compressed = min(peak, 0.83) + shoulder / (1.0 + shoulder * 5.2);

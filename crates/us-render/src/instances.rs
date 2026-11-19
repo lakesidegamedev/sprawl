@@ -131,12 +131,61 @@ pub fn lamp_mesh() -> Mesh {
 
 /// Where the street lamps stand: both sides in turn along every street, a lamp each `spacing`
 /// metres, set just outside the road edge with the arm over the road.
+/// Whether `at` lies on the carriageway of a road other than `own`: used to keep lamps and
+/// people off the crossing road at a junction.
+fn on_other_carriageway(paths: &[Path], own: &Path, at: [f32; 2], main_only: bool) -> bool {
+    paths.iter().any(|o| {
+        !std::ptr::eq(o, own)
+            && o.class != RoadClass::Rail
+            && (!main_only || matches!(o.class, RoadClass::Arterial | RoadClass::Collector))
+            && o.pts.windows(2).any(|w| {
+                let (ax, ay, bx, by) = (w[0][0], w[0][1], w[1][0], w[1][1]);
+                let reach = o.class.half_width() as f32 + 1.0;
+                if at[0] < ax.min(bx) - reach
+                    || at[0] > ax.max(bx) + reach
+                    || at[1] < ay.min(by) - reach
+                    || at[1] > ay.max(by) + reach
+                {
+                    return false;
+                }
+                let (vx, vy) = (bx - ax, by - ay);
+                let l2 = (vx * vx + vy * vy).max(1e-6);
+                let t = (((at[0] - ax) * vx + (at[1] - ay) * vy) / l2).clamp(0.0, 1.0);
+                let (ex, ey) = (at[0] - (ax + vx * t), at[1] - (ay + vy * t));
+                ex * ex + ey * ey < reach * reach
+            })
+    })
+}
+
+/// Whether `at` lies on the carriageway of any road: street furniture never does.
+pub(crate) fn on_any_carriageway(paths: &[Path], at: [f32; 2]) -> bool {
+    paths.iter().any(|o| {
+        o.class != RoadClass::Rail
+            && o.pts.windows(2).any(|w| {
+                let (ax, ay, bx, by) = (w[0][0], w[0][1], w[1][0], w[1][1]);
+                let reach = o.class.half_width() as f32 - 0.3;
+                if at[0] < ax.min(bx) - reach
+                    || at[0] > ax.max(bx) + reach
+                    || at[1] < ay.min(by) - reach
+                    || at[1] > ay.max(by) + reach
+                {
+                    return false;
+                }
+                let (vx, vy) = (bx - ax, by - ay);
+                let l2 = (vx * vx + vy * vy).max(1e-6);
+                let t = (((at[0] - ax) * vx + (at[1] - ay) * vy) / l2).clamp(0.0, 1.0);
+                let (ex, ey) = (at[0] - (ax + vx * t), at[1] - (ay + vy * t));
+                ex * ex + ey * ey < reach * reach
+            })
+    })
+}
+
 pub fn lamp_instances(paths: &[Path]) -> Vec<Instance> {
     let mut out = Vec::new();
     for p in paths {
         let spacing = match p.class {
-            RoadClass::Local => 44.0,
-            RoadClass::Collector => 40.0,
+            RoadClass::Local => 30.0,
+            RoadClass::Collector => 32.0,
             RoadClass::Arterial => 36.0,
             _ => continue,
         };
@@ -148,15 +197,22 @@ pub fn lamp_instances(paths: &[Path]) -> Vec<Instance> {
             let (pt, d) = p.at(s);
             let side = if k.is_multiple_of(2) { 1.0 } else { -1.0 };
             let (nx, ny) = (-d[1] * side, d[0] * side);
+            let at = [pt[0] + nx * off, pt[1] + ny * off];
+            s += spacing;
+            k += 1;
+            // never on another road's carriageway: at a junction a lamp from one arm would
+            // otherwise stand in the middle of the crossing road
+            let on_road = on_other_carriageway(paths, p, at, false);
+            if on_road {
+                continue;
+            }
             out.push(Instance {
-                pos: [pt[0] + nx * off, pt[1] + ny * off, p.z(s)],
+                pos: [at[0], at[1], p.z(s - spacing)],
                 theta: libm::atan2f(-ny, -nx),
                 scale: 1.0,
                 tint: 0,
                 id: LAMP_ID_BASE + out.len() as u32 * ID_STRIDE,
             });
-            s += spacing;
-            k += 1;
         }
     }
     out
@@ -353,10 +409,16 @@ pub fn car_instances(paths: &[Path], cars: &[Car], time: f32) -> Vec<Instance> {
 }
 
 /// Smoke puffs rising from chimney tops (world x, y, top z), drifting east and a little north.
-pub fn puff_instances(chimneys: &[[f32; 3]], time: f32) -> Vec<Instance> {
+/// In winter the stacks give off white steam: a wider, taller plume.
+pub fn puff_instances(chimneys: &[[f32; 3]], time: f32, winter: bool) -> Vec<Instance> {
     const PER: usize = 5;
     const PERIOD: f32 = 5.0;
-    let greys: [Rgb; 3] = [[236, 236, 240], [206, 206, 214], [176, 176, 188]];
+    let greys: [Rgb; 3] = if winter {
+        [[236, 238, 244], [212, 218, 230], [184, 192, 212]]
+    } else {
+        [[236, 236, 240], [206, 206, 214], [176, 176, 188]]
+    };
+    let (rise, size) = if winter { (22.0, 2.4) } else { (13.0, 1.0) };
     let mut out = Vec::new();
     for (ci, c) in chimneys.iter().enumerate() {
         for k in 0..PER {
@@ -366,11 +428,36 @@ pub fn puff_instances(chimneys: &[[f32; 3]], time: f32) -> Vec<Instance> {
             let ph = (time / PERIOD + k as f32 / PER as f32 + ci as f32 * 0.37).rem_euclid(1.0);
             let grey = greys[((ph * 3.0) as usize).min(2)];
             out.push(Instance {
-                pos: [c[0] + ph * 9.0, c[1] + ph * 2.5, c[2] + 0.6 + ph * 13.0],
+                pos: [c[0] + ph * 9.0, c[1] + ph * 2.5, c[2] + 0.6 + ph * rise],
                 theta: ph * 2.0 + ci as f32,
-                scale: 0.7 + ph * 1.9,
+                scale: (0.7 + ph * 1.9) * size,
                 tint: tint(grey),
                 id: PUFF_ID_BASE + out.len() as u32 * ID_STRIDE,
+            });
+        }
+    }
+    out
+}
+
+/// Thin pale smoke from house chimneys, a few puffs each, drifting east.
+pub fn hearth_instances(hearths: &[[f32; 3]], time: f32) -> Vec<Instance> {
+    const PER: usize = 3;
+    const PERIOD: f32 = 6.5;
+    let greys: [Rgb; 3] = [[150, 152, 164], [172, 176, 188], [198, 202, 214]];
+    let mut out = Vec::new();
+    for (ci, c) in hearths.iter().enumerate() {
+        for k in 0..PER {
+            if out.len() >= MAX_PUFFS {
+                return out;
+            }
+            let ph = (time / PERIOD + k as f32 / PER as f32 + ci as f32 * 0.29).rem_euclid(1.0);
+            let grey = greys[((ph * 3.0) as usize).min(2)];
+            out.push(Instance {
+                pos: [c[0] + ph * 6.0, c[1] + ph * 1.8, c[2] + 0.4 + ph * 7.0],
+                theta: ph * 2.0 + ci as f32,
+                scale: 0.7 + ph * 1.4,
+                tint: tint(grey),
+                id: PUFF_ID_BASE + 600_000 + out.len() as u32 * ID_STRIDE,
             });
         }
     }
@@ -467,8 +554,13 @@ pub fn walker_instances(paths: &[Path], walkers: &[Walker], time: f32) -> Vec<In
         let off = p.class.half_width() as f32 + 1.4;
         let (nx, ny) = (-d[1], d[0]);
         let dir = fwd * w.dir.signum() * if w.dir > 0.0 { 1.0 } else { -1.0 };
+        let at = [pt[0] + nx * off * w.side, pt[1] + ny * off * w.side];
+        // nobody stands on the carriageway of a main road that crosses their street
+        if on_other_carriageway(paths, p, at, true) {
+            continue;
+        }
         out.push(Instance {
-            pos: [pt[0] + nx * off * w.side, pt[1] + ny * off * w.side, p.z(s)],
+            pos: [at[0], at[1], p.z(s)],
             theta: libm::atan2f(d[1] * dir, d[0] * dir),
             scale: 1.0,
             tint: tint(w.colour),

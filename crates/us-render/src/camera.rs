@@ -45,7 +45,7 @@ impl Camera {
         let yaw = self.yaw_deg.to_radians();
         let fwd = Vec3::new(yaw.sin(), yaw.cos(), 0.0);
         let eye = self.target - fwd * (self.distance * run) + Vec3::Z * (self.distance * rise);
-        let (near, far) = (self.distance * 0.1, self.distance * 8.0);
+        let (near, far) = (self.distance * 0.1, (self.distance * 8.0).max(90_000.0));
         // Derive screen up from heading so an overhead view keeps its orientation.
         let up = fwd * rise + Vec3::Z * run;
         let view = Mat4::look_at_rh(eye, self.target, up);

@@ -16,10 +16,7 @@ use us_render::live::{
 };
 use us_render::obj::{Obj, Sit};
 use us_render::site::{step_of, step_progress};
-use us_render::{
-    Chunk, CivicModel, Land, LotInfo, Mesh, Rng, RoadInfo, Scene, build_civic,
-    build_lot_level_dense, kit,
-};
+use us_render::{Chunk, CivicModel, Land, LotInfo, Mesh, Rng, RoadInfo, Scene, build_civic, kit};
 use us_sim::{CivicKind, LotState, Phase, Sim};
 
 const CELL: f32 = 256.0;
@@ -45,6 +42,9 @@ pub struct Look {
     pub step: u8,
     /// Level of the building being replaced while a site, 0 for a bare lot.
     pub from: u8,
+    /// The town's size key (`towers::size_key`) while this lot is downtown and drawn, 0 elsewhere: a downtown lot
+    /// is rebuilt when the town grows by a few hundred people.
+    pub cap: u16,
 }
 
 /// Roadworks on one road run.
@@ -196,6 +196,9 @@ pub struct LiveScene {
     /// Lots with path pieces, by the cell the pieces are in.
     path_cells: HashMap<Cell, Vec<usize>>,
     town: Arc<Town>,
+    /// The tower the town plan gave each lot (no repeats nearby, crowns on the tallest only).
+    slots: Vec<Option<us_render::towers::TowerSlot>>,
+    centre: us_render::towers::Centre,
     show_hall: bool,
     hall_theta: f32,
     hall_obj: Obj,
@@ -234,6 +237,16 @@ pub struct LiveScene {
     /// The chunk that holds every tram track, and what it was last drawn from.
     tram_chunk: Option<usize>,
     tram_key: Vec<u32>,
+    /// Forests and lone trees on open land, felled where the town builds.
+    woods: us_render::woods::Woods,
+    woods_chunk: HashMap<us_render::woods::Cell, usize>,
+    /// The half width each road run and the radius each lot was last cleared of trees for
+    /// (0 when not yet): a widened street or a merged lot is cleared again.
+    woods_runs: Vec<f32>,
+    woods_lots: Vec<f32>,
+    /// Woodland chunks waiting to be redrawn, a few each frame.
+    woods_dirty: std::collections::BTreeSet<us_render::woods::Cell>,
+    woods_roads_ver: u32,
 }
 
 fn cell_of(x: f64, y: f64) -> Cell {
@@ -253,6 +266,7 @@ fn look_of(l: &LotState, day: i32, burning: bool) -> Look {
             level,
             step: 0,
             from: 0,
+            cap: 0,
         },
         Phase::Building { start, end } => {
             let p = (day - start) as f32 / (end - start).max(1) as f32;
@@ -265,6 +279,7 @@ fn look_of(l: &LotState, day: i32, burning: bool) -> Look {
                 },
                 step: step_of(p),
                 from: if l.next_level > 0 { level } else { 0 },
+                cap: 0,
             }
         }
         Phase::Built { .. } => Look {
@@ -272,12 +287,14 @@ fn look_of(l: &LotState, day: i32, burning: bool) -> Look {
             level,
             step: 0,
             from: 0,
+            cap: 0,
         },
         Phase::Empty { .. } => Look {
             state: 4,
             level,
             step: 0,
             from: 0,
+            cap: 0,
         },
     }
 }
@@ -325,12 +342,42 @@ struct LotDraw {
 }
 
 /// The model of one lot at a level, local to the lot, facing south.
-fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8, density: f32) -> LotDraw {
+#[allow(clippy::too_many_arguments)]
+fn lot_model(
+    preset: Preset,
+    seed: u64,
+    l: &LotState,
+    level: u8,
+    density: f32,
+    downtown: bool,
+    slot: Option<&us_render::towers::TowerSlot>,
+    cap: u16,
+) -> LotDraw {
     let mut rng = Rng::new(seed ^ 0x5eed_0000, l.src as u64 * 7919 + 13);
     let building = match civic_model(l.civic) {
+        // water towers and power plants do not stand downtown as they do in a yard: they are
+        // restyled as a brick waterworks with a roof tank and a brick substation
+        Some(CivicModel::WaterTower | CivicModel::Standpipe | CivicModel::PowerPlant)
+            if downtown =>
+        {
+            us_render::skyline::downtown_utility(l.civic == Some(CivicKind::Power))
+        }
+        None if downtown && l.civic.is_some() && l.kind == LotKind::Water => {
+            us_render::skyline::downtown_utility(false)
+        }
         Some(m) => build_civic(m, &mut rng),
         None if l.civic.is_some() => kit::build_lot_for(preset, l.kind, l.radius as f32, &mut rng),
-        None => build_lot_level_dense(preset, l.kind, level, l.radius as f32, density, &mut rng),
+        None => us_render::build_lot_level_district(
+            preset,
+            l.kind,
+            level,
+            l.radius as f32,
+            density,
+            downtown,
+            slot,
+            cap,
+            &mut rng,
+        ),
     };
     let building = if l.civic.is_some() && level >= 2 {
         let tier = f32::from(level.min(3) - 1);
@@ -347,7 +394,11 @@ fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8, density: f32) -
         building
     };
     let (kind, radius) = (l.kind, l.radius);
-    let n = trees_for(kind, &mut rng);
+    let n = if downtown {
+        0
+    } else {
+        trees_for(kind, &mut rng)
+    };
     let mut trees = Vec::new();
     if n > 0 {
         let fp = building.footprint();
@@ -364,7 +415,7 @@ fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8, density: f32) -
                     continue;
                 }
                 placed.push([lx, ly]);
-                let (rad, h) = (rng.range(1.8, 2.8), rng.range(5.0, 8.0));
+                let (rad, h) = (rng.range(2.4, 3.4), rng.range(8.0, 12.0));
                 let col = rng.pick(&green);
                 let roll = rng.f32();
                 trees.push((lx, ly, us_render::kit_more::tree_species(roll, rad, h, col)));
@@ -381,7 +432,16 @@ fn lot_model(preset: Preset, seed: u64, l: &LotState, level: u8, density: f32) -
     }
 }
 
+/// Whether a lot stands downtown: in a core district, or dense enough to be its middle. The
+/// density is the town's own (a mayor-placed lot has none of its own).
+fn is_downtown(t: &Town, l: &LotState) -> bool {
+    let zone = t.additions.get(l.addition).map_or(Zone::Inner, |a| a.zone);
+    let density = t.lots.get(l.src).map_or(0.0, |x| x.density as f32);
+    us_render::towers::is_downtown(zone, density)
+}
+
 /// The model to draw for a lot in its current look.
+#[allow(clippy::too_many_arguments)]
 fn look_obj(
     preset: Preset,
     seed: u64,
@@ -390,9 +450,11 @@ fn look_obj(
     look: Look,
     density: f32,
     ground: (&Streetscape, &Town),
+    slot: Option<&us_render::towers::TowerSlot>,
 ) -> LotDraw {
     let level = if l.civic.is_some() { 1 } else { look.level };
-    let mut d = lot_model(preset, seed, l, level, density);
+    let downtown = is_downtown(ground.1, l);
+    let mut d = lot_model(preset, seed, l, level, density, downtown, slot, look.cap);
     // the grounds around a finished building, from the model as built
     if l.civic.is_none() && matches!(look.state, 2 | 4) {
         let (yard, drive) = ground.0.lot_yard(ground.1, l.src, &d.building);
@@ -402,13 +464,18 @@ fn look_obj(
     if matches!(look.state, 2..=4)
         && let Some(a) = ground.1.additions.get(l.addition)
     {
-        d.pad = lot_pad(a.zone, l.radius as f32, d.building.footprint());
+        let zone = if downtown { Zone::Core } else { a.zone };
+        d.pad = lot_pad(zone, l.radius as f32, d.building.footprint());
     }
     let mut rng = Rng::new(seed ^ 0xb0b0, i as u64);
     let mut dress = |o: &Obj| match look.state {
         1 => {
-            let old =
-                (look.from > 0).then(|| lot_model(preset, seed, l, look.from, density).building);
+            let old = (look.from > 0).then(|| {
+                lot_model(
+                    preset, seed, l, look.from, density, downtown, slot, look.cap,
+                )
+                .building
+            });
             let tall = look.level >= 4 || l.kind == LotKind::Office;
             building_site_for(o, old.as_ref(), tall, step_progress(look.step))
         }
@@ -657,7 +724,12 @@ impl LiveScene {
         let (build_prog, build_step) = (0..sim.road_runs().len())
             .map(|i| Self::road_draw_state(sim, i))
             .unzip();
+        let woods = us_render::woods::Woods::plant(&town, &land);
+        let slots = us_render::towers::plan(&town);
+        let centre = us_render::towers::Centre::of(&town);
         let mut ls = LiveScene {
+            slots,
+            centre,
             scene,
             scape,
             decos,
@@ -705,7 +777,21 @@ impl LiveScene {
             traffic_day: None,
             tram_chunk: None,
             tram_key: vec![u32::MAX],
+            woods,
+            woods_chunk: HashMap::new(),
+            woods_runs: Vec::new(),
+            woods_lots: Vec::new(),
+            woods_dirty: std::collections::BTreeSet::new(),
+            woods_roads_ver: u32::MAX,
         };
+        ls.clear_woods_for_town(sim);
+        ls.woods_dirty.clear();
+        for cell in ls.woods.cells() {
+            ls.rev += 1;
+            let chunk = ls.woods.chunk(cell, ls.rev);
+            ls.woods_chunk.insert(cell, ls.scene.chunks.len());
+            ls.scene.chunks.push(chunk);
+        }
         if show_hall {
             ls.mark(hall_cell);
         }
@@ -764,11 +850,7 @@ impl LiveScene {
         if l.civic.is_some() || l.exempt {
             return false;
         }
-        let core = self
-            .town
-            .additions
-            .get(l.addition)
-            .is_some_and(|a| a.zone == Zone::Core);
+        let core = is_downtown(&self.town, l);
         core && !matches!(l.kind, LotKind::Warehouse | LotKind::Workshop)
             || matches!(
                 l.kind,
@@ -1036,6 +1118,45 @@ impl LiveScene {
 
     pub fn land(&self) -> &Land {
         &self.land
+    }
+
+    /// Test scene for pictures: a hand-placed public passage between two downtown blocks, on a
+    /// paved stage at the middle of the grid cell holding (`x`, `y`). The street layout will
+    /// supply real passages; this shows the dressing until it does.
+    pub fn add_test_passage(&mut self, x: f32, y: f32) -> (f32, f32) {
+        use us_render::blocks::{Passage, passage, street_block};
+        let c = cell_of(x as f64, y as f64);
+        let (cx, cy) = ((c.0 as f32 + 0.5) * CELL, (c.1 as f32 + 0.5) * CELL);
+        let mut o = Obj::new();
+        let p = Passage {
+            a: [-32.0, 0.0],
+            b: [32.0, 0.0],
+            width: 7.0,
+        };
+        let pad = |o: &mut Obj, x0: f32, y0: f32, x1: f32, y1: f32| {
+            o.poly(
+                &[
+                    [x0, y0, 0.03],
+                    [x1, y0, 0.03],
+                    [x1, y1, 0.03],
+                    [x0, y1, 0.03],
+                ],
+                [206, 202, 194],
+                false,
+                false,
+                true,
+            );
+        };
+        pad(&mut o, -45.0, -34.0, 45.0, 34.0);
+        o.add_placed(&passage(&p, 5), 0.0, 0.0, 0.0);
+        // a block on each side, set behind the passage's own ground floor shell
+        let north = street_block(32.0, 20.0, 5, false, 5, 3, 0.41, false);
+        o.add_placed(&north, 0.0, 3.5 + 1.6 + 20.0, 0.0);
+        let south = street_block(32.0, 20.0, 8, false, 7, 1, 0.77, false);
+        o.add_placed(&south, 0.0, -(3.5 + 1.6 + 20.0), std::f32::consts::PI);
+        self.stations.push((o, cx, cy, 0.0, c));
+        self.mark(c);
+        (cx, cy)
     }
 
     /// The ground height at a point of the town.
@@ -1308,6 +1429,91 @@ impl LiveScene {
         self.scene.set_emergency(vehicles, blazes);
     }
 
+    /// Fell the trees standing where the town hall, its square and the stations are. Streets and
+    /// lots follow in `sync_woods`.
+    fn clear_woods_for_town(&mut self, sim: &Sim) {
+        if self.show_hall {
+            // the hall stands where the mayor put it, which need not be the generated site
+            let hall = sim.hall;
+            self.woods.clear_disc(hall, self.town.hall_radius + 14.0);
+            let tiles = self.square_tiles.clone();
+            for p in tiles {
+                self.woods.clear_disc(p, 5.0);
+            }
+        }
+        let stations: Vec<(f32, f32)> = self.stations.iter().map(|s| (s.1, s.2)).collect();
+        for (x, y) in stations {
+            self.woods.clear_disc(us_gen::pt(x as f64, y as f64), 26.0);
+        }
+        for (i, a) in self.town.clone().additions.iter().enumerate() {
+            if sim.is_revealed(i) && !matches!(a.zone, Zone::Farm | Zone::Park) {
+                self.woods.thin_ring(&a.polygon, 0.12);
+            }
+        }
+        self.fell_for_roads_and_lots(sim);
+    }
+
+    /// Fell trees for every street that is now on the ground and every lot the town has laid
+    /// out, and note the woodland chunks that changed. A lot counts from the day it is laid out,
+    /// built on or not, so a town reopened from a save has the same woods as before it was saved.
+    fn fell_for_roads_and_lots(&mut self, sim: &Sim) {
+        let runs = sim.road_runs();
+        if self.woods_runs.len() != runs.len() || self.woods_roads_ver != sim.roads_version() {
+            // streets were added, cut, moved or widened: look at every run again
+            self.woods_runs = vec![0.0; runs.len()];
+            self.woods_roads_ver = sim.roads_version();
+        }
+        for (i, run) in runs.iter().enumerate() {
+            let half = run.class.half_width() as f32 + 4.5;
+            if self.woods_runs[i] >= half || !sim.road_visible(i) {
+                continue;
+            }
+            self.woods_runs[i] = half;
+            for w in run.points.windows(2) {
+                let changed = self.woods.clear_along(w[0], w[1], half as f64);
+                self.woods_dirty.extend(changed);
+            }
+        }
+        let lots = sim.lots();
+        self.woods_lots.resize(lots.len(), 0.0);
+        for (i, l) in lots.iter().enumerate() {
+            let radius = l.radius as f32 + 3.0;
+            if self.woods_lots[i] >= radius || l.phase == Phase::Hidden {
+                continue;
+            }
+            self.woods_lots[i] = radius;
+            let changed = self.woods.clear_disc(l.pos, radius as f64);
+            self.woods_dirty.extend(changed);
+        }
+    }
+
+    /// Keep the woods off new streets and buildings, redrawing at most two of the chunks that
+    /// lost trees each frame so a burst of building never stalls one.
+    fn sync_woods(&mut self, sim: &Sim) {
+        self.fell_for_roads_and_lots(sim);
+        // a large backlog (a town fast-forwarded by years) is cleared in one go instead of
+        // trickling out behind the buildings
+        let limit = if self.woods_dirty.len() > 12 {
+            usize::MAX
+        } else {
+            2
+        };
+        let mut drawn = 0;
+        while drawn < limit {
+            let Some(cell) = self.woods_dirty.pop_first() else {
+                break;
+            };
+            if let Some(&i) = self.woods_chunk.get(&cell) {
+                self.rev += 1;
+                self.scene.chunks[i] = self.woods.chunk(cell, self.rev);
+                drawn += 1;
+            }
+        }
+        if drawn > 0 {
+            self.triangles = self.scene.triangles();
+        }
+    }
+
     /// Follow road changes: new class or new streets show as roadworks that finish over time.
     fn sync_roads(&mut self, sim: &Sim) {
         let day = sim.day;
@@ -1440,6 +1646,11 @@ impl LiveScene {
             hi,
         });
         self.ground_chunks += 1;
+        if !matches!(a.zone, Zone::Farm | Zone::Park) {
+            // land opened for building keeps only a few of its trees
+            let changed = self.woods.thin_ring(&a.polygon, 0.12);
+            self.woods_dirty.extend(changed);
+        }
         if a.zone == Zone::Park {
             let cover =
                 us_render::cover::build(&town, &self.land, us_render::cover::Group::Park(addition));
@@ -1486,10 +1697,15 @@ impl LiveScene {
             self.parked.push(true);
         }
         self.sync_roads(sim);
+        self.sync_woods(sim);
         self.refresh_open(sim);
         let day = sim.day;
+        let cap = us_render::towers::size_key(sim.population().max(0) as u32);
         for (i, l) in sim.lots().iter().enumerate() {
-            let k = look_of(l, day, l.fire.is_some() && sim.is_burning(i));
+            let mut k = look_of(l, day, l.fire.is_some() && sim.is_burning(i));
+            if k.state != 0 && l.civic.is_none() && is_downtown(&self.town, l) {
+                k.cap = cap;
+            }
             if k != self.look[i] {
                 let was = self.look[i];
                 self.look[i] = k;
@@ -1560,6 +1776,46 @@ impl LiveScene {
                 let k = self.look[i];
                 let l = &sim.lots()[i];
                 if k.state == 0 {
+                    // only land the town has reached: a lot whose street is not built yet, or
+                    // one a bigger neighbour has taken over, is left as it is
+                    if l.civic.is_none() && l.phase == Phase::Vacant && is_downtown(&self.town, l) {
+                        // empty downtown ground is paving, not lawn
+                        let (x, y, th) = (l.pos.x as f32, l.pos.y as f32, l.facing as f32);
+                        let hills = !self.land.is_flat();
+                        let sit = hills.then(|| Sit {
+                            land: &self.land,
+                            z: self.land.sit_height(x, y),
+                        });
+                        // until it is built, a plot is open ground. Only in the true centre, and
+                        // only on some plots, does the land get an interim use (a square, a fenced
+                        // building site, a car park) on paving: a young town is mostly open
+                        // plots, not a grid of car parks
+                        let central =
+                            self.town.lots[l.src.min(self.town.lots.len() - 1)].density >= 0.8;
+                        let some = Rng::new(seed ^ 0x1a7e, i as u64 + 7).f32() < 0.35;
+                        if !sim.is_planned_lot(i) && central && some {
+                            us_render::decor::interim_pad(l.radius as f32).emit_on(
+                                &mut mesh,
+                                &mut next_id,
+                                x,
+                                y,
+                                th,
+                                1.0,
+                                sit,
+                            );
+                        }
+                        if !sim.is_planned_lot(i) && central && some {
+                            let mut vr = Rng::new(seed ^ 0xfa11, i as u64 + 1);
+                            let roll = vr.f32();
+                            let u = us_render::blocks::vacant_lot(
+                                l.radius as f32,
+                                roll,
+                                self.centre.at(l.pos.x, l.pos.y),
+                                &mut vr,
+                            );
+                            u.emit_on(&mut mesh, &mut next_id, x, y, th, 1.0, sit);
+                        }
+                    }
                     if l.phase == Phase::Vacant && sim.is_planned_lot(i) {
                         let colour = match l.kind {
                             LotKind::House | LotKind::Apartments => [92, 169, 111],
@@ -1593,6 +1849,7 @@ impl LiveScene {
                             k,
                             density,
                             (&self.scape, &self.town),
+                            self.slots.get(l.src).and_then(|s| s.as_ref()),
                         ),
                     ));
                 }

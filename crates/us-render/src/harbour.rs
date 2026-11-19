@@ -5,7 +5,8 @@
 use crate::land::Land;
 use crate::mesh::Mesh;
 use crate::obj::{Obj, Rgb, Sit};
-use us_gen::{RockCoast, Town};
+use crate::roadpaint::SIDEWALK;
+use us_gen::{Pt, RockCoast, Town};
 
 /// Outline ids of these parts start here (above every chunk's ids, below the bridge ids).
 const ID_BASE: u32 = 0x00D0_0000;
@@ -274,11 +275,8 @@ fn rock_arch(o: &mut Obj, r: f32, h: f32, phase: f32) {
 fn boat(size: u8, seed: u64) -> Obj {
     let mut o = Obj::new();
     let hull = HULLS[(hash(seed, 1) % HULLS.len() as u64) as usize];
-    let (l, w, hh) = match size {
-        0 => (14.0f32, 5.0f32, 2.2f32),
-        1 => (22.0, 7.4, 3.2),
-        _ => (34.0, 10.0, 4.6),
-    };
+    let (l, w) = boat_size(size);
+    let hh = [2.2f32, 3.2, 4.6][size.min(2) as usize];
     let bow = l * 0.28;
     let pts = [
         [-l / 2.0, -w / 2.0],
@@ -313,6 +311,187 @@ fn boat(size: u8, seed: u64) -> Obj {
     o
 }
 
+/// Whether a point is dry land well clear of the water (a breakwater root or a path may start
+/// there).
+fn dry(land: &Land, x: f32, y: f32) -> bool {
+    land.height(x, y) > 5.0
+}
+
+/// A breakwater line grown at its root until it ends inside dry land, so the wall grows out of
+/// the shore instead of stopping short of it. The shore is searched for in eight directions and
+/// the nearest dry ground wins.
+fn snapped_to_shore(land: &Land, line: &[Pt]) -> Vec<Pt> {
+    let mut out = line.to_vec();
+    let Some(&a) = out.first() else {
+        return out;
+    };
+    if dry(land, a.x as f32, a.y as f32) {
+        return out;
+    }
+    let mut best: Option<(f64, f64, f64)> = None;
+    for k in 0..16 {
+        let ang = k as f64 * std::f64::consts::TAU / 16.0;
+        let (dx, dy) = (libm::cos(ang), libm::sin(ang));
+        let mut d = 4.0;
+        while d <= 500.0 {
+            if dry(land, (a.x + dx * d) as f32, (a.y + dy * d) as f32) {
+                if best.is_none_or(|(bd, _, _)| d < bd) {
+                    best = Some((d, dx, dy));
+                }
+                break;
+            }
+            d += 4.0;
+        }
+    }
+    if let Some((d, dx, dy)) = best {
+        // sink the root into the land so no gap shows at the foot
+        let root = d + 12.0;
+        out.insert(0, us_gen::pt(a.x + dx * root, a.y + dy * root));
+    }
+    out
+}
+
+/// The closest point of any road to `p`, if one lies within `reach` metres.
+fn nearest_road(t: &Town, p: Pt, reach: f64) -> Option<Pt> {
+    let mut best: Option<(f64, Pt)> = None;
+    for r in &t.roads {
+        if matches!(r.class, us_gen::RoadClass::Rail) {
+            continue;
+        }
+        for w in r.points.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let (vx, vy) = (b.x - a.x, b.y - a.y);
+            let l2 = vx * vx + vy * vy;
+            let u = if l2 < 1e-9 {
+                0.0
+            } else {
+                (((p.x - a.x) * vx + (p.y - a.y) * vy) / l2).clamp(0.0, 1.0)
+            };
+            let q = us_gen::pt(a.x + vx * u, a.y + vy * u);
+            let d = q.dist(p);
+            if d < reach && best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, q));
+            }
+        }
+    }
+    best.map(|(_, q)| q)
+}
+
+/// One berth for a boat: where it lies and the way it points.
+struct Berth {
+    at: Pt,
+    heading: f64,
+}
+
+/// Boats still to tie up, and the berths they were given.
+struct Moorage {
+    sizes: Vec<u8>,
+    /// How many boats the next quay may take.
+    room: usize,
+    berths: Vec<(u8, Berth)>,
+}
+
+impl Moorage {
+    /// Berths along the sides of a straight quay (a pier or the inner face of a breakwater) from
+    /// `a` to `b`: boats are tied up bow to stern, each hugging the edge `half` metres from the
+    /// centreline, starting `from` metres along it.
+    fn along(
+        &mut self,
+        (a, b): (Pt, Pt),
+        from: f64,
+        half: f64,
+        sides: &[f64],
+        water: &dyn Fn(Pt) -> bool,
+    ) {
+        let len = a.dist(b);
+        if len < 1.0 {
+            return;
+        }
+        let (dx, dy) = ((b.x - a.x) / len, (b.y - a.y) / len);
+        let heading = libm::atan2(dy, dx);
+        // the first stretch of a pier lies over the beach: berths begin where the water does
+        let mut first = from;
+        while first < len
+            && !water(us_gen::pt(
+                a.x + dx * (first + 4.0),
+                a.y + dy * (first + 4.0),
+            ))
+        {
+            first += 2.0;
+        }
+        for &side in sides {
+            let mut cursor = first;
+            while let (Some(&size), true) = (self.sizes.last(), self.room > 0) {
+                let (l, w) = boat_size(size);
+                let end = cursor + l as f64;
+                if end > len - 3.0 {
+                    break;
+                }
+                let along = cursor + l as f64 / 2.0;
+                let off = half + w as f64 / 2.0 + 0.4;
+                let at = us_gen::pt(
+                    a.x + dx * along - dy * off * side,
+                    a.y + dy * along + dx * off * side,
+                );
+                cursor = end + 2.5;
+                if !water(at) {
+                    continue;
+                }
+                self.sizes.pop();
+                self.room -= 1;
+                self.berths.push((size, Berth { at, heading }));
+            }
+        }
+    }
+}
+
+/// Length and beam of a boat of a size class.
+fn boat_size(size: u8) -> (f32, f32) {
+    match size {
+        0 => (14.0, 5.0),
+        1 => (22.0, 7.4),
+        _ => (34.0, 10.0),
+    }
+}
+
+/// A path of paving slabs from the landward end of a pier to the closest road, laid on the ground
+/// so the pier is reached on foot.
+fn path_to_road(mesh: &mut Mesh, next: &mut u32, land: &Land, t: &Town, root: Pt, pier_ang: f32) {
+    let Some(road) = nearest_road(t, root, 260.0) else {
+        return;
+    };
+    // start a little inside the pier so the slabs meet the deck
+    let (cx, cy) = (libm::cosf(pier_ang) as f64, libm::sinf(pier_ang) as f64);
+    let start = us_gen::pt(root.x + cx * 2.0, root.y + cy * 2.0);
+    let len = start.dist(road);
+    if len < 3.0 {
+        return;
+    }
+    let ang = libm::atan2f((road.y - start.y) as f32, (road.x - start.x) as f32);
+    let steps = (len / 6.0).ceil().max(1.0);
+    let seg = len / steps;
+    for k in 0..steps as usize {
+        let f = k as f64 * seg / len;
+        let x = (start.x + (road.x - start.x) * f) as f32;
+        let y = (start.y + (road.y - start.y) * f) as f32;
+        let mut o = Obj::new();
+        // a little longer than its step so neighbouring slabs overlap, never leave a crack
+        o.bx(0.0, -3.0, 0.0, seg as f32 + 0.6, 3.0, 0.2, SIDEWALK);
+        o.emit_on(
+            mesh,
+            next,
+            x,
+            y,
+            ang,
+            1.0,
+            Some(Sit {
+                land,
+                z: land.height(x, y),
+            }),
+        );
+    }
+}
+
 /// Everything fixed in and by the water of a coastal town, into `mesh`.
 pub fn add(mesh: &mut Mesh, land: &Land, t: &Town) {
     let RockCoast::Coast(field) = t.terrain.rock_coast() else {
@@ -321,7 +500,10 @@ pub fn add(mesh: &mut Mesh, land: &Land, t: &Town) {
     let mut next = ID_BASE;
     let h = field.harbour();
     // breakwaters: a wide low foot of rough stone under a narrower wall with a flat top
+    let mut walls: Vec<Vec<Pt>> = Vec::new();
     for line in &h.breakwaters {
+        let line = snapped_to_shore(land, line);
+        walls.push(line.clone());
         for w in line.windows(2) {
             let (a, b) = (w[0], w[1]);
             let len = a.dist(b) as f32;
@@ -335,8 +517,30 @@ pub fn add(mesh: &mut Mesh, land: &Land, t: &Town) {
             o.emit_on(mesh, &mut next, a.x as f32, a.y as f32, ang, 1.0, None);
         }
     }
-    // piers: a deck on posts
-    for (root, tip) in &h.piers {
+    // piers: a deck on posts, with a path from its root to the nearest road. A pier starts at
+    // the water's edge, not up the beach, and reaches far enough out to float a boat.
+    let wet = |p: Pt| land.water_at(p).is_some() || land.height(p.x as f32, p.y as f32) < -0.3;
+    let piers: Vec<(Pt, Pt)> = h
+        .piers
+        .iter()
+        .map(|(root, tip)| {
+            let len = root.dist(*tip);
+            if len < 1.0 {
+                return (*root, *tip);
+            }
+            let (dx, dy) = ((tip.x - root.x) / len, (tip.y - root.y) / len);
+            let at = |d: f64| us_gen::pt(root.x + dx * d, root.y + dy * d);
+            // where the water begins along the pier's line
+            let mut shore = 0.0;
+            while shore < len + 60.0 && !wet(at(shore)) {
+                shore += 2.0;
+            }
+            let start = (shore - 5.0).max(0.0);
+            let end = len.max(shore + 46.0);
+            (at(start), at(end))
+        })
+        .collect();
+    for (root, tip) in &piers {
         let len = root.dist(*tip) as f32;
         let ang = libm::atan2f((tip.y - root.y) as f32, (tip.x - root.x) as f32);
         let mut o = Obj::new();
@@ -357,16 +561,49 @@ pub fn add(mesh: &mut Mesh, land: &Land, t: &Town) {
             1.0,
             None,
         );
+        path_to_road(mesh, &mut next, land, t, *root, ang);
     }
-    // boats
-    for (i, m) in h.boats.iter().enumerate() {
-        let o = boat(m.size, hash(t.seed, i as u64));
+    // boats: tied up along the inner face of the breakwaters, then along both sides of every pier
+    let mut moor = Moorage {
+        sizes: h.boats.iter().map(|m| m.size).collect(),
+        room: 0,
+        berths: Vec::new(),
+    };
+    moor.sizes.sort_unstable();
+    let water = |p: Pt| land.water_at(p).is_some() || land.height(p.x as f32, p.y as f32) < -0.3;
+    let n_tips = h.piers.len().max(1) as f64;
+    let inside = us_gen::pt(
+        h.piers.iter().map(|p| p.1.x).sum::<f64>() / n_tips,
+        h.piers.iter().map(|p| p.1.y).sum::<f64>() / n_tips,
+    );
+    // the larger boats lie along the breakwaters (a third of the fleet), the rest at the piers
+    moor.room = moor.sizes.len() / 3;
+    for line in &walls {
+        for w in line.windows(2) {
+            let side = if (w[1].x - w[0].x) * (inside.y - w[0].y)
+                - (w[1].y - w[0].y) * (inside.x - w[0].x)
+                > 0.0
+            {
+                1.0
+            } else {
+                -1.0
+            };
+            moor.along((w[0], w[1]), 40.0, 15.0, &[side], &water);
+        }
+    }
+    moor.room = usize::MAX;
+    for (root, tip) in &piers {
+        // berths begin a boat's length out from the water's edge, where it is deep enough
+        moor.along((*root, *tip), 16.0, 4.0, &[-1.0, 1.0], &water);
+    }
+    for (i, (size, b)) in moor.berths.iter().enumerate() {
+        let o = boat(*size, hash(t.seed, i as u64));
         o.emit_on(
             mesh,
             &mut next,
-            m.at.x as f32,
-            m.at.y as f32,
-            m.heading as f32,
+            b.at.x as f32,
+            b.at.y as f32,
+            b.heading as f32,
             1.0,
             None,
         );
@@ -564,6 +801,44 @@ pub fn add_horizon(mesh: &mut Mesh, land: &Land, t: &Town) {
 mod tests {
     use super::*;
     use us_gen::{Preset, generate};
+
+    #[test]
+    fn breakwaters_grow_out_of_the_shore_and_boats_lie_in_water_at_quays() {
+        for seed in 1..=4 {
+            let t = generate(Preset::Coast, seed);
+            let land = Land::from_town(&t);
+            let RockCoast::Coast(c) = t.terrain.rock_coast() else {
+                panic!("a coast");
+            };
+            let h = c.harbour();
+            for line in &h.breakwaters {
+                let line = snapped_to_shore(&land, line);
+                let root = line[0];
+                assert!(
+                    dry(&land, root.x as f32, root.y as f32),
+                    "seed {seed}: a breakwater root stands in water at {root:?}"
+                );
+            }
+            let mut moor = Moorage {
+                sizes: h.boats.iter().map(|m| m.size).collect(),
+                room: usize::MAX,
+                berths: Vec::new(),
+            };
+            let water =
+                |p: Pt| land.water_at(p).is_some() || land.height(p.x as f32, p.y as f32) < -0.3;
+            for (root, tip) in &h.piers {
+                moor.along((*root, *tip), 24.0, 4.0, &[-1.0, 1.0], &water);
+            }
+            assert!(!moor.berths.is_empty(), "seed {seed}: no boat at any pier");
+            for (_, b) in &moor.berths {
+                assert!(
+                    water(b.at),
+                    "seed {seed}: a boat sits on land at {:?}",
+                    b.at
+                );
+            }
+        }
+    }
 
     #[test]
     fn the_sea_lies_at_the_foot_of_the_cliffs_and_stacks_stand_out_of_it() {

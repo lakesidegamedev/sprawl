@@ -387,7 +387,7 @@ fn mesh_hash_for_a_fixed_lot_set_is_stable() {
     assert_eq!(h, GOLDEN, "mesh hash changed: {h:#018x}");
 }
 
-const GOLDEN: u64 = 0xb24b_afe6_d5f9_eb5b;
+const GOLDEN: u64 = 0x5ca1_30a8_34b3_58d6;
 
 #[test]
 fn storm_flash_is_local_and_tilt_focus_keeps_the_centre_sharp() {

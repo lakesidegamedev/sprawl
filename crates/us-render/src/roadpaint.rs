@@ -8,13 +8,17 @@
 use crate::ground::{Ground, layer};
 use crate::live::RoadDraw;
 use crate::obj::Rgb;
-use crate::scene::{ASPHALT, ASPHALT_HWY, EDGE, YELLOW};
+use crate::scene::{EDGE, YELLOW};
 use std::collections::HashMap;
 use us_gen::{Pt, RoadClass, pt};
 
 pub const WHITE: Rgb = [236, 234, 226];
+/// Junction paving: asphalt with one more blue, so the winter shader can lay slush on it. It is
+/// drawn exactly like the road surface the rest of the year.
+pub const PAD: Rgb = [108, 108, 121];
 pub const SIDEWALK: Rgb = [198, 194, 186];
 pub const KERB: Rgb = [166, 162, 158];
+pub const SHOULDER: Rgb = [150, 141, 118];
 pub const BARRIER: Rgb = [170, 168, 164];
 pub const PLANT: Rgb = [100, 158, 82];
 pub const SHRUB: Rgb = [66, 122, 64];
@@ -296,6 +300,9 @@ struct Arm {
     class: RoadClass,
     avail: f64,
     ring: bool,
+    /// How far from the node the road keeps to the arm's heading (within two metres), metres.
+    /// Paving and markings worked out from the heading are only right this far.
+    straight: f64,
 }
 
 struct Node {
@@ -458,6 +465,24 @@ fn find_nodes(all: &[&RoadDraw], n_mine: usize) -> Vec<Node> {
                 };
                 let v = q - p;
                 if v.len() > 1.0 {
+                    let dir = v.unit();
+                    let mut straight = look;
+                    while straight < 180.0 {
+                        let t = straight + 6.0;
+                        let st = if fwd { s0 + t } else { s0 - t };
+                        if !closed && !(0.0..=total).contains(&st) {
+                            break;
+                        }
+                        let on_road = if closed {
+                            at(r.points, st.rem_euclid(total))
+                        } else {
+                            at(r.points, st)
+                        };
+                        if on_road.dist(p + dir * t) > 2.0 {
+                            break;
+                        }
+                        straight = t;
+                    }
                     arms.push(Arm {
                         road: j,
                         s0,
@@ -467,6 +492,7 @@ fn find_nodes(all: &[&RoadDraw], n_mine: usize) -> Vec<Node> {
                         class: r.class,
                         avail,
                         ring,
+                        straight,
                     });
                 }
             };
@@ -553,15 +579,25 @@ fn pad_of(n: &Node, fillets: bool) -> Pad {
         let s = rhs.cross(ub) / den;
         let u = rhs.cross(ua) / den;
         let c = la + ua * s;
+        // Two roads leaving at a narrow angle run over each other until their kerbs part. The
+        // pad reaches to that point, however far, so one road's lines, median and kerb are
+        // never drawn across the other; only the room the arms have limits it.
+        let meet = s > 0.0
+            && u > 0.0
+            && s < a.avail.min(a.straight).min(170.0)
+            && u < b.avail.min(b.straight).min(170.0);
         if theta < 25f64.to_radians() {
-            // two roads leaving at a narrow angle: their kerbs meet in a point
-            if s > 0.0 && u > 0.0 && s < 30.0 && u < 30.0 {
+            if meet {
                 left[i] = c;
                 right[(i + 1) % k] = c;
             }
             continue;
         }
         if !fillets {
+            if meet && theta < 60f64.to_radians() {
+                left[i] = c;
+                right[(i + 1) % k] = c;
+            }
             continue;
         }
         let half = theta / 2.0;
@@ -574,6 +610,11 @@ fn pad_of(n: &Node, fillets: bool) -> Pad {
             rad = t * libm::tan(half);
         }
         if t < 1.0 || s + t < 0.0 || u + t < 0.0 || s + t > 30.0 || u + t > 30.0 {
+            if meet && theta < 60f64.to_radians() {
+                // no room for a rounded corner: at least close the wedge between the kerbs
+                left[i] = c;
+                right[(i + 1) % k] = c;
+            }
             continue;
         }
         let ta = c + ua * t;
@@ -652,17 +693,22 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
     g.polygon(&Ground::grow(&pad.ring, 0.5), z::CORNER_EDGE, EDGE);
     if highway {
         // the highway keeps its lines through a ramp junction
-        g.polygon(&pad.ring, layer::ROAD + 0.005, ASPHALT_HWY);
+        g.polygon(&pad.ring, layer::ROAD + 0.005, PAD);
         return;
     }
-    g.polygon(&pad.ring, z::PAD, ASPHALT);
-    let eligible = |a: &Arm| matches!(a.class, RoadClass::Local | RoadClass::Collector) && !a.ring;
+    g.polygon(&pad.ring, z::PAD, PAD);
+    let eligible = |a: &Arm| {
+        matches!(
+            a.class,
+            RoadClass::Local | RoadClass::Collector | RoadClass::Arterial
+        ) && !a.ring
+    };
     let streets = n
         .arms
         .iter()
         .filter(|a| a.class != RoadClass::Alley)
         .count();
-    if big || streets < 3 {
+    if streets < 3 {
         return;
     }
     for (k, a) in n.arms.iter().enumerate() {
@@ -674,9 +720,30 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
         if a.avail < 2.0 * d + 3.0 {
             continue;
         }
+        // a crossing belongs at the mouth of a compact junction. Where the paving runs far
+        // along an arm (roads parting at a narrow angle) it would sit out on its own.
+        if pad.cut[k] > a.hw * 1.5 + 13.0 {
+            continue;
+        }
+        // and only where the road is still on the heading the marking is laid out along
+        if d + 4.5 > a.straight {
+            continue;
+        }
         let across = pt(-a.dir.y, a.dir.x);
         let reach = a.hw - 0.9;
         let c = n.p + a.dir * d;
+        // a crossing never lies on another arm of the junction
+        let on_other_arm = n.arms.iter().enumerate().any(|(j, o)| {
+            j != k
+                && [c - across * reach, c, c + across * reach].iter().any(|q| {
+                    let rel = *q - n.p;
+                    let t = rel.dot(o.dir).max(0.0);
+                    (rel - o.dir * t).len() < o.hw + 1.2
+                })
+        });
+        if on_other_arm {
+            continue;
+        }
         let mut off = -reach;
         while off <= reach + 1e-6 {
             quad(
@@ -690,6 +757,20 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
                 WHITE,
             );
             off += 1.1;
+        }
+        if big && a.avail > 2.0 * d + 12.0 {
+            // a stop line across the lanes that come in to a main junction
+            let half = a.hw * 0.5;
+            quad(
+                g,
+                n.p + a.dir * (d + 2.6) + across * half,
+                a.dir,
+                across,
+                0.22,
+                half - 0.6,
+                z::ZEBRA,
+                WHITE,
+            );
         }
     }
 }
@@ -733,6 +814,20 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], context: &[RoadDraw]) {
         };
         let ramp = ramp_at.is_some();
         let bridged = g.on_bridge(r.points);
+        if matches!(r.class, RoadClass::Arterial | RoadClass::Highway) && !bridged && ring.is_none()
+        {
+            // a gravel shoulder beside a main road, so the carriageway does not end in a clean
+            // line on grass
+            for side in [-1.0f32, 1.0] {
+                g.ribbon(
+                    r.points,
+                    0.9,
+                    side * (hw + 1.2),
+                    z::SIDEWALK - 0.03,
+                    SHOULDER,
+                );
+            }
+        }
         if matches!(r.class, RoadClass::Local | RoadClass::Collector) && !ramp && !bridged {
             for side in [-1.0f32, 1.0] {
                 // a ring has its sidewalk on the outside only
@@ -741,7 +836,20 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], context: &[RoadDraw]) {
                 {
                     continue;
                 }
-                g.ribbon(r.points, 1.0, side * (hw + 1.5), z::SIDEWALK, SIDEWALK);
+                // the blue runs 181 (road side) to 191 (outer side) across the strip so the winter
+                // shader can wear a footpath along it; the colour is the sidewalk colour to the eye
+                let (right, left) = if side > 0.0 {
+                    (
+                        [SIDEWALK[0], SIDEWALK[1], 181],
+                        [SIDEWALK[0], SIDEWALK[1], 191],
+                    )
+                } else {
+                    (
+                        [SIDEWALK[0], SIDEWALK[1], 191],
+                        [SIDEWALK[0], SIDEWALK[1], 181],
+                    )
+                };
+                g.ribbon_across(r.points, 1.0, side * (hw + 1.5), z::SIDEWALK, right, left);
                 g.ribbon(r.points, 0.18, side * (hw + 0.4), z::KERB, KERB);
             }
         }
@@ -918,7 +1026,24 @@ fn median(g: &mut Ground, road: usize, line: &[Pt], nodes: &[Node]) {
                     .map(|a| a.hw)
                     .fold(0.0, f64::max)
                     + 16.0;
-                cuts.push((s - gap, s + gap));
+                // the median stops short of the whole junction, however far its paving
+                // reaches along this road (a road joining at a narrow angle makes it long)
+                let mut pad = pad_of(n, true);
+                if crate::ground::signed_area(&pad.ring) <= 0.0 {
+                    pad = pad_of(n, false);
+                }
+                let (mut back, mut ahead) = (gap, gap);
+                for (k, a) in n.arms.iter().enumerate() {
+                    if a.road == road {
+                        let reach = pad.cut[k] + 9.0;
+                        if a.fwd {
+                            ahead = ahead.max(reach);
+                        } else {
+                            back = back.max(reach);
+                        }
+                    }
+                }
+                cuts.push((s - back, s + ahead));
             }
         }
     }
@@ -941,6 +1066,11 @@ fn median(g: &mut Ground, road: usize, line: &[Pt], nodes: &[Node]) {
         let p = sub_line(line, a, b);
         g.ribbon(&p, 1.75, 0.0, z::MEDIAN_KERB, KERB);
         g.ribbon(&p, 1.5, 0.0, z::MEDIAN, PLANT);
+        // a rounded nose at each end instead of a square cut
+        for end in [p[0], p[p.len() - 1]] {
+            g.polygon(&circle(end, 1.75), z::MEDIAN_KERB, KERB);
+            g.polygon(&circle(end, 1.5), z::MEDIAN, PLANT);
+        }
         for d in dashes(&p, 1.6, 5.0) {
             g.ribbon(&d, 0.6, 0.0, z::MEDIAN + 0.01, SHRUB);
         }
@@ -995,9 +1125,29 @@ mod tests {
             assert!(
                 pad.ring
                     .iter()
-                    .all(|p| p.dist(n.p) < 40.0 && p.x.is_finite() && p.y.is_finite()),
+                    .all(|p| p.dist(n.p) < 175.0 && p.x.is_finite() && p.y.is_finite()),
                 "a pad point is far from its junction"
             );
+            // only roads that part at a narrow angle share a long wedge of pad, and it never
+            // reaches past where either road leaves its heading
+            let reach = pad.ring.iter().map(|p| p.dist(n.p)).fold(0.0, f64::max);
+            if reach >= 40.0 {
+                let narrow = n.arms.iter().enumerate().any(|(i, a)| {
+                    n.arms
+                        .iter()
+                        .skip(i + 1)
+                        .any(|b| a.dir.dot(b.dir) > 25f64.to_radians().cos())
+                });
+                assert!(
+                    narrow,
+                    "a long pad at a junction with no narrow pair of arms"
+                );
+                let limit = n.arms.iter().map(|a| a.straight).fold(0.0, f64::max);
+                assert!(
+                    reach <= limit + 25.0,
+                    "a pad runs past the straight of its arms"
+                );
+            }
             let square = pad_of(&n, false);
             if crate::ground::signed_area(&pad.ring) <= 0.0 {
                 bad += 1;

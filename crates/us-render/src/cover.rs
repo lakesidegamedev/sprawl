@@ -104,8 +104,13 @@ fn tuft(h: f32, step: u8) -> Obj {
     plain(o, false, false)
 }
 
+/// Bushes and hedges keep their own greens (blue steps 0 to 3), so they stay dark green and
+/// snow-dusted in winter instead of dropping their leaves with the broadleaf trees.
+pub const BUSH: Rgb = [58, 116, 62];
+pub const BUSH_D: Rgb = [48, 100, 56];
+
 fn bush(shape: usize, dark: bool, step: u8) -> Obj {
-    let c = m(if dark { kit::TREE_D } else { kit::TREE }, step);
+    let c = m(if dark { BUSH_D } else { BUSH }, step);
     let mut o = Obj::new();
     match shape {
         0 => {
@@ -241,7 +246,7 @@ fn row_piece(len: f32, col: Rgb) -> Obj {
 }
 
 fn hedge_piece(len: f32, h: f32, step: u8, dark: bool) -> Obj {
-    let c = m(if dark { kit::TREE_D } else { kit::TREE }, step);
+    let c = m(if dark { BUSH_D } else { BUSH }, step);
     let mut o = Obj::new();
     let l = len / 2.0;
     o.bx(-l, -0.5, 0.0, l, 0.5, h, c);
@@ -987,6 +992,7 @@ fn finish(items: Vec<Item>, kit: &Kit, land: &Land) -> Vec<Chunk> {
             let sit = (!land.is_flat()).then_some(Sit { land, z });
             let (s, c) = (libm::sinf(it.theta), libm::cosf(it.theta));
             let mut pts: Vec<[f32; 3]> = Vec::with_capacity(8);
+            let first_vertex = mesh.vertices.len();
             for p in &tpl.obj.polys {
                 pts.clear();
                 pts.extend(p.pts.iter().map(|v| {
@@ -1003,6 +1009,7 @@ fn finish(items: Vec<Item>, kit: &Kit, land: &Land) -> Vec<Chunk> {
                     if p.outline { id } else { ID_NONE },
                 );
             }
+            mesh.round_foliage(first_vertex);
             if tpl.far {
                 tpl.obj.emit_far_on(&mut far, it.x, it.y, it.theta, sit);
             }
@@ -1134,6 +1141,13 @@ pub fn build_all(t: &Town, land: &Land) -> Vec<Chunk> {
         }
     }
     v
+}
+
+/// Every bush shape, light and dark, for the model sheet example.
+pub fn bush_sheet() -> Vec<Obj> {
+    (0..3)
+        .flat_map(|s| [bush(s, false, 0), bush(s, true, 0)])
+        .collect()
 }
 
 #[cfg(test)]

@@ -63,6 +63,11 @@ impl CamCtl {
         self.g_tilt = tilt;
     }
 
+    /// Tilt the camera goal to `tilt` degrees, past the limits of play (screenshots).
+    pub fn set_tilt(&mut self, tilt: f32) {
+        self.g_tilt = tilt;
+    }
+
     fn forward(&self) -> Vec2 {
         let y = self.g_yaw.to_radians();
         Vec2::new(y.sin(), y.cos())

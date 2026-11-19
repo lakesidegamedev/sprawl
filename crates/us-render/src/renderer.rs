@@ -34,6 +34,9 @@ pub struct Style {
     pub ink_width: u32,
     /// Ink colour.
     pub ink: [u8; 3],
+    /// How far an ink line takes the colour of the face it borders instead of the ink colour:
+    /// 0 is the flat ink line, 1 a darker line of the face's own colour.
+    pub ink_soft: f32,
     /// Brightness multiplier of a shadowed face.
     pub shadow_tone: f32,
     /// Draw chunks that are small on screen in their simpler far form (no ink, no small parts).
@@ -44,6 +47,8 @@ pub struct Style {
     pub high_detail: bool,
     /// Soft focus at the top and bottom of the gameplay camera.
     pub tilt_shift: bool,
+    /// Darken creases and the ground at the foot of walls from the depth of the picture.
+    pub contact_shade: bool,
 }
 
 /// A chunk uses its far form when one metre of it spans less than this share of the frame height
@@ -62,11 +67,13 @@ impl Default for Style {
             shadow_size: 4096,
             ink_width: 2,
             ink: [28, 30, 38],
-            shadow_tone: 0.72,
+            ink_soft: 0.7,
+            shadow_tone: 0.60,
             lod: true,
             window_world_scale: 1.0,
             high_detail: false,
             tilt_shift: false,
+            contact_shade: true,
         }
     }
 }
@@ -219,6 +226,8 @@ struct Globals {
     weather_flow: [f32; 4],
     lightning: [f32; 4],
     temporal: [f32; 4],
+    /// x: 1 when the scene has a calendar (so season 0 is a real winter, not "no season").
+    seasons: [f32; 4],
     /// rock look rows, see `rock::RockLook::rows`
     rock: [[f32; 4]; 8],
 }
@@ -1787,7 +1796,12 @@ impl Renderer {
                 land.size().max(1.0).recip(),
                 (land.n() as f32).recip(),
             ],
-            local_lights: [origin[0], origin[1], night_lighting, 0.0],
+            local_lights: [
+                origin[0],
+                origin[1],
+                night_lighting,
+                f32::from(style.contact_shade && !map_view),
+            ],
             resolve: [
                 rw as f32 / present[0] as f32,
                 rh as f32 / present[1] as f32,
@@ -1822,7 +1836,11 @@ impl Renderer {
                 wl.lightning[0],
                 wl.lightning[1],
                 if map_view { 0.0 } else { wl.lightning[2] },
-                0.0,
+                if map_view {
+                    0.0
+                } else {
+                    style.ink_soft.clamp(0.0, 1.0)
+                },
             ],
             temporal: [
                 if previous.is_some() && wl.lightning[2] < 0.025 {
@@ -1837,6 +1855,12 @@ impl Renderer {
                 },
                 if map_view { 1.0 } else { self.adapted_exposure },
                 if map_view { 0.0 } else { 1.0 },
+            ],
+            seasons: [
+                f32::from(cal.is_some()),
+                wide_occlusion_on(),
+                occlusion_on(),
+                0.0,
             ],
             rock: scene
                 .land
@@ -2439,6 +2463,34 @@ fn light_matrix(scene: &Scene, view: &View, sun: Vec3, size: u32) -> (Mat4, f32,
     let (near, far) = (-hi.z - 120.0, -lo.z + 120.0);
     let proj = Mat4::orthographic_rh(cx - half, cx + half, cy - half, cy + half, near, far);
     (proj * lv, texel, far - near)
+}
+
+/// The wide occlusion band is on unless the smoke picture switch `URBAN_SPRAWL_SMOKE_WIDE_AO=0`
+/// turns it off, so one view can be shown with and without it.
+/// All screen space occlusion (contact, near and wide) is on unless the picture switch
+/// `URBAN_SPRAWL_SMOKE_AO=0` turns it off, for matched on and off pictures.
+fn occlusion_on() -> f32 {
+    static ON: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        if std::env::var("URBAN_SPRAWL_SMOKE_AO").is_ok_and(|v| v == "0") {
+            0.0
+        } else {
+            1.0
+        }
+    })
+}
+
+fn wide_occlusion_on() -> f32 {
+    static ON: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        if std::env::var("URBAN_SPRAWL_SMOKE_WIDE_AO").is_ok_and(|v| v == "0")
+            || std::env::var("URBAN_SPRAWL_SMOKE_AO").is_ok_and(|v| v == "0")
+        {
+            0.0
+        } else {
+            1.0
+        }
+    })
 }
 
 #[cfg(test)]

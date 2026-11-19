@@ -2,8 +2,32 @@
 
 ## Unreleased
 
-- Downtown gets taller landmarks, offset atrium towers, and stepped residential terraces. Their façades show different window patterns, and smaller buildings pick up more distinct brick, siding, roof seams, and shingles.
-- Tall buildings use fewer triangles for their windows. Large, well-served City Planning districts can reach the same skyline tier as established Town Growth centers.
+## 1.5.0 (2026-11-19)
+
+<!-- Release coverage starts after 1.4.3 (1fd1e63) and includes the unreleased building work in d6fa8f0. -->
+
+### For players
+
+- The countryside is alive. Forests, pine woods, copses and lone trees stand on the open land around every town, in a mix that suits each landscape. The town fells them where it builds, and land opened for building keeps a few old trees between the houses.
+- Downtown reads as a city. Buildings stand on the lot line and join into street walls with shopfronts, awnings and signs. Towers come in glass, stone, brick and concrete with varied setbacks, podiums and rooftops. Height follows the size of the town: a small town has a modest centre, and landmark towers arrive as it grows, tallest in the middle and stepping down to the edge.
+- The middle of town fills in first. Streets of the old core near the town hall are built before the town reaches outward, so the centre is no longer a ring round empty blocks.
+- Lighting has depth. Shadows have soft edges, sunlit faces are warm and shade is cool, and buildings, kerbs and trees darken the ground where they meet it. With a low sun the air glows where the light reaches and dims behind towers and hills.
+- Winter looks like winter. Broadleaf trees lose their leaves over late autumn and stand bare with thin shadows, conifers stay green under snow, the sun sits low, roads are ploughed with banks along the kerb, and snow lies on every roof and ledge.
+- Night has shape. Fewer windows are lit, in warm and cool colours and more in homes than offices, roofs fall back into the dark, street lamps light the roads and red beacons mark tall towers.
+- Roads sit better in the land. Main junctions have crossings and stop lines at their mouths, planted medians end before the junction with a rounded nose, two roads that part at a narrow angle share one paved area instead of being drawn over each other, and main roads have a gravel shoulder. Lamps, benches and people keep off the carriageway.
+- Harbours make sense. Piers start at the water's edge, boats are moored along the piers and breakwaters, breakwaters grow out of the shore and the beach varies in width. The land no longer ends in a visible edge: it fades into haze at a flat horizon.
+- Glass, roofs and walls have materials. Windows are dark glass with sky light, a glare and the odd drawn blind, flat roofs show gravel and seams, and walls weather.
+- Open plots stay open. Land the town has not reached is left as it is, and only some plots in the true centre get an interim use such as a small square, a fenced building site or a car park.
+
+### For developers
+
+- Plant woodland from the town seed in `woods.rs`, fell it for visible road runs, laid-out lots, the placed hall and stations, thin it in opened building land, and redraw a few chunks a frame. A reopened town has the same woods as before it was saved.
+- Replace the three wall tones with a continuous tone and warm and cool tints, filter sun shadows (one comparison on the light preset), add two bands of screen-space contact shade behind the Shadows setting, average foliage normals, and march the shadow map along the view ray for sun shafts in Detailed.
+- Draw bare branches under every broadleaf crown and collapse leaf vertices by season in the main and shadow vertex stages. Snow uses a world-up mask.
+- Build downtown from street-wall blocks and tower profiles with a silhouette repeat cap, and take height from population, lot level and distance from the centre.
+- `Sim::pick_street` builds planned streets of revealed core neighbourhoods within 320 m of the hall before anything else. Save format and generator version are unchanged.
+- Junction pads reach to where narrow-angle kerbs part, within the straight part of each arm, and markings are placed only on that straight part. Street furniture and pedestrians are filtered off carriageways.
+- The fixed mesh fingerprint in `tests/render.rs` changed with the foliage normals. Frame rate on phones was not measured for this release.
 
 ## 1.4.3 (2026-11-18)
 

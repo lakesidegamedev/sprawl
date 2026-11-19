@@ -29,7 +29,7 @@ fn main() {
         ground::layer::BASE,
         us_render::GRASS,
     );
-    g.ribbon(&line, 2.6, 0.0, ground::layer::RAIL, [128, 104, 84]);
+    g.ribbon(&line, 2.6, 0.0, ground::layer::RAIL, [124, 120, 114]);
     g.ribbon(&line, 0.2, 0.9, ground::layer::RAIL + 0.06, [150, 154, 160]);
     g.ribbon(
         &line,

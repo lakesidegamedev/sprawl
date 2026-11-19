@@ -42,7 +42,7 @@ pub const ASPHALT: Rgb = [108, 108, 120];
 pub const ASPHALT_HWY: Rgb = ASPHALT;
 pub const EDGE: Rgb = [44, 46, 56];
 pub const YELLOW: Rgb = [226, 196, 70];
-pub const BALLAST: Rgb = [128, 104, 84];
+pub const BALLAST: Rgb = [124, 120, 114];
 pub const STEEL: Rgb = [66, 68, 78];
 
 const CHUNK: f32 = 256.0;
@@ -125,6 +125,8 @@ struct Extras {
     traffic_enabled: bool,
     traffic_hour: f32,
     chimneys: Vec<[f32; 3]>,
+    /// House chimneys that smoke in winter (world x, y, top z).
+    hearths: Vec<[f32; 3]>,
     walkers: Vec<Walker>,
     lamps: Vec<Instance>,
     fleet: Vec<crate::fleet::Veh>,
@@ -328,17 +330,27 @@ impl Scene {
 
     fn refresh_chimneys(&mut self) {
         let mut v = Vec::new();
+        let mut hearths = Vec::new();
         for (i, l) in self.x.lots.iter().enumerate() {
             if !self.x.lot_active.get(i).copied().unwrap_or(true) {
                 continue;
             }
             let (s, c) = (libm::sinf(l.theta), libm::cosf(l.theta));
+            // some houses keep a fire going in winter: a chimney a little off the middle
+            if matches!(l.kind, LotKind::House | LotKind::Row) {
+                let roll = (libm::sinf(l.x * 12.9898 + l.y * 78.233) * 43758.547).rem_euclid(1.0);
+                if roll < 0.4 {
+                    let z = self.land.sit_height(l.x, l.y) + 7.4;
+                    hearths.push([l.x + c * 1.6, l.y + s * 1.6, z]);
+                }
+            }
             for [cx, cy, top] in levels::chimneys(l.kind, l.level) {
                 let z = self.land.sit_height(l.x, l.y);
                 v.push([l.x + c * cx - s * cy, l.y + s * cx + c * cy, top + z]);
             }
         }
         self.x.chimneys = v;
+        self.x.hearths = hearths;
     }
 
     // ---- map views ----
@@ -480,7 +492,13 @@ impl Scene {
         let (flames, smoke) = crate::emergency::blaze_instances(&self.x.blazes, &z, self.time);
         let mut trains = self.x.trains.instances(&self.x.paths, self.time);
         self.x.trams.add_instances(&mut trains, self.time);
-        let mut puffs = instances::puff_instances(&self.x.chimneys, self.time);
+        let winter = self
+            .calendar
+            .is_some_and(|c| c.season() == crate::calendar::Season::Winter);
+        let mut puffs = instances::puff_instances(&self.x.chimneys, self.time, winter);
+        if winter {
+            puffs.extend(instances::hearth_instances(&self.x.hearths, self.time));
+        }
         puffs.extend(smoke);
         FrameInstances {
             cars: if self.x.traffic_enabled {

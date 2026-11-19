@@ -23,6 +23,11 @@ pub const BRIDGE_ID_BASE: u32 = 0x00E0_0000;
 pub const CONCRETE: Rgb = [176, 172, 164];
 pub const CONCRETE_DARK: Rgb = [138, 136, 134];
 
+/// How far the land runs past the map edge, in metres, for a flat horizon.
+const FAR_REACH: f32 = 60_000.0;
+/// Rings of the skirt beyond the apron, outermost first.
+const SKIRT: [f32; 4] = [FAR_REACH, 24_000.0, 9_000.0, 3_800.0];
+
 #[derive(Default)]
 pub struct Ground {
     pub mesh: Mesh,
@@ -283,7 +288,7 @@ impl Ground {
         } else {
             color
         };
-        self.terrain_with(land, apron, &|_, _| color, None);
+        self.terrain_with(land, apron, &|_, _| color, None, false);
     }
 
     /// Like `terrain`, with the colour chosen per vertex (rock faces, scree, beaches).
@@ -293,13 +298,15 @@ impl Ground {
         apron: f32,
         look: &crate::rock::RockLook,
         height: &dyn Fn(f32, f32) -> f32,
-        beach: &dyn Fn(f32, f32) -> f32,
+        beach: &dyn Fn(f32, f32) -> (f32, f32),
     ) {
         self.terrain_with(
             land,
             apron,
             &|x, y| crate::rock::vertex_colour(look, land, height, beach, x, y),
             Some(height),
+            // only a coast has open sea past its edge
+            look.ground.as_ref().is_some_and(|g| g.beach.is_some()),
         );
     }
 
@@ -309,11 +316,13 @@ impl Ground {
         apron: f32,
         colour: &dyn Fn(f32, f32) -> Rgb,
         height: Option<&dyn Fn(f32, f32) -> f32>,
+        open_sea: bool,
     ) {
         let color = colour(0.0, 0.0);
         if self.land.is_none() {
             let s = land.size();
-            self.rect(-apron, -apron, s + apron, s + apron, layer::BASE, color);
+            let reach = apron.max(FAR_REACH);
+            self.rect(-reach, -reach, s + reach, s + reach, layer::BASE, color);
             return;
         }
         let (n, step, size) = (land.n(), land.step(), land.size());
@@ -321,21 +330,40 @@ impl Ground {
         let cuts = [
             1.0f32, 0.75, 0.52, 0.34, 0.22, 0.14, 0.09, 0.055, 0.034, 0.018, 0.009, 0.004,
         ];
-        let mut xs: Vec<f32> = cuts.iter().map(|k| -apron * k).collect();
+        // and a skirt of a few very wide rings past it, so the land runs on to a flat horizon
+        // (the shader hazes it into the sky) instead of ending in a visible edge
+        let mut xs: Vec<f32> = SKIRT.iter().map(|d| -d.max(apron)).collect();
+        xs.extend(cuts.iter().map(|k| -apron * k));
         xs.extend((0..n).map(|i| i as f32 * step));
         xs.extend(cuts.iter().rev().map(|k| size + apron * k));
+        xs.extend(SKIRT.iter().rev().map(|d| size + d.max(apron)));
         let m = xs.len();
+        // the level of the sea, from any water sheet that reaches past the east edge
+        let sea = (0..8)
+            .find_map(|k| {
+                land.water_at(pt(
+                    (size * 0.99 + apron * 0.5) as f64,
+                    size as f64 * k as f64 / 7.0,
+                ))
+            })
+            .unwrap_or(0.12);
         let base = self.mesh.vertices.len() as u32;
         for &y in &xs {
             for &x in &xs {
                 // past the map edge the land is held level, so it is shaded level too
                 if x < 0.0 || y < 0.0 || x > size || y > size {
                     // water that runs off the map (the sea) runs on under its sheet
-                    let z = match land.water_at(pt(x as f64, y as f64)) {
-                        Some(level) => level - 3.0,
-                        None => height.map_or_else(|| land.height(x, y), |f| f(x, y)) + layer::BASE,
+                    let ground = height.map_or_else(|| land.height(x, y), |f| f(x, y));
+                    let (z, c) = if open_sea && ground < 0.05 {
+                        // open sea past the map edge is drawn as water out to the horizon, just
+                        // under the sheet where there is one, not as grey shelf rock
+                        (sea - 0.3, crate::scene::WATER)
+                    } else {
+                        match land.water_at(pt(x as f64, y as f64)) {
+                            Some(level) => (level - 3.0, colour(x, y)),
+                            None => (ground + layer::BASE, colour(x, y)),
+                        }
                     };
-                    let c = colour(x, y);
                     self.raw(x, y, z, [0.0, 0.0, 1.0], c, ID_GROUND);
                 } else {
                     self.vert(x, y, layer::BASE, colour(x, y));
@@ -457,6 +485,20 @@ impl Ground {
     /// A strip of constant half width along a polyline, mitred at the joints. `offset` shifts it
     /// sideways (positive is to the left of travel).
     pub fn ribbon(&mut self, line: &[Pt], half: f32, offset: f32, z: f32, color: Rgb) {
+        self.ribbon_across(line, half, offset, z, color, color);
+    }
+
+    /// Like [`Ground::ribbon`], with one colour along the right edge and another along the left,
+    /// blending across the strip. The winter shader reads the blend as a position across a road.
+    pub fn ribbon_across(
+        &mut self,
+        line: &[Pt],
+        half: f32,
+        offset: f32,
+        z: f32,
+        right_color: Rgb,
+        left_color: Rgb,
+    ) {
         let mut p: Vec<Pt> = Vec::with_capacity(line.len());
         for q in line {
             if p.last().is_none_or(|l| l.dist(*q) > 1e-6) {
@@ -488,7 +530,7 @@ impl Ground {
             left.push([(cx + nx * w) as f32, (cy + ny * w) as f32]);
             right.push([(cx - nx * w) as f32, (cy - ny * w) as f32]);
         }
-        let place = |g: &mut Ground, i: usize, v: &[f32; 2]| -> u32 {
+        let place = |g: &mut Ground, i: usize, v: &[f32; 2], color: Rgb| -> u32 {
             match (&bed, &g.land) {
                 (Some(b), Some(land)) => {
                     let land = land.clone();
@@ -508,12 +550,12 @@ impl Ground {
         let l: Vec<u32> = left
             .iter()
             .enumerate()
-            .map(|(i, v)| place(self, i, v))
+            .map(|(i, v)| place(self, i, v, left_color))
             .collect();
         let r: Vec<u32> = right
             .iter()
             .enumerate()
-            .map(|(i, v)| place(self, i, v))
+            .map(|(i, v)| place(self, i, v, right_color))
             .collect();
         let segs = if closed { n } else { n - 1 };
         for i in 0..segs {
@@ -522,6 +564,105 @@ impl Ground {
             self.mesh
                 .plain
                 .extend_from_slice(&[r[i], r[j], l[j], r[i], l[j], l[i]]);
+        }
+    }
+
+    /// Like `ribbon_across`, but the line at `crest` (0 right edge to 1 left edge) is raised
+    /// `lift` metres: a heaped bank with real height.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ribbon_ridge(
+        &mut self,
+        line: &[Pt],
+        half: f32,
+        offset: f32,
+        z: f32,
+        right_color: Rgb,
+        left_color: Rgb,
+        crest: f32,
+        lift: f32,
+    ) {
+        let mut p: Vec<Pt> = Vec::with_capacity(line.len());
+        for q in line {
+            if p.last().is_none_or(|l| l.dist(*q) > 1e-6) {
+                p.push(*q);
+            }
+        }
+        if p.len() < 2 {
+            return;
+        }
+        // on hills the line is cut into short steps that follow the ground (or a bridge deck)
+        let bed: Option<Bed> = self.land.as_ref().map(|l| l.bed(&p));
+        if let Some(b) = &bed {
+            p = b.pts.clone();
+        }
+        let closed = p.len() > 2 && p[0].dist(*p.last().unwrap()) < 1e-6;
+        if closed {
+            p.pop();
+        }
+        let n = p.len();
+        let mut left: Vec<[f32; 2]> = Vec::with_capacity(n);
+        let mut right: Vec<[f32; 2]> = Vec::with_capacity(n);
+        for (i, point) in p.iter().enumerate() {
+            let (nx, ny, miter) = ribbon_join(&p, i, closed);
+            let w = f64::from(half) * miter;
+            let (cx, cy) = (
+                point.x + nx * f64::from(offset),
+                point.y + ny * f64::from(offset),
+            );
+            left.push([(cx + nx * w) as f32, (cy + ny * w) as f32]);
+            right.push([(cx - nx * w) as f32, (cy - ny * w) as f32]);
+        }
+        let place = |g: &mut Ground, i: usize, v: &[f32; 2], color: Rgb, z: f32| -> u32 {
+            match (&bed, &g.land) {
+                (Some(b), Some(land)) => {
+                    let land = land.clone();
+                    let top = b.z(&land, i, v[0], v[1]) + z;
+                    // roads on mountain land are cut level into the slope: lit as flat
+                    let up = b.weight[i] > 0.5 || land.rock().is_some();
+                    let nrm = if up {
+                        [0.0, 0.0, 1.0]
+                    } else {
+                        land.normal(v[0], v[1])
+                    };
+                    g.raw(v[0], v[1], top, nrm, color, ID_GROUND)
+                }
+                _ => g.vert(v[0], v[1], z, color),
+            }
+        };
+        let mid_color: Rgb = [
+            (f32::from(right_color[0]) * (1.0 - crest) + f32::from(left_color[0]) * crest) as u8,
+            (f32::from(right_color[1]) * (1.0 - crest) + f32::from(left_color[1]) * crest) as u8,
+            (f32::from(right_color[2]) * (1.0 - crest) + f32::from(left_color[2]) * crest) as u8,
+        ];
+        let l: Vec<u32> = left
+            .iter()
+            .enumerate()
+            .map(|(i, v)| place(self, i, v, left_color, z))
+            .collect();
+        let r: Vec<u32> = right
+            .iter()
+            .enumerate()
+            .map(|(i, v)| place(self, i, v, right_color, z))
+            .collect();
+        let m: Vec<u32> = left
+            .iter()
+            .zip(right.iter())
+            .enumerate()
+            .map(|(i, (a, b))| {
+                let v = [b[0] + (a[0] - b[0]) * crest, b[1] + (a[1] - b[1]) * crest];
+                place(self, i, &v, mid_color, z + lift)
+            })
+            .collect();
+        let segs = if closed { n } else { n - 1 };
+        for i in 0..segs {
+            let j = (i + 1) % n;
+            // two strips: right edge up to the crest, crest down to the left edge
+            self.mesh
+                .plain
+                .extend_from_slice(&[r[i], r[j], m[j], r[i], m[j], m[i]]);
+            self.mesh
+                .plain
+                .extend_from_slice(&[m[i], m[j], l[j], m[i], l[j], l[i]]);
         }
     }
 

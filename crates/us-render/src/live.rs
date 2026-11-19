@@ -38,8 +38,16 @@ pub fn ground_terrain(g: &mut Ground, land: &Land, t: &Town) {
         Some(look) if look.ground.is_some() && !land.is_flat() => {
             // a beach only on the inner shore of a harbour cove: elsewhere the shore is rock
             let beach = |x: f32, y: f32| match t.terrain.rock_coast() {
-                us_gen::RockCoast::Coast(c) => c.beach_weight(x as f64, y as f64) as f32,
-                _ => 1.0,
+                us_gen::RockCoast::Coast(c) => {
+                    let cove = c.beach_weight(x as f64, y as f64) as f32;
+                    // the beach is wide in one place and a thin strip in the next: its inland
+                    // edge lies 12 to 100 m from the water, wandering with noise along the coast
+                    let d = c.inland(x as f64, y as f64) as f32;
+                    let wide = 12.0 + 88.0 * crate::rock::wander(x, y);
+                    let narrow = 1.0 - crate::rock::smooth(wide, wide + 26.0, d.max(0.0));
+                    (cove, cove * narrow)
+                }
+                _ => (1.0, 1.0),
             };
             // past the map edge a coast keeps going: the cliffs and the sea follow the terrain
             let size = land.size();
@@ -201,9 +209,9 @@ pub fn zone_ground(t: &Town, index: usize) -> Mesh {
 pub fn zone_ground_on(land: &Land, t: &Town, index: usize) -> Mesh {
     let mut g = Ground::on(land);
     let a = &t.additions[index];
-    // downtown, industry and malls are not paved over as a slab: the land stays natural and each
-    // building gets its own paving (`decor::lot_pad`) when it is built
-    let slab = !matches!(a.zone, Zone::Core | Zone::Industry | Zone::Mall);
+    // no zone slab for downtown, industry or malls: each lot is paved where it is (`decor::lot_pad`,
+    // built or vacant), so paving ends at the lot edge and never runs on into open land or woods
+    let slab = !matches!(a.zone, Zone::Industry | Zone::Mall | Zone::Core);
     if let Some(c) = zone_colour_in(t.preset, a.zone, a.pattern, t.seed, index).filter(|_| slab) {
         g.polygon(&a.polygon, layer::ZONE, c);
     }
@@ -222,11 +230,13 @@ pub struct RoadDraw<'a> {
     pub works: Option<f32>,
 }
 
-/// Marker colour of snow banked along a road edge: drawn in winter only.
+/// Old marker colour of snow banked along a road edge (see `snowdress` for the banks drawn now).
 pub const SNOW_EDGE: Rgb = [247, 248, 253];
-pub const DIRT: Rgb = [190, 152, 104];
+pub const DIRT: Rgb = [138, 134, 128];
 pub const CONE_ORANGE: Rgb = [238, 132, 40];
-pub const DIRT_RUT: Rgb = [160, 122, 80];
+/// Road-works cones seen from above, toned down to sit in the picture.
+const CONE_MUTED: Rgb = [196, 126, 78];
+pub const DIRT_RUT: Rgb = [112, 108, 102];
 pub const GRAVEL: Rgb = [176, 170, 158];
 pub const FRESH_ASPHALT: Rgb = [58, 60, 68];
 
@@ -311,14 +321,11 @@ fn road_works(g: &mut Ground, r: &RoadDraw, hw: f32, p: f32) {
             }
         }
     }
+    // cones, not a stripe: a muted dot every few metres along both edges
     for side in [-1.0f32, 1.0] {
-        g.ribbon(
-            r.points,
-            0.35,
-            side * (hw - 0.6),
-            layer::MARK + 0.02,
-            CONE_ORANGE,
-        );
+        for d in dashes(r.points, 0.7, 7.5) {
+            g.ribbon(&d, 0.5, side * (hw - 0.6), layer::MARK + 0.02, CONE_MUTED);
+        }
     }
     // the machine: a truck while the earth is moved, a roller after
     let total: f64 = r.points.windows(2).map(|w| w[0].dist(w[1])).sum();
@@ -496,14 +503,21 @@ pub fn add_roads_with(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt], context: 
     }
     for &i in &order {
         let r = &roads[i];
-        let col = if r.works.is_some() {
-            DIRT
-        } else if r.class == RoadClass::Highway {
-            ASPHALT_HWY
+        if r.works.is_some() {
+            g.ribbon(r.points, hw_of(i), 0.0, layer::ROAD, DIRT);
         } else {
-            ASPHALT
-        };
-        g.ribbon(r.points, hw_of(i), 0.0, layer::ROAD, col);
+            // the carriageway is asphalt all year; its two edge colours only tell the shader
+            // where across the road each pixel is, so winter can wear lanes into it
+            let hw = hw_of(i);
+            g.ribbon_across(
+                r.points,
+                hw,
+                0.0,
+                layer::ROAD,
+                crate::snowdress::lane_colour(hw, 0.0),
+                crate::snowdress::lane_colour(hw, 1.0),
+            );
+        }
     }
     for w in &wedges {
         g.polygon(&w[..], layer::ROAD, ASPHALT);
@@ -513,22 +527,10 @@ pub fn add_roads_with(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt], context: 
         let hw = hw_of(i);
         if let Some(p) = r.works {
             road_works(g, r, hw, p);
-        } else {
-            // snow banked along both edges, under the road surface so side streets cut through
-            // it: the shader shows it in winter only
-            if r.class != RoadClass::Highway {
-                for side in [-1.0f32, 1.0] {
-                    g.ribbon(
-                        r.points,
-                        0.8,
-                        side * (hw + 0.3),
-                        layer::ROAD - 0.02,
-                        SNOW_EDGE,
-                    );
-                }
-            }
         }
     }
+    // snowbanks and worn lanes: winter only, drawn over the carriageway edge
+    crate::snowdress::paint(g, roads, &hw_of, &is_ramp);
     crate::roadpaint::paint(g, roads, context);
     // the highway's edge line stops where a slip lane joins it
     for gap in &gaps {

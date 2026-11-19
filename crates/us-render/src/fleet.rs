@@ -551,6 +551,11 @@ pub fn make_props(paths: &[Path], lots: &[LotInfo], centre: [f32; 2]) -> [Vec<In
             k += 1;
         }
     }
+    // street furniture never stands on a carriageway: where roads meet, a bench or a signal
+    // pole placed beside one road would otherwise land in the middle of the other
+    for list in out.iter_mut() {
+        list.retain(|i| !crate::instances::on_any_carriageway(paths, [i.pos[0], i.pos[1]]));
+    }
     out
 }
 
