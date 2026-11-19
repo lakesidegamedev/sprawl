@@ -226,6 +226,8 @@ struct Globals {
     weather_flow: [f32; 4],
     lightning: [f32; 4],
     temporal: [f32; 4],
+    /// x: 1 when the scene has a calendar (so season 0 is a real winter, not "no season").
+    seasons: [f32; 4],
     /// rock look rows, see `rock::RockLook::rows`
     rock: [[f32; 4]; 8],
 }
@@ -1854,6 +1856,7 @@ impl Renderer {
                 if map_view { 1.0 } else { self.adapted_exposure },
                 if map_view { 0.0 } else { 1.0 },
             ],
+            seasons: [f32::from(cal.is_some()), 0.0, 0.0, 0.0],
             rock: scene
                 .land
                 .rock()

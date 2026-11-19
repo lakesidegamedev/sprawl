@@ -9,6 +9,7 @@
 
 pub mod architecture;
 pub mod blocks;
+pub mod bough;
 mod calendar;
 mod camera;
 pub mod civic;
@@ -44,6 +45,7 @@ pub mod rock;
 mod scene;
 pub mod site;
 pub mod skyline;
+mod snowdress;
 pub mod towers;
 pub mod trains;
 pub mod trams;

@@ -230,7 +230,7 @@ pub struct RoadDraw<'a> {
     pub works: Option<f32>,
 }
 
-/// Marker colour of snow banked along a road edge: drawn in winter only.
+/// Old marker colour of snow banked along a road edge (see `snowdress` for the banks drawn now).
 pub const SNOW_EDGE: Rgb = [247, 248, 253];
 pub const DIRT: Rgb = [156, 140, 118];
 pub const CONE_ORANGE: Rgb = [238, 132, 40];
@@ -503,14 +503,21 @@ pub fn add_roads_with(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt], context: 
     }
     for &i in &order {
         let r = &roads[i];
-        let col = if r.works.is_some() {
-            DIRT
-        } else if r.class == RoadClass::Highway {
-            ASPHALT_HWY
+        if r.works.is_some() {
+            g.ribbon(r.points, hw_of(i), 0.0, layer::ROAD, DIRT);
         } else {
-            ASPHALT
-        };
-        g.ribbon(r.points, hw_of(i), 0.0, layer::ROAD, col);
+            // the carriageway is asphalt all year; its two edge colours only tell the shader
+            // where across the road each pixel is, so winter can wear lanes into it
+            let hw = hw_of(i);
+            g.ribbon_across(
+                r.points,
+                hw,
+                0.0,
+                layer::ROAD,
+                crate::snowdress::lane_colour(hw, 0.0),
+                crate::snowdress::lane_colour(hw, 1.0),
+            );
+        }
     }
     for w in &wedges {
         g.polygon(&w[..], layer::ROAD, ASPHALT);
@@ -520,22 +527,10 @@ pub fn add_roads_with(g: &mut Ground, roads: &[RoadDraw], culs: &[Pt], context: 
         let hw = hw_of(i);
         if let Some(p) = r.works {
             road_works(g, r, hw, p);
-        } else {
-            // snow banked along both edges, under the road surface so side streets cut through
-            // it: the shader shows it in winter only
-            if r.class != RoadClass::Highway {
-                for side in [-1.0f32, 1.0] {
-                    g.ribbon(
-                        r.points,
-                        0.8,
-                        side * (hw + 0.3),
-                        layer::ROAD - 0.02,
-                        SNOW_EDGE,
-                    );
-                }
-            }
         }
     }
+    // snowbanks and worn lanes: winter only, drawn over the carriageway edge
+    crate::snowdress::paint(g, roads, &hw_of, &is_ramp);
     crate::roadpaint::paint(g, roads, context);
     // the highway's edge line stops where a slip lane joins it
     for gap in &gaps {

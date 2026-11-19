@@ -1022,6 +1022,7 @@ fn diversify(o: Obj, region: Region, resize: bool, rng: &mut Rng) -> Obj {
             || p.color == MARKER_SKIP
             || p.color == TREE
             || p.color == crate::kit::TREE_D
+            || p.color == crate::bough::BARK
         {
             continue;
         }

@@ -1563,7 +1563,7 @@ mod tests {
             let at_lot = t.lots.iter().any(|l| {
                 (l.centre.x as f32 - x).abs() < 0.01 && (l.centre.y as f32 - y).abs() < 0.01
             });
-            if at_lot || *turn != 0.0 || o.polys.len() > 100 {
+            if at_lot || *turn != 0.0 || o.polys.len() > 400 {
                 continue;
             }
             let p = pt(*x as f64, *y as f64);
