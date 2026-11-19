@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The middle of town fills in first. Planned streets of the old core close to the town hall are built before the town reaches outward, so downtown no longer grows as a ring round empty blocks.
 - Downtown now reads as a city: ten new tower shapes (slabs, needles, cylinders, courtyard blocks, crowned and stepped spires), shopfronts with awnings and signs at street level, taller towers in the centre and lower ones at the edge, and houses in the core give way to infill blocks.
 - Districts have their own colours: brick in the old core, grey and blue glass downtown, soot and concrete for works.
 - Downtown is built to the street: every lot is filled edge to edge with shopfront blocks and towers on podiums that join into continuous street walls, and the open ground is paved instead of lawn. Towers come in glass, limestone, brick, concrete and granite, no tower shape repeats close by, spires are kept for the few tallest buildings, and height rises steeply toward the centre. Water towers and power stations downtown are rebuilt as brick waterworks and substations, roadworks mark their edges with cones instead of an orange stripe, and the faceted green poplars and oaks now have the same rounded crowns as other trees.

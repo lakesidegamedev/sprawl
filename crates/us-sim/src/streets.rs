@@ -492,6 +492,24 @@ impl Sim {
             }
             return best.map(|b| b.1);
         }
+        // The middle of town fills in first. A planned street of the old core close to the
+        // town hall, in a neighbourhood already opened, is built before the town reaches
+        // outward for whatever land is wanted, so downtown never stays a ring round empty
+        // blocks.
+        let core_infill = cands
+            .iter()
+            .filter(|&&s| {
+                let st = &self.streets[s];
+                st.addition.is_some_and(|a| {
+                    self.revealed[a] && self.town.additions[a].zone == us_gen::Zone::Core
+                }) && st.mid.dist(self.hall) < 320.0
+            })
+            .map(|&s| (self.streets[s].mid.dist(self.hall), s))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|b| b.1);
+        if core_infill.is_some() {
+            return core_infill;
+        }
         if let Some(pts) = target {
             // toward the land that is wanted: the candidate nearest to it
             let near = |p: Pt| pts.iter().map(|q| q.dist(p)).fold(f64::MAX, f64::min);
