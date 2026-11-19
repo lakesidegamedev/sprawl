@@ -141,7 +141,11 @@ pub fn base_with(
         let x1 = x0 + step;
         let glass = if i % 3 == 1 { DOOR_DARK } else { GLASS_D };
         obj.wall_quad([x0 + 0.3, front], [x1 - 0.3, front], 0.2, 2.9, glass);
-        let col = if (i + plan) % 2 == 0 { awn } else { alt };
+        let col = if (i + plan).is_multiple_of(2) {
+            awn
+        } else {
+            alt
+        };
         obj.bx(
             x0 + 0.15,
             front - 1.5,
@@ -574,9 +578,7 @@ pub fn recolour(o: &mut Obj, kind: us_gen::LotKind, density: f32, downtown: bool
             if !downtown && density < 0.45 {
                 return;
             }
-            if density >= 0.85 && kind == K::Office {
-                &DOWNTOWN
-            } else if downtown && roll > 0.55 || density >= 0.85 {
+            if density >= 0.85 || (downtown && roll > 0.55) {
                 &DOWNTOWN
             } else {
                 &OLD_BRICK
@@ -620,4 +622,28 @@ pub fn recolour(o: &mut Obj, kind: us_gen::LotKind, density: f32, downtown: bool
 fn saturated(c: Rgb) -> bool {
     let (hi, lo) = (c.iter().max().unwrap(), c.iter().min().unwrap());
     hi - lo > 28
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_skyline_family_is_finite_tall_and_distinct() {
+        let mut shapes = Vec::new();
+        for idx in 0..NAMES.len() {
+            let o = build(idx, 3, 5, 1.0, [150, 160, 170]);
+            assert!(o.polys.len() < 400, "{idx}: {} polys", o.polys.len());
+            assert!(crate::levels::top_of(&o) > 88.0, "{idx} is a tower");
+            for v in o.polys.iter().flat_map(|p| &p.pts) {
+                assert!(v.iter().all(|c| c.is_finite()));
+                assert!(v[0].hypot(v[1]) < 22.0, "{idx} stays inside a lot");
+            }
+            let f = o.footprint();
+            shapes.push(((f[2] - f[0]) as i32, (f[3] - f[1]) as i32, o.polys.len()));
+        }
+        shapes.sort();
+        shapes.dedup();
+        assert_eq!(shapes.len(), NAMES.len(), "silhouettes differ");
+    }
 }
