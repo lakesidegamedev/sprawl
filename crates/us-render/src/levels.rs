@@ -305,7 +305,7 @@ pub fn build_lot_level_towered(
 /// Like `build_lot_level_dense`, for a lot in a downtown (core) district: houses, rowhouses and
 /// works become shop-fronted infill, small buildings widen to the lot line, towers stand on a
 /// podium that fills the lot, and the colours follow the district palette. `cap` is the town's
-/// storey cap (`towers::storey_cap` of its population), which with the lot's level and density
+/// size key (`towers::size_key` of its population), which with the lot's level and density
 /// sets how tall the building is.
 #[allow(clippy::too_many_arguments)]
 pub fn build_lot_level_district(
@@ -316,7 +316,7 @@ pub fn build_lot_level_district(
     density: f32,
     downtown: bool,
     slot: Option<&crate::towers::TowerSlot>,
-    cap: u8,
+    cap: u16,
     rng: &mut Rng,
 ) -> Obj {
     let level = level.clamp(1, MAX_LEVEL);
@@ -371,7 +371,7 @@ fn downtown_block(
     radius: f32,
     density: f32,
     slot: Option<&crate::towers::TowerSlot>,
-    cap: u8,
+    cap: u16,
     roll: f32,
 ) -> Obj {
     use crate::{blocks, towers};
@@ -379,8 +379,23 @@ fn downtown_block(
     let half = radius * 0.93;
     let plan = (roll * 12.0) as usize % 12;
     let pick = BLOCK_WALLS[((roll * 97.0) as usize) % BLOCK_WALLS.len()];
-    let n = towers::lot_storeys(cap, level, density, roll);
-    if level >= 4
+    let pop = towers::key_pop(cap);
+    let share = slot.map_or(towers::centre_share(density), |s| {
+        towers::position_share(s.centre)
+    });
+    let mut n = towers::lot_storeys_at(towers::storey_cap(pop), level, share, roll);
+    // landmark towers rise well above the cap, so the skyline has peaks: one to three in a town
+    // of 6,000, more in a bigger one. The candidates are the most central lots; one that is not
+    // built to a high level yet hands its place to the next, which then needs level 5.
+    let landmark = slot.is_some_and(|s| {
+        let (r, want) = (usize::from(s.rank), towers::landmark_count(pop));
+        !s.mid_rise
+            && ((r < want && level >= 3) || (r < towers::landmark_reach(want) && level >= 5))
+    });
+    if landmark && let Some(s) = slot {
+        n = n.max(towers::landmark_storeys(pop, s.rank));
+    }
+    if (landmark || level >= 4)
         && n >= towers::TOWER_MIN
         && let Some(s) = slot
         && !s.mid_rise
