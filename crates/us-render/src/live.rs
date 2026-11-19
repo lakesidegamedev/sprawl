@@ -232,11 +232,11 @@ pub struct RoadDraw<'a> {
 
 /// Old marker colour of snow banked along a road edge (see `snowdress` for the banks drawn now).
 pub const SNOW_EDGE: Rgb = [247, 248, 253];
-pub const DIRT: Rgb = [156, 140, 118];
+pub const DIRT: Rgb = [138, 134, 128];
 pub const CONE_ORANGE: Rgb = [238, 132, 40];
 /// Road-works cones seen from above, toned down to sit in the picture.
 const CONE_MUTED: Rgb = [196, 126, 78];
-pub const DIRT_RUT: Rgb = [126, 112, 94];
+pub const DIRT_RUT: Rgb = [112, 108, 102];
 pub const GRAVEL: Rgb = [176, 170, 158];
 pub const FRESH_ASPHALT: Rgb = [58, 60, 68];
 

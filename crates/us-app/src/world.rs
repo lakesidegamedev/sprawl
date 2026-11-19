@@ -1734,7 +1734,9 @@ impl LiveScene {
                 let k = self.look[i];
                 let l = &sim.lots()[i];
                 if k.state == 0 {
-                    if l.civic.is_none() && is_downtown(&self.town, l) {
+                    // only land the town has reached: a lot whose street is not built yet, or
+                    // one a bigger neighbour has taken over, is left as it is
+                    if l.civic.is_none() && l.phase == Phase::Vacant && is_downtown(&self.town, l) {
                         // empty downtown ground is paving, not lawn
                         let (x, y, th) = (l.pos.x as f32, l.pos.y as f32, l.facing as f32);
                         let hills = !self.land.is_flat();
@@ -1742,12 +1744,19 @@ impl LiveScene {
                             land: &self.land,
                             z: self.land.sit_height(x, y),
                         });
-                        if let Some(p) = lot_pad(Zone::Core, l.radius as f32, [0.0; 4]) {
+                        let paved =
+                            self.town.lots[l.src.min(self.town.lots.len() - 1)].density >= 0.8;
+                        if paved && let Some(p) = lot_pad(Zone::Core, l.radius as f32, [0.0; 4]) {
                             p.emit_on(&mut mesh, &mut next_id, x, y, th, 1.0, sit);
                         }
                         // until it is built, the land has a use: a car park, a fenced lot or a
                         // small square
-                        if !sim.is_planned_lot(i) {
+                        // only in the true centre and only on some lots: a young town is
+                        // mostly open plots, not a grid of car parks
+                        let central =
+                            self.town.lots[l.src.min(self.town.lots.len() - 1)].density >= 0.8;
+                        let some = Rng::new(seed ^ 0x1a7e, i as u64 + 7).f32() < 0.35;
+                        if !sim.is_planned_lot(i) && central && some {
                             let mut vr = Rng::new(seed ^ 0xfa11, i as u64 + 1);
                             let roll = vr.f32();
                             let u = us_render::blocks::vacant_lot(l.radius as f32, roll, &mut vr);

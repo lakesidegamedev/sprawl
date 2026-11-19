@@ -1732,6 +1732,13 @@ fn fs_main(v: VOut) -> FOut {
             glow_amount = max(glow_amount, beacon * clamp(g.local_lights.z * 1.5, 0.0, 1.0));
         }
     }
+    if (!emissive && g.look.z < 0.5) {
+        // by night the eye loses colour: unlit surfaces, autumn leaves most of all, go toward
+        // a cool grey so lit windows and lamps carry the picture
+        let night = smoothstep(0.08, 0.6, 1.0 - g.tone.r);
+        let luma = dot(col, vec3<f32>(0.3, 0.59, 0.11));
+        col = mix(col, vec3<f32>(luma) * vec3<f32>(0.88, 0.96, 1.12), night * 0.6);
+    }
     col = mix(col, glow, glow_amount) + glow * glow_amount * 0.33;
     var o: FOut;
     let raw_colour = rc;
