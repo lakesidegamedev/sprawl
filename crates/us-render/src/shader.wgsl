@@ -890,13 +890,13 @@ fn glass_look(base: vec3<f32>, pane: vec2<f32>, seed: f32, world: vec3<f32>, n: 
 // so masonry and windows keep their scale across camera movement.
 fn dressed_surface(col: vec3<f32>, finish: u32, world: vec3<f32>, anchor: vec3<f32>,
     normal: vec3<f32>, px: f32) -> vec3<f32> {
-    if (px >= 0.65) { return col; }
+    if (px >= 0.5) { return col; }
     let roof = finish >= 247u && finish <= 249u;
     let offset = world - anchor;
     let tangent = normalize(vec2<f32>(-normal.y, normal.x) + vec2<f32>(0.00001, 0.0));
     let wall = vec2<f32>(dot(offset.xy, tangent), offset.z);
     let uv = select(wall, offset.xy, roof);
-    let fade = 1.0 - smoothstep(0.10, 0.65, px);
+    let fade = 1.0 - smoothstep(0.10, 0.5, px);
     let mottling = vnoise(uv * 0.76 + anchor.xy * 0.17);
     var pattern = 0.91 + 0.15 * mottling;
     if (finish == 240u || finish == 247u) {
@@ -930,7 +930,7 @@ fn facing_facade(col: vec3<f32>, finish: u32, world: vec3<f32>, anchor: vec3<f32
     let warm = finish == 244u || finish == 246u;
     let dark = finish == 251u;
     let glass_base = mix(select(vec3<f32>(0.22, 0.35, 0.45), vec3<f32>(0.13, 0.15, 0.18), dark), col, 0.42);
-    let detail = 1.0 - smoothstep(0.63, 1.55, px);
+    let detail = 1.0 - smoothstep(0.42, 1.05, px);
     let average = mix(col, glass_base, select(0.45, 0.26, warm));
     if (detail <= 0.0) {
         return FacadeLook(average, 0.0, 0.0);
@@ -1200,6 +1200,20 @@ fn fs_main(v: VOut) -> FOut {
             } else if (cel && !exempt && v.tint == 0u && n.z > 0.35) {
                 let h = f32(hash_u(v.id / 16u) % 1000u) / 1000.0;
                 col = mix(col, vec3<f32>(238.0, 242.0, 248.0) / 255.0, smoothstep(h - 0.13, h + 0.13, reach));
+            } else if (cel && exempt && v.tint == 0u && !ground) {
+                // woodland has no outline id: snow settles on it tree by tree from where it stands
+                let leafy = leaf_step(v.color.rgb, 88.0, 150.0, 76.0) >= 0
+                    || leaf_step(v.color.rgb, 70.0, 128.0, 66.0) >= 0;
+                let pine = near(v.color.rgb, 46.0, 104.0, 72.0);
+                if (leafy || pine) {
+                    let h = hash2(vec2<i32>(floor(v.room_anchor.xy / 9.0)));
+                    let settle = smoothstep(h - 0.13, h + 0.13, reach) * smoothstep(0.05, 0.6, n.z);
+                    if (leafy) {
+                        // broadleaf crowns are bare in the snow: grey-brown twigs, not green
+                        col = mix(col, vec3<f32>(0.42, 0.37, 0.33), smoothstep(0.05, 0.4, g.wx.x));
+                    }
+                    col = mix(col, vec3<f32>(236.0, 241.0, 247.0) / 255.0, settle * select(0.55, 0.8, pine));
+                }
             }
         }
         // rain: wet roads and ground are darker and a little bluer, wet roofs slightly so
@@ -1726,7 +1740,7 @@ fn contact(p: vec2<i32>, px: f32, a: vec2<f32>) -> f32 {
         let idb = u32(b.y);
         // a real object (not ground, not flat paint) that is close to the ground point in depth
         if (idb != 0u && idb != EXEMPT && abs(b.x - a.x) < 2.5 + tol) {
-            return 0.88;
+            return 0.80;
         }
     }
     return 1.0;
@@ -1779,7 +1793,7 @@ fn lightning_bolt(p: vec2<i32>, depth: f32) -> f32 {
 
 fn near_geometry_light(p: vec2<i32>, centre: vec2<f32>) -> f32 {
     let footprint = centre.x * g.screen.z;
-    let contact = 1.0 - smoothstep(1.1, 2.6, footprint);
+    let contact = 1.0 - smoothstep(1.6, 4.2, footprint);
     if (contact <= 0.0 || centre.x > 100000.0) {
         return 1.0;
     }
@@ -1822,7 +1836,7 @@ fn near_geometry_light(p: vec2<i32>, centre: vec2<f32>) -> f32 {
             }
         }
     }
-    return 1.0 - (min(0.46, blocked * 0.085) + shade) * contact;
+    return 1.0 - (min(0.58, blocked * 0.125) + shade) * contact;
 }
 
 fn temporal_colour(colour: vec3<f32>, p: vec2<i32>, depth: f32, volume: f32) -> vec3<f32> {

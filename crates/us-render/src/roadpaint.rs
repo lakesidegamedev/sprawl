@@ -15,6 +15,7 @@ use us_gen::{Pt, RoadClass, pt};
 pub const WHITE: Rgb = [236, 234, 226];
 pub const SIDEWALK: Rgb = [198, 194, 186];
 pub const KERB: Rgb = [166, 162, 158];
+pub const SHOULDER: Rgb = [150, 141, 118];
 pub const BARRIER: Rgb = [170, 168, 164];
 pub const PLANT: Rgb = [100, 158, 82];
 pub const SHRUB: Rgb = [66, 122, 64];
@@ -810,6 +811,20 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], context: &[RoadDraw]) {
         };
         let ramp = ramp_at.is_some();
         let bridged = g.on_bridge(r.points);
+        if matches!(r.class, RoadClass::Arterial | RoadClass::Highway) && !bridged && ring.is_none()
+        {
+            // a gravel shoulder beside a main road, so the carriageway does not end in a clean
+            // line on grass
+            for side in [-1.0f32, 1.0] {
+                g.ribbon(
+                    r.points,
+                    0.9,
+                    side * (hw + 1.2),
+                    z::SIDEWALK - 0.03,
+                    SHOULDER,
+                );
+            }
+        }
         if matches!(r.class, RoadClass::Local | RoadClass::Collector) && !ramp && !bridged {
             for side in [-1.0f32, 1.0] {
                 // a ring has its sidewalk on the outside only
@@ -1035,6 +1050,11 @@ fn median(g: &mut Ground, road: usize, line: &[Pt], nodes: &[Node]) {
         let p = sub_line(line, a, b);
         g.ribbon(&p, 1.75, 0.0, z::MEDIAN_KERB, KERB);
         g.ribbon(&p, 1.5, 0.0, z::MEDIAN, PLANT);
+        // a rounded nose at each end instead of a square cut
+        for end in [p[0], p[p.len() - 1]] {
+            g.polygon(&circle(end, 1.75), z::MEDIAN_KERB, KERB);
+            g.polygon(&circle(end, 1.5), z::MEDIAN, PLANT);
+        }
         for d in dashes(&p, 1.6, 5.0) {
             g.ribbon(&d, 0.6, 0.0, z::MEDIAN + 0.01, SHRUB);
         }

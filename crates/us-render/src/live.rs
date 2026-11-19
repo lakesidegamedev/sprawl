@@ -224,9 +224,9 @@ pub struct RoadDraw<'a> {
 
 /// Marker colour of snow banked along a road edge: drawn in winter only.
 pub const SNOW_EDGE: Rgb = [247, 248, 253];
-pub const DIRT: Rgb = [190, 152, 104];
+pub const DIRT: Rgb = [156, 140, 118];
 pub const CONE_ORANGE: Rgb = [238, 132, 40];
-pub const DIRT_RUT: Rgb = [160, 122, 80];
+pub const DIRT_RUT: Rgb = [126, 112, 94];
 pub const GRAVEL: Rgb = [176, 170, 158];
 pub const FRESH_ASPHALT: Rgb = [58, 60, 68];
 

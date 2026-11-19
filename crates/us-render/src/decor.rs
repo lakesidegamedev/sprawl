@@ -268,7 +268,11 @@ fn street_trees(
                 } else {
                     (3.1, 9.5)
                 };
-                s += step + rng.range(-1.0, 1.0) as f64;
+                // uneven gaps and the odd missing tree: a planted row, not a ruler
+                s += step + rng.range(-3.0, 3.2) as f64;
+                if rng.f32() < 0.15 {
+                    continue;
+                }
                 let q = pt(p.x + n.x * (hw + off), p.y + n.y * (hw + off));
                 let blocked = roads.edge_dist(q, Some(ri)).0 < 5.0
                     || roads.edge_dist(q, None).0 < 2.6
@@ -960,6 +964,16 @@ pub fn lot_pad(zone: Zone, r: f32, footprint: [f32; 4]) -> Option<Obj> {
         // plain paving of next-door lots overlaps in one colour, the checker stays by the building
         quad(&mut o, -r, -r, r, r, 0.03, base);
     } else {
+        // trodden ground round the paving, so the pad does not end in a clean line on grass
+        quad(
+            &mut o,
+            (x0 - 1.3).max(-r * 0.92),
+            (y0 - 1.3).max(-r * 0.92),
+            (x1 + 1.3).min(r * 0.92),
+            (y1 + 1.3).min(r * 0.92),
+            0.025,
+            [150, 141, 118],
+        );
         quad(&mut o, x0, y0, x1, y1, 0.03, base);
     }
     if zone == Zone::Core {
