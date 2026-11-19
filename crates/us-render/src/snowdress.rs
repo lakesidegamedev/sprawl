@@ -61,7 +61,18 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], hw_of: &dyn Fn(usize) -> f32, r
             } else {
                 (bank_colour(1.0), bank_colour(0.0))
             };
-            g.ribbon_across(r.points, 1.05, side * (hw + 0.55), Z_BANK, right, left);
+            // the crest sits at 0.42 across from the road side and stands a third of a metre up
+            let crest = if side > 0.0 { 0.42 } else { 0.58 };
+            g.ribbon_ridge(
+                r.points,
+                1.05,
+                side * (hw + 0.55),
+                Z_BANK,
+                right,
+                left,
+                crest,
+                0.32,
+            );
         }
     }
 }

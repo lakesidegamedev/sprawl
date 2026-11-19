@@ -44,7 +44,7 @@ const CONCRETE_DARK: Rgb = [132, 132, 130];
 const STEEL: Rgb = [112, 118, 128];
 const TIMBER: Rgb = [176, 144, 92];
 const YELLOW: Rgb = [232, 190, 60];
-const FENCE: Rgb = [232, 150, 52];
+const FENCE: Rgb = [150, 132, 108];
 
 /// The model with everything above height `cut` removed. Walls that cross the cut are trimmed to
 /// it; roofs, windows and signs that cross it are left off until the wall under them is whole.

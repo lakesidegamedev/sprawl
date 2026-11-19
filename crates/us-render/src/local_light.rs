@@ -9,7 +9,7 @@ const SIDE: usize = 32;
 const SLOTS: usize = 6;
 const LAMP_SLOTS: usize = 3;
 const TILE: f32 = 24.0;
-const LAMP_RADIUS: f32 = 19.0;
+const LAMP_RADIUS: f32 = 23.0;
 const HEADLIGHT_RADIUS: f32 = 28.0;
 
 pub(crate) const WIDTH: u32 = (SIDE * SLOTS * 2) as u32;
@@ -48,7 +48,7 @@ impl LightGrid {
             self.insert(
                 Vec3::from_array(lamp.pos) + arm,
                 Vec2::ZERO,
-                45.0,
+                62.0,
                 LAMP_RADIUS,
             );
         }
