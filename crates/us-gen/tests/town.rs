@@ -1809,7 +1809,11 @@ fn coastal_arterial_approaches_do_not_climb_the_harbour_cliff() {
             .windows(2)
             .map(|pair| seg_closest(lighthouse, pair[0], pair[1]))
             .fold(f64::INFINITY, f64::min);
-        assert!(access < if seed == 5 { 10.0 } else { 125.0 });
+        assert!(
+            access >= 22.2,
+            "the lighthouse foundation overlaps the arterial or verge"
+        );
+        assert!(access < if seed == 5 { 30.0 } else { 125.0 });
         for pair in road.points.windows(2) {
             let count = (pair[0].dist(pair[1]) / 4.0).ceil() as usize;
             let mut previous = pair[0];

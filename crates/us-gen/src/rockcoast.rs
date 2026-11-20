@@ -437,6 +437,7 @@ pub struct CoastField {
     pub coves: Vec<Cove>,
     pub stacks: Vec<Stack>,
     road_cuts: Vec<CutRow>,
+    lighthouse_site: Option<Pt>,
     seed: u64,
 }
 
@@ -501,6 +502,7 @@ impl CoastField {
             coves: Vec::new(),
             stacks: Vec::new(),
             road_cuts: Vec::new(),
+            lighthouse_site: None,
             seed,
         };
         // coves sit on the coast line; the harbour is a keyhole with a narrower mouth, the
@@ -600,6 +602,23 @@ impl CoastField {
     /// Fit a graded approach to the hillside while keeping the inner harbour low.
     pub(crate) fn grade_coast_road(&mut self, ground: impl Fn(Pt) -> f64) {
         let (route, _) = self.coast_line(72.0);
+        // Keep the 11.2 m radius foundation clear of both the arterial and its verge.
+        let (_, north) = self.horns(-30.0);
+        let original = self.lighthouse_on_headland(north);
+        let clearance = crate::RoadClass::Arterial.half_width() + 11.2 + 2.0;
+        if crate::geom::dist_pt_line(original, &route) < clearance {
+            self.lighthouse_site = (1..=12)
+                .flat_map(|ring| {
+                    (0..16).map(move |step| {
+                        let angle = TAU * step as f64 / 16.0;
+                        original + pt(cos(angle), sin(angle)) * (4.0 * ring as f64)
+                    })
+                })
+                .find(|p| {
+                    self.inland(p.x, p.y) >= 25.0
+                        && crate::geom::dist_pt_line(*p, &route) >= clearance
+                });
+        }
         let mut line = vec![route[0]];
         for pair in route.windows(2) {
             let steps = (pair[0].dist(pair[1]) / 5.0).ceil() as usize;
@@ -832,6 +851,11 @@ impl CoastField {
         (line.clone(), line)
     }
 
+    fn lighthouse_on_headland(&self, north: Pt) -> Pt {
+        let y = north.y + 150.0;
+        pt(self.open_edge_x(y, 70.0), y)
+    }
+
     /// Breakwaters, piers, boats and the lighthouse of the harbour.
     pub fn harbour(&self) -> Harbour {
         let hv = self.coves[0];
@@ -905,8 +929,9 @@ impl CoastField {
             });
         }
         // the lighthouse stands on the north headland, a little inland of the cliff edge
-        let ly = hn.y + 150.0;
-        let lighthouse = pt(self.open_edge_x(ly, 70.0), ly);
+        let lighthouse = self
+            .lighthouse_site
+            .unwrap_or_else(|| self.lighthouse_on_headland(hn));
         Harbour {
             breakwaters,
             piers,
