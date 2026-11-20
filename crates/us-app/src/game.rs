@@ -465,9 +465,7 @@ impl State {
         self.style.high_detail = self.settings.detailed_graphics;
         self.style.contact_shade = self.settings.high_shadows || self.settings.detailed_graphics;
         self.style.tilt_shift = self.settings.tilt_shift;
-        self.style.window_world_scale = if self.settings.detailed_graphics {
-            1.0
-        } else if self.settings.balanced_world_resolution {
+        self.style.window_world_scale = if self.settings.balanced_world_resolution {
             0.8
         } else {
             1.0
@@ -1054,12 +1052,10 @@ impl State {
                     "Balanced",
                 );
             });
-            if !cfg!(any(target_os = "ios", target_os = "android")) {
-                ui.checkbox(
-                    &mut self.settings.detailed_graphics,
-                    "Detailed atmosphere and surfaces",
-                );
-            }
+            ui.checkbox(
+                &mut self.settings.detailed_graphics,
+                "Detailed atmosphere and surfaces",
+            );
             ui.checkbox(&mut self.settings.tilt_shift, "Mild tilt shift");
             label(ui, "Day and night", 14.0);
             ui.horizontal(|ui| {

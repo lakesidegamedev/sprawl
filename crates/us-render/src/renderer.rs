@@ -2460,7 +2460,27 @@ fn light_matrix(scene: &Scene, view: &View, sun: Vec3, size: u32) -> (Mat4, f32,
     let snap = |middle: f32, origin: f32| ((middle - origin) / texel).round() * texel + origin;
     let cx = snap((hi.x + lo.x) / 2.0, anchor.x);
     let cy = snap((hi.y + lo.y) / 2.0, anchor.y);
-    let (near, far) = (-hi.z - 120.0, -lo.z + 120.0);
+    // An offscreen tower can cast into the view. Extend only the depth of the
+    // shadow map toward upstream casters, keeping its ground resolution fixed.
+    let mut near_z = hi.z + 120.0;
+    let right = lv.row(0).truncate();
+    let up = lv.row(1).truncate();
+    for chunk in &scene.chunks {
+        let upstream = Vec3::select(sun.cmpge(Vec3::ZERO), chunk.hi, chunk.lo);
+        let depth = sun.dot(upstream) + lv.w_axis.z;
+        if depth <= near_z {
+            continue;
+        }
+        let midpoint = (chunk.hi + chunk.lo) * 0.5;
+        let extent = (chunk.hi - chunk.lo) * 0.5;
+        let centre = lv.transform_point3(midpoint);
+        if (centre.x - cx).abs() <= half + right.abs().dot(extent)
+            && (centre.y - cy).abs() <= half + up.abs().dot(extent)
+        {
+            near_z = depth + 1.0;
+        }
+    }
+    let (near, far) = (-near_z, -lo.z + 120.0);
     let proj = Mat4::orthographic_rh(cx - half, cx + half, cy - half, cy + half, near, far);
     (proj * lv, texel, far - near)
 }
@@ -2505,5 +2525,29 @@ mod clip_tests {
         assert!(!volume.intersects(Vec3::new(-1.0, -1.0, -30.0), Vec3::new(1.0, 1.0, -22.0)));
         assert!(!volume.intersects(Vec3::new(9.0, -1.0, -4.0), Vec3::new(10.0, 1.0, 1.0)));
         assert!(volume.intersects(Vec3::new(-1.0, -1.0, -2.0), Vec3::new(1.0, 1.0, 1.0)));
+    }
+    #[test]
+    fn offscreen_caster_keeps_its_shadow_and_ground_resolution() {
+        let target = Vec3::new(1500.0, 1500.0, 0.0);
+        let sun = Vec3::new(0.8, 0.0, 0.6);
+        let view = Camera::framing(target, 100.0, 1.0, 0.0, 90.0).view(1.0);
+        let mut scene = Scene::dynamic(3000.0, Mesh::default(), target);
+        let (_, texel, _) = light_matrix(&scene, &view, sun, 2048);
+        let roof = target + sun * 500.0;
+        let lo = Vec3::new(roof.x - 5.0, roof.y - 5.0, 0.0);
+        let hi = roof + Vec3::new(5.0, 5.0, 0.0);
+        assert!(!ClipVolume::new(view.view_proj).intersects(lo, hi));
+        scene.chunks.push(crate::scene::Chunk {
+            lo,
+            hi,
+            rev: 0,
+            mesh: Mesh::default(),
+            far: None,
+        });
+        let (matrix, caster_texel, _) = light_matrix(&scene, &view, sun, 2048);
+        let clip = matrix.transform_point3(roof);
+        assert!(clip.x.abs() < 1.0 && clip.y.abs() < 1.0);
+        assert!((0.0..=1.0).contains(&clip.z), "roof depth {}", clip.z);
+        assert_eq!(texel, caster_texel);
     }
 }
