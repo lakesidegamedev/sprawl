@@ -436,16 +436,35 @@ pub struct CoastField {
     face: f64,
     pub coves: Vec<Cove>,
     pub stacks: Vec<Stack>,
-    inland_approach: bool,
+    road_cuts: Vec<CutRow>,
     seed: u64,
 }
 
+// Index the roadbed by northing so height queries away from the road can skip the segments.
+#[derive(Clone, Debug)]
+struct CutRow {
+    min_x: f64,
+    max_x: f64,
+    segments: Vec<RoadCut>,
+}
+
+#[derive(Clone, Debug)]
+struct RoadCut {
+    start: Pt,
+    delta: Pt,
+    length_sq: f64,
+    start_z: f64,
+    rise: f64,
+    start_offset: f64,
+    end_offset: f64,
+}
+
+const CUT_BUCKET: f64 = 64.0;
+const CUT_WIDTH: f64 = 180.0;
+const MAX_COAST_GRADE: f64 = 0.15;
+
 impl CoastField {
     pub fn new(seed: u64) -> CoastField {
-        Self::for_version(seed, crate::GEN_VERSION)
-    }
-
-    pub(crate) fn for_version(seed: u64, version: u32) -> CoastField {
         let mut rng = Rng::new(seed, 0xc0a5);
         let yh = HALL.y + rng.uniform(-300.0, 450.0);
         let rho_h = rng.uniform(380.0, 450.0);
@@ -481,7 +500,7 @@ impl CoastField {
             face: rng.uniform(0.0, TAU),
             coves: Vec::new(),
             stacks: Vec::new(),
-            inland_approach: version >= 4,
+            road_cuts: Vec::new(),
             seed,
         };
         // coves sit on the coast line; the harbour is a keyhole with a narrower mouth, the
@@ -578,6 +597,71 @@ impl CoastField {
         smooth(0.3, 0.7, u) * along * fade
     }
 
+    /// Fit a graded approach to the hillside while keeping the inner harbour low.
+    pub(crate) fn grade_coast_road(&mut self, ground: impl Fn(Pt) -> f64) {
+        let (route, _) = self.coast_line(72.0);
+        let mut line = vec![route[0]];
+        for pair in route.windows(2) {
+            let steps = (pair[0].dist(pair[1]) / 5.0).ceil() as usize;
+            line.extend((1..=steps).map(|i| pair[0].lerp(pair[1], i as f64 / steps as f64)));
+        }
+        let natural: Vec<_> = line.iter().copied().map(ground).collect();
+        let mut bed = natural.clone();
+        let mut fill = natural.clone();
+        let limit = |i: usize, j: usize, bed: &mut [f64], fill: &mut [f64]| {
+            let rise = MAX_COAST_GRADE * line[i].dist(line[j]);
+            bed[i] = bed[i].min(bed[j] + rise);
+            fill[i] = fill[i].max(fill[j] - rise);
+        };
+        for i in 1..line.len() {
+            limit(i, i - 1, &mut bed, &mut fill);
+        }
+        for i in (0..line.len() - 1).rev() {
+            limit(i, i + 1, &mut bed, &mut fill);
+        }
+        for i in 0..line.len() {
+            // Favour fill over deep cuts so roads joining from the cliff top keep a gentle approach.
+            bed[i] += 0.75 * (fill[i] - bed[i]);
+            if (line[i].y - self.coves[0].c.y).abs() < 100.0 {
+                bed[i] = bed[i].min(natural[i]);
+            }
+        }
+        // Keep the inner harbour low and carry that constraint smoothly up both approaches.
+        for i in 1..line.len() {
+            bed[i] = bed[i].min(bed[i - 1] + MAX_COAST_GRADE * line[i].dist(line[i - 1]));
+        }
+        for i in (0..line.len() - 1).rev() {
+            bed[i] = bed[i].min(bed[i + 1] + MAX_COAST_GRADE * line[i].dist(line[i + 1]));
+        }
+        self.road_cuts = vec![
+            CutRow {
+                min_x: f64::INFINITY,
+                max_x: f64::NEG_INFINITY,
+                segments: Vec::new()
+            };
+            ((S + CUT_WIDTH) / CUT_BUCKET) as usize + 1
+        ];
+        for (i, pair) in line.windows(2).enumerate() {
+            let delta = pair[1] - pair[0];
+            let road = RoadCut {
+                start: pair[0],
+                delta,
+                length_sq: delta.dot(delta),
+                start_z: bed[i],
+                rise: bed[i + 1] - bed[i],
+                start_offset: bed[i] - natural[i],
+                end_offset: bed[i + 1] - natural[i + 1],
+            };
+            let lo = ((pair[0].y - CUT_WIDTH) / CUT_BUCKET) as usize;
+            let hi = ((pair[1].y + CUT_WIDTH) / CUT_BUCKET) as usize;
+            for bucket in &mut self.road_cuts[lo..=hi] {
+                bucket.min_x = bucket.min_x.min(pair[0].x.min(pair[1].x) - CUT_WIDTH);
+                bucket.max_x = bucket.max_x.max(pair[0].x.max(pair[1].x) + CUT_WIDTH);
+                bucket.segments.push(road.clone());
+            }
+        }
+    }
+
     /// Height of a point on the coast given the plain ground there.
     pub fn height(&self, plain: f64, x: f64, y: f64) -> f64 {
         let d = self.inland(x, y);
@@ -610,7 +694,38 @@ impl CoastField {
         let t = (d / w).clamp(0.0, 1.0);
         let sheer = 1.0 - (1.0 - t).powf(2.4);
         let s = sheer * (1.0 - mix) + smooth(0.0, 1.0, t) * mix;
-        top * s
+        let natural = top * s;
+        let Some(cuts) = self.road_cuts.get((y / CUT_BUCKET) as usize) else {
+            return natural;
+        };
+        if x < cuts.min_x || x > cuts.max_x {
+            return natural;
+        }
+        let mut nearest = CUT_WIDTH * CUT_WIDTH;
+        let mut offset_z = 0.0;
+        let mut bed_z = natural;
+        for cut in &cuts.segments {
+            if x < cut.start.x + cut.delta.x.min(0.0) - CUT_WIDTH
+                || x > cut.start.x + cut.delta.x.max(0.0) + CUT_WIDTH
+            {
+                continue;
+            }
+            let offset = pt(x, y) - cut.start;
+            let t = (offset.dot(cut.delta) / cut.length_sq).clamp(0.0, 1.0);
+            let side = offset - cut.delta * t;
+            let dist_sq = side.dot(side);
+            if dist_sq < nearest {
+                nearest = dist_sq;
+                bed_z = cut.start_z + cut.rise * t;
+                offset_z = cut.start_offset + (cut.end_offset - cut.start_offset) * t;
+            }
+        }
+        let bank_width = (12.0 + 3.0 * offset_z.abs()).clamp(24.0, CUT_WIDTH);
+        let weight = (1.0 - smooth(12.0, bank_width, nearest.sqrt())) * smooth(0.0, 20.0, d);
+        // Level the carriageway itself, then blend the cut or fill into the original hillside.
+        let distance = nearest.sqrt();
+        let roadway = 1.0 - smooth(8.0, 14.0, distance);
+        (natural + weight * (offset_z + roadway * (bed_z - natural - offset_z))).max(0.0)
     }
 
     /// x of the open coast at height y (the straight run and the small coves, not the harbour),
@@ -711,19 +826,6 @@ impl CoastField {
                     + 2.0 * src[i + 1].0
                     + src[i + 2].0)
                     / 9.0;
-            }
-        }
-        if self.inland_approach {
-            // Stay inland of every sampled headland. Start the turn before the cliff and
-            // ease back toward the sea on the other side. Road and keep-out rings share this line.
-            const EASTING_PER_METRE: f64 = 0.18;
-            for i in 1..xs.len() {
-                let (x, y) = xs[i - 1];
-                xs[i].0 = xs[i].0.min(x + EASTING_PER_METRE * (xs[i].1 - y));
-            }
-            for i in (0..xs.len() - 1).rev() {
-                let (x, y) = xs[i + 1];
-                xs[i].0 = xs[i].0.min(x + EASTING_PER_METRE * (y - xs[i].1));
             }
         }
         let line: Vec<Pt> = xs.into_iter().map(|(x, y)| pt(x, y)).collect();

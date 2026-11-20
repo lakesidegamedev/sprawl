@@ -1800,14 +1800,29 @@ fn coastal_arterial_approaches_do_not_climb_the_harbour_cliff() {
                     && road.points.len() > 200
             })
             .expect("coastal arterial");
+        let us_gen::RockCoast::Coast(coast) = town.terrain.rock_coast() else {
+            panic!("expected coastal terrain");
+        };
+        let lighthouse = coast.harbour().lighthouse;
+        let access = road
+            .points
+            .windows(2)
+            .map(|pair| seg_closest(lighthouse, pair[0], pair[1]))
+            .fold(f64::INFINITY, f64::min);
+        assert!(access < if seed == 5 { 10.0 } else { 125.0 });
         for pair in road.points.windows(2) {
-            let grade =
-                (town.height_at(pair[1]) - town.height_at(pair[0])).abs() / pair[0].dist(pair[1]);
-            assert!(
-                grade < 0.26,
-                "coast seed {seed}, grade {grade:.3} at {:?}",
-                pair[0]
-            );
+            let count = (pair[0].dist(pair[1]) / 4.0).ceil() as usize;
+            let mut previous = pair[0];
+            for i in 1..=count {
+                let point = pair[0].lerp(pair[1], i as f64 / count as f64);
+                let grade =
+                    (town.height_at(point) - town.height_at(previous)).abs() / point.dist(previous);
+                assert!(
+                    grade < 0.16,
+                    "coast seed {seed}, grade {grade:.3} at {point:?}"
+                );
+                previous = point;
+            }
         }
     }
 }

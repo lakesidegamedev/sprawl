@@ -359,7 +359,7 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
             terrain = terrain.with_rock(RockCoast::Mesa(field));
         }
         Preset::Coast => {
-            let field = CoastField::for_version(seed, st.version);
+            let field = CoastField::new(seed);
             extra.zones = vec![field.road_zone(72.0)];
             extra.wet = vec![field.road_zone(150.0)];
             extra.sea = Some(field.clone());
@@ -378,6 +378,13 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
         relief.as_ref(),
         &extra,
     );
+    // Survey the established route before siting buildings against its finished ground.
+    if st.version >= 4
+        && let Some(mut field) = extra.sea.clone()
+    {
+        field.grade_coast_road(|p| terrain.height_at(p));
+        terrain = terrain.with_rock(RockCoast::Coast(field));
+    }
     let mut drafts = built.drafts;
     let additions = built.additions;
 
