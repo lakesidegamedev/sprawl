@@ -436,11 +436,16 @@ pub struct CoastField {
     face: f64,
     pub coves: Vec<Cove>,
     pub stacks: Vec<Stack>,
+    inland_approach: bool,
     seed: u64,
 }
 
 impl CoastField {
     pub fn new(seed: u64) -> CoastField {
+        Self::for_version(seed, crate::GEN_VERSION)
+    }
+
+    pub(crate) fn for_version(seed: u64, version: u32) -> CoastField {
         let mut rng = Rng::new(seed, 0xc0a5);
         let yh = HALL.y + rng.uniform(-300.0, 450.0);
         let rho_h = rng.uniform(380.0, 450.0);
@@ -476,6 +481,7 @@ impl CoastField {
             face: rng.uniform(0.0, TAU),
             coves: Vec::new(),
             stacks: Vec::new(),
+            inland_approach: version >= 4,
             seed,
         };
         // coves sit on the coast line; the harbour is a keyhole with a narrower mouth, the
@@ -705,6 +711,19 @@ impl CoastField {
                     + 2.0 * src[i + 1].0
                     + src[i + 2].0)
                     / 9.0;
+            }
+        }
+        if self.inland_approach {
+            // Stay inland of every sampled headland. Start the turn before the cliff and
+            // ease back toward the sea on the other side. Road and keep-out rings share this line.
+            const EASTING_PER_METRE: f64 = 0.18;
+            for i in 1..xs.len() {
+                let (x, y) = xs[i - 1];
+                xs[i].0 = xs[i].0.min(x + EASTING_PER_METRE * (xs[i].1 - y));
+            }
+            for i in (0..xs.len() - 1).rev() {
+                let (x, y) = xs[i + 1];
+                xs[i].0 = xs[i].0.min(x + EASTING_PER_METRE * (y - xs[i].1));
             }
         }
         let line: Vec<Pt> = xs.into_iter().map(|(x, y)| pt(x, y)).collect();

@@ -359,7 +359,7 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
             terrain = terrain.with_rock(RockCoast::Mesa(field));
         }
         Preset::Coast => {
-            let field = CoastField::new(seed);
+            let field = CoastField::for_version(seed, st.version);
             extra.zones = vec![field.road_zone(72.0)];
             extra.wet = vec![field.road_zone(150.0)];
             extra.sea = Some(field.clone());
