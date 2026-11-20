@@ -141,8 +141,8 @@ impl Preset {
 /// then rebuild their town with it. Version 2 adds railway stations, town centres that set how
 /// dense each lot is, and keeps lots out of parks and street ends off the railway. Version 3
 /// adds roundabouts, highway ramps, through collectors, fewer dead ends and grid streets that
-/// bend with the ground.
-pub const GEN_VERSION: u32 = 3;
+/// bend with the ground. Version 4 grades the waterfront road into steep headlands.
+pub const GEN_VERSION: u32 = 4;
 
 /// Knobs of the generator. `generate` uses the tuned values of each preset; the realism tuner
 /// searches over these.

@@ -66,20 +66,25 @@ within 240 xcrun simctl io "$udid" screenshot "$out/$kind-4-map-selector.png"
 xcrun simctl terminate "$udid" "$bundle" || true
 sleep 2
 
-# Use street zoom on iPhone and an overview on iPad during a simulated storm.
-step "launch town"
-storm_view=storm
-if [[ "$kind" == iphone ]]; then storm_view=storm:70; fi
-SIMCTL_CHILD_URBAN_SPRAWL_SMOKE=600 SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_DAYS=900 \
-  SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_PRESET=coast SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_SEED=4 \
-  SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_UI="$storm_view,clean" within 240 xcrun simctl launch "$udid" "$bundle"
-sleep 20
-running || fail "app stopped while building the town"
-step "screenshot town"
-within 240 xcrun simctl io "$udid" screenshot "$out/$kind-2-town.png"
-show_log
-xcrun simctl terminate "$udid" "$bundle" || true
-sleep 2
+# Compare the Detailed storm at town scale on both devices and inspect phone materials up close.
+storm_shot() {
+  local view="$1" file="$2"
+  step "launch coastal storm with Detailed atmosphere and Balanced resolution ($view)"
+  SIMCTL_CHILD_URBAN_SPRAWL_SMOKE=600 SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_DAYS=900 \
+    SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_PRESET=coast SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_SEED=4 \
+    SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_GFX=detailed \
+    SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_UI="$view,clean" within 240 xcrun simctl launch "$udid" "$bundle"
+  sleep 20
+  running || fail "app stopped while building the town"
+  within 240 xcrun simctl io "$udid" screenshot "$out/$file"
+  show_log
+  xcrun simctl terminate "$udid" "$bundle" || true
+  sleep 2
+}
+storm_shot storm "$kind-2-town.png"
+if [[ "$kind" == iphone ]]; then
+  storm_shot storm:70 "$kind-5-close.png"
+fi
 
 step "launch town with budget"
 SIMCTL_CHILD_URBAN_SPRAWL_SMOKE=600 SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_DAYS=370 \

@@ -1484,7 +1484,12 @@ fn version_three_towns_of_the_five_old_styles_are_unchanged() {
         (Preset::LakeTown, 4, 0x5b9ae8b9ca1e764d),
     ];
     for (p, s, fp) in known {
-        assert_eq!(generate(p, s).fingerprint(), fp, "{} seed {s}", p.name());
+        assert_eq!(
+            us_gen::generate_version(p, s, 3).fingerprint(),
+            fp,
+            "{} seed {s}",
+            p.name()
+        );
     }
 }
 
@@ -1772,6 +1777,56 @@ fn red_rock_roads_end_at_the_rock_on_a_circle_or_a_short_link_not_a_ring() {
                 "seed {seed}: a ring road round a {:?}",
                 f.kind
             );
+        }
+    }
+}
+
+#[test]
+fn coastal_arterial_approaches_do_not_climb_the_harbour_cliff() {
+    // Fingerprint from the shipped v3 map, which older coastal saves regenerate.
+    assert_eq!(
+        us_gen::generate_version(Preset::Coast, 5, 3).fingerprint(),
+        0x14b5_754d_74cb_a974
+    );
+    for seed in [4, 5] {
+        let town = generate(Preset::Coast, seed);
+        let road = town
+            .roads
+            .iter()
+            .find(|road| {
+                road.class == RoadClass::Arterial
+                    && road.points.first().unwrap().y < 100.0
+                    && road.points.last().unwrap().y > 3900.0
+                    && road.points.len() > 200
+            })
+            .expect("coastal arterial");
+        let us_gen::RockCoast::Coast(coast) = town.terrain.rock_coast() else {
+            panic!("expected coastal terrain");
+        };
+        let lighthouse = coast.harbour().lighthouse;
+        let access = road
+            .points
+            .windows(2)
+            .map(|pair| seg_closest(lighthouse, pair[0], pair[1]))
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            access >= 22.2,
+            "the lighthouse foundation overlaps the arterial or verge"
+        );
+        assert!(access < if seed == 5 { 30.0 } else { 125.0 });
+        for pair in road.points.windows(2) {
+            let count = (pair[0].dist(pair[1]) / 4.0).ceil() as usize;
+            let mut previous = pair[0];
+            for i in 1..=count {
+                let point = pair[0].lerp(pair[1], i as f64 / count as f64);
+                let grade =
+                    (town.height_at(point) - town.height_at(previous)).abs() / point.dist(previous);
+                assert!(
+                    grade < 0.16,
+                    "coast seed {seed}, grade {grade:.3} at {point:?}"
+                );
+                previous = point;
+            }
         }
     }
 }

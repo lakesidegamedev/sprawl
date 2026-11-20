@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Tall buildings just outside the camera view still cast their shadows into town. Rounded junction corners follow the straight part of each road before it bends.
+- In newly generated coastal towns the waterfront road crosses headlands on graded cuts and embankments, keeping the harbour connected. Existing saves keep their original roads.
+- Phones and tablets can opt into detailed atmosphere and surfaces. Balanced resolution now works with Detailed, drawing the world at 80% of screen width and height while keeping menus and text at native resolution.
+
 ## 1.5.0 (2026-11-19)
 
 <!-- Release coverage starts after 1.4.3 (1fd1e63) and includes the unreleased building work in d6fa8f0. -->

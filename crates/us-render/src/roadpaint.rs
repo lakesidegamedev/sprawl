@@ -604,7 +604,7 @@ fn pad_of(n: &Node, fillets: bool) -> Pad {
         let mut rad = (0.85 * a.hw.max(b.hw) + 1.0).min(16.0 * libm::tan(half));
         let mut t = rad / libm::tan(half);
         // keep the fillet inside what the arms have room for
-        let room = (0.6 * a.avail - s).min(0.6 * b.avail - u);
+        let room = ((0.6 * a.avail).min(a.straight) - s).min((0.6 * b.avail).min(b.straight) - u);
         if t > room {
             t = room;
             rad = t * libm::tan(half);
@@ -1109,6 +1109,25 @@ mod tests {
         for (i, a) in nodes.iter().enumerate() {
             for b in &nodes[i + 1..] {
                 assert!(a.p.dist(b.p) > 4.0, "two junctions on one spot");
+            }
+        }
+    }
+
+    #[test]
+    fn pavement_stops_at_the_first_bend_of_a_generated_approach() {
+        let town = generate(Preset::Grid, 1);
+        let roads = draws(&town);
+        let all: Vec<_> = roads
+            .iter()
+            .filter(|road| road.class != RoadClass::Rail)
+            .collect();
+        for node in find_nodes(&all, all.len()) {
+            for (cut, arm) in pad_of(&node, true).cut.iter().zip(&node.arms) {
+                assert!(
+                    *cut <= arm.straight + 1e-6,
+                    "pavement extends {cut:.2} m along a {:.2} m straight approach",
+                    arm.straight
+                );
             }
         }
     }

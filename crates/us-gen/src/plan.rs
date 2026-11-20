@@ -378,6 +378,13 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
         relief.as_ref(),
         &extra,
     );
+    // Survey the established route before siting buildings against its finished ground.
+    if st.version >= 4
+        && let Some(mut field) = extra.sea.clone()
+    {
+        field.grade_coast_road(|p| terrain.height_at(p));
+        terrain = terrain.with_rock(RockCoast::Coast(field));
+    }
     let mut drafts = built.drafts;
     let additions = built.additions;
 
