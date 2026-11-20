@@ -2,9 +2,21 @@
 
 ## Unreleased
 
-- Tall buildings just outside the camera view still cast their shadows into town. Rounded junction corners follow the straight part of each road before it bends.
-- In newly generated coastal towns the waterfront road crosses headlands on graded cuts and embankments, keeping the harbour connected. Existing saves keep their original roads.
-- Phones and tablets can opt into detailed atmosphere and surfaces. Balanced resolution now works with Detailed, drawing the world at 80% of screen width and height while keeping menus and text at native resolution.
+## 1.5.1 (2026-11-20)
+
+<!-- Release coverage: f895924..ea2e222. -->
+
+### For players
+
+- Buildings outside the camera view cast shadows into town. Junction paving follows roads as they bend.
+- Newly generated coastal towns have gentler waterfront roads through headlands, with room around the lighthouse. Existing saves keep their original terrain and roads.
+- Phones and tablets can enable Detailed atmosphere and surfaces. Balanced resolution now works with Detailed while keeping the interface sharp.
+
+### For developers
+
+- Extend shadow-map depth for offscreen casters without lowering ground resolution. Limit rounded junction pads to straight approach lengths.
+- Generator version 4 grades coastal roads and preserves version 3 maps for existing saves. Lighthouse placement clears the road and verge.
+- Exercise Detailed storm rendering at town scale on iPhone and iPad simulators, plus a close phone view. Physical-device frame rate, thermal and battery costs remain unmeasured. (#67)
 
 ## 1.5.0 (2026-11-19)
 
