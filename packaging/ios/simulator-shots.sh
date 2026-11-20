@@ -67,11 +67,12 @@ xcrun simctl terminate "$udid" "$bundle" || true
 sleep 2
 
 # Use street zoom on iPhone and an overview on iPad during a simulated storm.
-step "launch town"
+step "launch coastal storm with Detailed atmosphere and Balanced resolution"
 storm_view=storm
 if [[ "$kind" == iphone ]]; then storm_view=storm:70; fi
 SIMCTL_CHILD_URBAN_SPRAWL_SMOKE=600 SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_DAYS=900 \
   SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_PRESET=coast SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_SEED=4 \
+  SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_GFX=detailed \
   SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_UI="$storm_view,clean" within 240 xcrun simctl launch "$udid" "$bundle"
 sleep 20
 running || fail "app stopped while building the town"
