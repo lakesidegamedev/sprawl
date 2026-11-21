@@ -45,6 +45,30 @@ pub fn class_node_delay(c: RoadClass) -> f64 {
     }
 }
 
+fn approach_cost(
+    class: RoadClass,
+    length: f64,
+    arms: impl ExactSizeIterator<Item = RoadClass>,
+) -> (f64, f64) {
+    let count = arms.len();
+    let travel = length / class_speed(class);
+    let cap = class_capacity(class);
+    if !us_gen::signalized_junction(arms) {
+        return (travel + class_node_delay(class), cap);
+    }
+    let cycle = count as f64 * us_gen::SIGNAL_APPROACH_SECONDS;
+    let green = us_gen::SIGNAL_GREEN_SECONDS;
+    let red = cycle - green;
+    // For uniformly arriving cars, only arrivals during red wait.
+    let delay = red * red / (2.0 * cycle);
+    let lanes = if class == RoadClass::Arterial {
+        2.0
+    } else {
+        1.0
+    };
+    (travel + delay, cap.min(1800.0 * lanes * green / cycle))
+}
+
 /// One direction of a street.
 #[derive(Clone, Copy, Debug)]
 pub struct Arc {
@@ -71,6 +95,7 @@ pub struct Network {
     /// CSR of incoming arcs, used by dispatch to find routes toward an incident.
     pub in_off: Vec<u32>,
     pub incoming: Vec<u32>,
+    junction_streets: Vec<Vec<usize>>,
 }
 
 const CELL: f64 = 200.0;
@@ -83,26 +108,34 @@ impl Network {
     }
 
     pub fn from_streets(streets: StreetGraph) -> Network {
+        let mut junction_streets = vec![Vec::new(); streets.nodes.len()];
+        for (index, edge) in streets.edges.iter().enumerate() {
+            for node in [edge.a, edge.b] {
+                junction_streets[node as usize].push(index);
+            }
+        }
         let mut arcs = Vec::with_capacity(streets.edges.len() * 2);
         for (i, e) in streets.edges.iter().enumerate() {
-            let t0 = e.len / class_speed(e.class) + class_node_delay(e.class);
-            let cap = class_capacity(e.class);
-            arcs.push(Arc {
-                from: e.a,
-                to: e.b,
-                street: i as u32,
-                t0,
-                cap,
-                enabled: e.travel.allows_forward(),
-            });
-            arcs.push(Arc {
-                from: e.b,
-                to: e.a,
-                street: i as u32,
-                t0,
-                cap,
-                enabled: e.travel.reversed().allows_forward(),
-            });
+            for (from, to, enabled) in [
+                (e.a, e.b, e.travel.allows_forward()),
+                (e.b, e.a, e.travel.reversed().allows_forward()),
+            ] {
+                let (t0, cap) = approach_cost(
+                    e.class,
+                    e.len,
+                    junction_streets[to as usize]
+                        .iter()
+                        .map(|&street| streets.edges[street].class),
+                );
+                arcs.push(Arc {
+                    from,
+                    to,
+                    street: i as u32,
+                    t0,
+                    cap,
+                    enabled,
+                });
+            }
         }
         let adjacency = |node: fn(&Arc) -> u32| {
             let mut off = vec![0u32; streets.nodes.len() + 1];
@@ -130,7 +163,28 @@ impl Network {
             out,
             in_off,
             incoming,
+            junction_streets,
         }
+    }
+
+    /// Travel time and capacity if the arc's street were widened to this class.
+    pub fn widened_cost(&self, arc: usize, class: RoadClass) -> (f64, f64) {
+        let arc = self.arcs[arc];
+        let widened = arc.street as usize;
+        let length = self.streets.edges[widened].len;
+        approach_cost(
+            class,
+            length,
+            self.junction_streets[arc.to as usize]
+                .iter()
+                .map(|&street| {
+                    if street == widened {
+                        class
+                    } else {
+                        self.streets.edges[street].class
+                    }
+                }),
+        )
     }
 
     pub fn n_nodes(&self) -> usize {
@@ -205,6 +259,32 @@ impl NodeGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signal_delay_and_capacity_apply_only_to_arriving_arcs() {
+        let east_west = [us_gen::pt(-100., 0.), us_gen::pt(100., 0.)];
+        let north_south = [us_gen::pt(0., -100.), us_gen::pt(0., 100.)];
+        let graph = us_metrics::roads_graph(
+            [
+                (RoadClass::Arterial, east_west.as_slice()),
+                (RoadClass::Local, north_south.as_slice()),
+            ]
+            .into_iter(),
+        );
+        let net = Network::from_streets(graph.contract());
+        let centre = us_gen::pt(0., 0.);
+        assert_eq!(net.arcs.len(), 8);
+        for (index, incoming) in net
+            .arcs
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| net.streets.nodes[a.to as usize] == centre)
+        {
+            let outgoing = net.arcs[index ^ 1];
+            assert!(incoming.cap < outgoing.cap);
+            assert!(incoming.t0 > outgoing.t0);
+        }
+    }
 
     #[test]
     fn generated_slip_lanes_disable_the_wrong_way_arc() {

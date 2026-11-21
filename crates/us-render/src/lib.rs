@@ -23,6 +23,7 @@ pub mod fleet;
 pub mod ground;
 pub mod harbour;
 pub mod instances;
+mod junction_traffic;
 pub mod kit;
 mod kit_misc;
 pub mod kit_more;

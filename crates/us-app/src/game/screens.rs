@@ -671,6 +671,8 @@ impl Game {
         u.budget_open = false;
         u.loans_open = false;
         u.build_open = false;
+        u.road = None;
+        u.road_pts.clear();
         u.stats_open = false;
         u.news_open = false;
         u.rivals_open = false;

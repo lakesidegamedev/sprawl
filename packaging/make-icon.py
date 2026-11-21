@@ -3,9 +3,7 @@ channel, so it is valid for the App Store). Standard library only.
 
     python3 make-icon.py <out.png> [size]
 
-The PNGs in `icon/` are drawn from `icon/draw-logo.py`:
-    python3 draw-logo.py icon-square.svg --square
-    rsvg-convert -w 1024 -b '#13212F' icon-square.svg | magick - -alpha off icon-1024.png
+Refresh all artwork by running python3 packaging/icon/draw-logo.py.
 """
 import pathlib
 import shutil

@@ -226,6 +226,10 @@ impl Ground {
         }
     }
 
+    pub(crate) fn land(&self) -> Option<&Land> {
+        self.land.as_ref()
+    }
+
     /// True when the point is in a river or lake (always false on level land).
     pub fn water_at(&self, p: Pt) -> bool {
         self.land.as_ref().is_some_and(|l| l.water_at(p).is_some())

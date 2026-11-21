@@ -1244,11 +1244,11 @@ impl LiveScene {
                     .enumerate()
                     .filter(|(i, r)| r.addition != group && sim.road_visible(*i))
                     .filter(|(_, r)| {
-                        r.points.iter().any(|p| {
-                            p.x > lo.x - 30.0
-                                && p.x < hi.x + 30.0
-                                && p.y > lo.y - 30.0
-                                && p.y < hi.y + 30.0
+                        r.points.windows(2).any(|pair| {
+                            pair[0].x.max(pair[1].x) > lo.x - 30.0
+                                && pair[0].x.min(pair[1].x) < hi.x + 30.0
+                                && pair[0].y.max(pair[1].y) > lo.y - 30.0
+                                && pair[0].y.min(pair[1].y) < hi.y + 30.0
                         })
                     })
                     .map(|(i, r)| RoadDraw {

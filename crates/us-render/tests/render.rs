@@ -98,7 +98,7 @@ fn overhead_billows_travel_across_the_map_under_constant_cover() {
         ..WeatherLook::default()
     });
     let before = renderer.render_to_rgba(&scene, &camera, &style, SIZE as u32, SIZE as u32);
-    scene.set_time(4.0);
+    scene.weather.drift = [31.0, 11.0];
     let after = renderer.render_to_rgba(&scene, &camera, &style, SIZE as u32, SIZE as u32);
     let error = |dx: usize, dy: usize| -> u32 {
         (28..100)
@@ -469,7 +469,7 @@ fn storm_flash_is_local_and_tilt_focus_keeps_the_centre_sharp() {
 }
 
 #[test]
-fn street_zoom_clears_the_cloud_deck_without_removing_fog() {
+fn street_zoom_clears_fog_and_clouds_and_region_zoom_shows_clouds() {
     let Some(mut renderer) = renderer() else {
         return;
     };
@@ -498,7 +498,7 @@ fn street_zoom_clears_the_cloud_deck_without_removing_fog() {
     };
     let close = renderer.render_to_rgba(&scene, &camera, &style, 96, 80);
     let wide = Camera {
-        distance: 500.0,
+        distance: 3800.0,
         ..camera
     };
     let far = renderer.render_to_rgba(&scene, &wide, &style, 96, 80);
@@ -520,12 +520,5 @@ fn street_zoom_clears_the_cloud_deck_without_removing_fog() {
     let dry = renderer.render_to_rgba(&street, &close_to_ground, &style, 96, 80);
     street.weather.ground_fog = 1.0;
     let fog = renderer.render_to_rgba(&street, &close_to_ground, &style, 96, 80);
-    assert!(
-        dry.rgba
-            .chunks_exact(4)
-            .zip(fog.rgba.chunks_exact(4))
-            .filter(|(a, b)| a[2].abs_diff(b[2]) > 8)
-            .count()
-            > 500
-    );
+    assert_eq!(dry.rgba, fog.rgba);
 }

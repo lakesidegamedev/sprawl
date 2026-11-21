@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Crossings keep their paving, lane breaks and curb cuts when both roads have a vertex at the join. Major intersections use cycling signals. Cars stop for red, follow a continuous path through the junction on green, and take turns with conflicting approaches. Traffic assignment accounts for red lights and reduced throughput.
+
+- Roads snap to nearby open streets and offer a switchable 45° angle guide. A connected street carries traffic once construction finishes.
+- On iPhone and iPad, choosing a road replaces the build catalog with a compact toolbar for checking the price, undoing points and starting construction.
+- Automatic growth favors filling blocks and connecting local streets, so development spreads between major roads.
+- Cloud cover stays visible from regional heights. Close views fade out mist and clouds, and cloud shadows drift gently across the ground.
+- A new hand-drawn 32 × 32 pixel skyline appears on the app icon.
+
 ## 1.5.1 (2026-11-20)
 
 <!-- Release coverage: f895924..ea2e222. -->

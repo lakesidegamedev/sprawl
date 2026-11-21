@@ -1712,7 +1712,7 @@ impl State {
             if g.placed && !g.sim.is_game_over() {
                 if compact && g.ui.tool.is_some() {
                     g.civic_placement_ui(ctx);
-                } else if compact && g.sel.is_none() {
+                } else if compact && g.sel.is_none() && g.road_active().is_none() {
                     g.growth_banner_ui(ctx);
                     g.goals_ui(ctx);
                 }

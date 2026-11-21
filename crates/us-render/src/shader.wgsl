@@ -301,7 +301,7 @@ fn cloud_thickness() -> f32 {
 // Cover opens and closes gaps inside a deck at a fixed elevation. The wind
 // carries the entire form while height-dependent shear pulls the crowns ahead.
 fn cloud_drift() -> vec2<f32> {
-    return g.screen.w * vec2<f32>(7.8, 2.8) + g.weather_flow.xy;
+    return g.screen.w * vec2<f32>(1.4, 0.5) + g.weather_flow.xy;
 }
 
 fn cloud_field(xy: vec2<f32>, layer: f32) -> f32 {
@@ -359,13 +359,13 @@ fn cloud_sunlight(world: vec3<f32>) -> f32 {
         return 1.0;
     }
     let level = cloud_base() + cloud_thickness() * 0.43;
-    let distance = max(0.0, level - world.z) / max(0.19, g.sun.z);
-    let field = cloud_field(world.xy + g.sun.xy * distance, 0.43);
+    // Keep the shadow tied to the cloud deck even when the game clock fast-forwards.
+    let field = cloud_field(world.xy, 0.43);
     let threshold = cloud_threshold();
     let shadow = smoothstep(threshold - 0.08, threshold + 0.23, field);
     let below = 1.0 - smoothstep(level - 10.0, level + 32.0, world.z);
     let cover = smoothstep(0.12, 0.36, g.shade.w);
-    return 1.0 - shadow * below * cover * smoothstep(0.035, 0.21, g.sun.z) * 0.18;
+    return 1.0 - shadow * below * cover * smoothstep(0.035, 0.21, g.sun.z) * 0.08;
 }
 
 // Natural ground (grass, fields, sand, dirt, snow), not roads, pavements, markings or water.
@@ -1951,7 +1951,7 @@ fn fs_precipitation(p: Precipitation) -> FOut {
 fn low_fog(eye: vec3<f32>, dir: vec3<f32>, limit: f32, coarse: bool) -> vec2<f32> {
     let depth = min(limit, mix(104.0, 180.0, g.fog.w));
     let ground = eye + dir * limit;
-    let drift = vec2<f32>(1.18, 0.49) * g.screen.w + g.weather_flow.xy * 0.54;
+    let drift = vec2<f32>(0.42, 0.18) * g.screen.w + g.weather_flow.xy * 0.4;
     let wind = clamp(g.wx.zw, vec2<f32>(-9.0), vec2<f32>(9.0));
     let count = select(select(8, 15, g.resolve.w > 0.5), 5, coarse);
     var start = depth;
@@ -2017,14 +2017,16 @@ fn cloud_volume(eye: vec3<f32>, dir: vec3<f32>, limit: f32, pixel: vec2<f32>, co
     let thickness = cloud_thickness();
     let top = base + thickness;
     var start = 0.0;
-    var end = min(limit, 2550.0);
+    var end = limit;
     if (abs(dir.z) > 0.001) {
         let a = (base - eye.z) / dir.z;
         let b = (top - eye.z) / dir.z;
         start = max(0.0, min(a, b));
-        end = min(end, max(a, b));
+        end = min(end, min(max(a, b), start + 2550.0));
     } else if (eye.z < base || eye.z > top) {
         return vec2<f32>(0.0);
+    } else {
+        end = min(end, 2550.0);
     }
     let span = end - start;
     if (span <= 0.0) {
@@ -2085,15 +2087,15 @@ fn atmosphere(pixel: vec2<f32>, depth: f32, coarse: bool) -> vec3<f32> {
     let ray_length = length(ray);
     let dir = ray / ray_length;
     let surface = depth <= 100000.0 && depth > g.eye.w;
-    let limit = select(4000.0, depth * ray_length, surface);
+    let limit = select(90000.0, depth * ray_length, surface);
     var fog = vec2<f32>(0.0);
-    if (g.fog.w > 0.005 && surface) {
-        fog = low_fog(g.eye.xyz, dir, limit, coarse);
+    let fog_view = smoothstep(14.0, 34.0, g.eye.w);
+    if (g.fog.w > 0.005 && surface && fog_view > 0.0) {
+        fog = low_fog(g.eye.xyz, dir, limit, coarse) * fog_view;
     }
     var cloud = vec2<f32>(0.0);
-    // For ground-facing rays, zoom through the deck while leaving low fog in place.
-    // Sky rays keep overhead clouds visible when the camera looks towards the horizon.
-    let cloud_view = select(1.0, smoothstep(9.0, 34.0, g.eye.w), surface);
+    // Leave the streets clear at inspection scale. Sky rays keep overhead clouds.
+    let cloud_view = select(1.0, smoothstep(26.0, 72.0, g.eye.w), surface);
     if (g.shade.w > 0.12 && cloud_view > 0.0) {
         cloud = cloud_volume(g.eye.xyz, dir, limit, pixel, coarse);
         if (surface && g.weather_flow.z > 0.02) {

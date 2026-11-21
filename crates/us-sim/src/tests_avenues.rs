@@ -163,3 +163,57 @@ fn unused_feature_changes_nothing() {
     assert_eq!(s.avenue_effect(s.hall), (0.0, 0.0));
     assert_eq!(s.avenues_built(), 0);
 }
+
+#[test]
+fn road_dragged_onto_wide_avenue_joins_the_routing_graph() {
+    let mut s = new_sim(Preset::Grid, 3);
+    s.hall = pt(3000.0, 3000.0);
+    s.lots.clear();
+    s.town.stations.clear();
+    s.town.water.clear();
+    let a = pt(1300.0, 1100.0);
+    let b = pt(1500.0, 1100.0);
+    let end = pt(1400.0, 1100.0);
+    let c = pt(1300.0, 1200.0);
+    let d = pt(1500.0, 1200.0);
+    let junction = pt(1400.0, 1200.0);
+    s.streets = [(a, b), (c, d)]
+        .into_iter()
+        .map(|(a, b)| streets::Street::open_connector(RoadClass::Arterial, a, b))
+        .collect();
+    s.runs = [(a, b), (c, d)]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (a, b))| RoadRun {
+            class: RoadClass::Arterial,
+            points: vec![a, b],
+            addition: None,
+            street: i as u32,
+        })
+        .collect();
+    let free = pt(1407.0, 1150.0);
+    assert_eq!(s.road_draft_point(&[end], free, false), free);
+    assert_eq!(s.road_draft_point(&[end], free, true), pt(1400.0, 1150.0));
+
+    let path = [pt(1400.0, 1114.0), pt(1400.0, 1186.0)];
+    assert_eq!(s.road_draft_point(&[end], path[1], true), junction);
+    let index = s.build_road(RoadClass::Collector, &path).unwrap();
+    let run = &s.road_runs()[index];
+    assert_eq!(run.points, [end, junction]);
+    assert!(s.road_runs()[0].points.contains(&end));
+    assert!(s.road_runs()[1].points.contains(&junction));
+    assert!(!s.road_open(index), "construction blocks traffic");
+    s.open_street(run.street as usize);
+    let graph = roadnet::RoadNet::build(
+        s.town(),
+        &s.road_runs()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| s.road_open(*i))
+            .map(|(_, r)| (r.class, r.points.clone()))
+            .collect::<Vec<_>>(),
+    );
+    let (start, _) = graph.attach(a).unwrap();
+    let (finish, _) = graph.attach(d).unwrap();
+    assert!((graph.distances(start, 500.0)[finish as usize] - 300.0).abs() < 1.0);
+}

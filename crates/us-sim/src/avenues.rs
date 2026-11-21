@@ -10,7 +10,7 @@ use crate::*;
 
 /// Sample spacing along a drawn road, metres.
 const STEP: f64 = 4.0;
-/// A control point this near an open road snaps onto it, metres.
+/// Reach beyond the edge of a road for a junction snap, metres.
 const SNAP_M: f64 = 10.0;
 const MIN_LEN: f64 = 40.0;
 const MIN_SEG: f64 = 12.0;
@@ -220,24 +220,74 @@ fn nearest_on(p: Pt, a: Pt, b: Pt) -> Pt {
 
 impl Sim {
     /// The open, drivable run segment nearest to `p` within `tol`: (run, segment, point on it).
-    fn snap_open_road(&self, p: Pt, tol: f64, allow_highway: bool) -> Option<(usize, usize, Pt)> {
+    fn snap_open_road(&self, p: Pt, tol: f64, from_edge: bool) -> Option<(usize, usize, Pt)> {
         let mut best: Option<(f64, usize, usize, Pt)> = None;
         for (r, run) in self.runs.iter().enumerate() {
-            if matches!(run.class, RoadClass::Rail | RoadClass::Alley)
-                || (!allow_highway && run.class == RoadClass::Highway)
-                || !self.road_open(r)
+            if matches!(
+                run.class,
+                RoadClass::Rail | RoadClass::Alley | RoadClass::Highway
+            ) || !self.road_open(r)
             {
                 continue;
             }
             for (s, w) in run.points.windows(2).enumerate() {
                 let q = nearest_on(p, w[0], w[1]);
                 let d = q.dist(p);
-                if d <= tol && best.is_none_or(|b| d < b.0) {
+                let reach = tol
+                    + if from_edge {
+                        run.class.half_width()
+                    } else {
+                        0.0
+                    };
+                if d <= reach && best.is_none_or(|b| d < b.0) {
+                    let q = if q.dist(w[0]) <= 0.5 {
+                        w[0]
+                    } else if q.dist(w[1]) <= 0.5 {
+                        w[1]
+                    } else {
+                        q
+                    };
                     best = Some((d, r, s, q));
                 }
             }
         }
         best.map(|b| (b.1, b.2, b.3))
+    }
+
+    /// Resolve the next point in a road draft. A junction takes priority over the angle guide.
+    /// Angles are measured from the road at the start, then from the previous leg.
+    pub fn road_draft_point(&self, path: &[Pt], p: Pt, angle_snap: bool) -> Pt {
+        if let Some((_, _, q)) = self.snap_open_road(p, SNAP_M, true) {
+            return q;
+        }
+        let Some(&last) = path.last().filter(|_| angle_snap) else {
+            return p;
+        };
+        let leg = p - last;
+        let guide = if path.len() > 1 {
+            last - path[path.len() - 2]
+        } else if let Some((r, s, _)) = self.snap_open_road(last, 0.5, false) {
+            let points = &self.runs[r].points;
+            points[s + 1] - points[s]
+        } else {
+            pt(1.0, 0.0)
+        };
+        let bearing = libm::atan2(guide.y, guide.x);
+        let step = std::f64::consts::FRAC_PI_4;
+        let angle = libm::atan2(leg.y, leg.x) - bearing;
+        let snapped = libm::round(angle / step) * step;
+        if (angle - snapped).abs() > 10_f64.to_radians() {
+            return p;
+        }
+        let direction = pt(libm::cos(bearing + snapped), libm::sin(bearing + snapped));
+        let aimed = last + direction * leg.dot(direction);
+        self.snap_open_road(aimed, SNAP_M, true)
+            .map_or(aimed, |(_, _, junction)| junction)
+    }
+
+    /// Whether a point can anchor the start of a new road.
+    pub fn road_can_start(&self, p: Pt) -> bool {
+        self.snap_open_road(p, SNAP_M, true).is_some()
     }
 
     /// Check a road drawn through `pts` (the first on an open road) without building it.
@@ -261,13 +311,13 @@ impl Sim {
                 return Err(RoadError::OutOfBounds { at: p });
             }
         }
-        let Some((_, _, start)) = self.snap_open_road(pts[0], SNAP_M, false) else {
+        let Some((_, _, start)) = self.snap_open_road(pts[0], SNAP_M, true) else {
             return Err(RoadError::StartNotOnRoad { at: pts[0] });
         };
         let mut path: Vec<Pt> = pts.to_vec();
         path[0] = start;
         let last = path.len() - 1;
-        if let Some((_, _, q)) = self.snap_open_road(path[last], SNAP_M, false) {
+        if let Some((_, _, q)) = self.snap_open_road(path[last], SNAP_M, true) {
             path[last] = q;
         }
         let hw = class.half_width();
@@ -356,7 +406,8 @@ impl Sim {
             let n = (w[0].dist(w[1]) / STEP).ceil().max(1.0) as usize;
             for k in 0..=n {
                 let p = w[0].lerp(w[1], k as f64 / n as f64);
-                let at_end = walked < 16.0 || total - walked < 16.0;
+                let along = walked + w[0].dist(p);
+                let at_end = along < 16.0 || total - along < 16.0;
                 let near_cross = crossings.iter().any(|c| c.dist(p) < 16.0);
                 let water = self.town.water.iter().any(|ring| point_in_ring(p, ring));
                 if water {
@@ -525,11 +576,11 @@ impl Sim {
                 }
             }
         }
-        // the ends: snapped onto roads already, add their vertices too
-        for (idx, p) in [(0usize, path[0]), (path.len() - 2, *path.last().unwrap())] {
-            if let Some((r, s, q)) = self.snap_open_road(p, 1.0, false) {
+        // A snapped control point lies on a road even if floating point error
+        // put the line intersection just past the end of an approach.
+        for &p in path {
+            if let Some((r, s, q)) = self.snap_open_road(p, 0.5, false) {
                 hits.push((r, s, q));
-                along.push((idx, path[idx].dist(q), q));
             }
         }
         // insert from the far end of each run and segment, so earlier indexes stay valid
