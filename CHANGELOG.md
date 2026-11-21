@@ -2,13 +2,26 @@
 
 ## Unreleased
 
-- Crossings keep their paving, lane breaks and curb cuts when both roads have a vertex at the join. Major intersections use cycling signals. Cars stop for red, follow a continuous path through the junction on green, and take turns with conflicting approaches. Traffic assignment accounts for red lights and reduced throughput.
+## 1.5.2 (2026-11-21)
 
-- Roads snap to nearby open streets and offer a switchable 45° angle guide. A connected street carries traffic once construction finishes.
-- On iPhone and iPad, choosing a road replaces the build catalog with a compact toolbar for checking the price, undoing points and starting construction.
-- Automatic growth favors filling blocks and connecting local streets, so development spreads between major roads.
-- Cloud cover stays visible from regional heights. Close views fade out mist and clouds, and cloud shadows drift gently across the ground.
-- A new hand-drawn 32 × 32 pixel skyline appears on the app icon.
+<!-- Release coverage: 0e9e82b..6af80f8. -->
+
+### For players
+
+- Roads snap to nearby open streets and offer an optional 45° angle guide.
+- Junctions keep their paving, curb cuts and lane markings where streets meet. At major intersections with room for signals, cars wait at red and take turns crossing or turning. Signal delays count toward congestion.
+- On iPhone and iPad, the shorter Build picker gives way to a compact toolbar after you select a road. Check the cost, undo a point or start construction with the map in view.
+- Automatic growth fills blocks and connects local streets between main roads.
+- Clouds are visible from farther out. Mist clears for close inspection, and cloud shadows drift gently across the map.
+- The app icon has a new hand-plotted 32 × 32 pixel skyline.
+
+### For developers
+
+- Use the same junction geometry for paving, markings, stop lines and protected approaches. Keep grade-separated roads apart and assign traffic to each road run in a contracted street.
+- Account for signal timing in directional capacity, route costs and road widening estimates.
+- Prefer connected local blocks when selecting the next street for automatic growth. Existing saves retain their roads and terrain.
+- Rebuild the packaged RGB icons, SVG marks and window RGBA icon from the 32 × 32 artwork.
+- Regressions cover edge snapping, routing across a new connector, a shared-vertex crossing, a red-to-green turn, a grade-separated junction and close and regional cloud rendering. The iOS simulator workflow captures the phone road controls. (#69)
 
 ## 1.5.1 (2026-11-20)
 
