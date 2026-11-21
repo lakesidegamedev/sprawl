@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 1.6.0 Preview 1 (2026-11-21)
+
+<!-- Release coverage starts at 92cbdff. -->
+
+### For players
+
+- Select a junction on the map to inspect its incoming streets. The inspector shows each approach's signal and the time until green. When a peak-hour estimate is available for that junction, it compares arrivals with capacity and flags likely queues.
+- Switch between the traffic map and the city view without closing the inspector.
+
+### For developers
+
+- Read live signal phases from the same clock and junction geometry used to animate vehicles. Show peak-hour estimates only when their recorded stop position matches the selected junction.
+- Desktop preview installers cover Windows x64, Linux x64 and universal macOS. The preview uses the existing save format.
+
 ## 1.5.2 (2026-11-21)
 
 <!-- Release coverage: 0e9e82b..6af80f8. -->

@@ -21,6 +21,7 @@ mod chrome;
 mod districts;
 mod goals;
 mod growth_banner;
+mod junctions;
 mod panels;
 mod screens;
 mod trams;
@@ -62,6 +63,7 @@ enum Screen {
 #[derive(Clone, Copy)]
 enum Sel {
     Lot(usize),
+    Junction(Pt),
     Hall,
 }
 
@@ -1282,6 +1284,7 @@ impl State {
                     let l = &g.sim.lots()[i];
                     (l.pos, l.radius as f32)
                 }
+                Sel::Junction(point) => (point, 10.0),
                 Sel::Hall => (g.sim.hall, g.town.hall_radius as f32 + 6.0),
             };
             let c = Vec3::new(
@@ -1719,7 +1722,16 @@ impl State {
             }
             g.legend_ui(ctx);
             // why panel
-            if let Some(sel) = g.sel {
+            if let Some(Sel::Junction(point)) = g.sel {
+                let modal = g.menu_open || g.election.is_some() || g.sim.is_game_over();
+                if !modal && compact && !g.any_sheet() {
+                    if panels::sheet(ctx, "Junction", |ui| g.junction_details(ui, point)) {
+                        g.sel = None;
+                    }
+                } else if !modal && !compact {
+                    g.inspector_ui(ui, Sel::Junction(point));
+                }
+            } else if let Some(sel) = g.sel {
                 let (title, status, built, reason) = match sel {
                     Sel::Hall => (
                         "Town hall".to_string(),
@@ -1732,6 +1744,7 @@ impl State {
                         let y = g.sim.why(i);
                         (y.title, y.status, y.built, y.reason)
                     }
+                    Sel::Junction(_) => unreachable!(),
                 };
                 let modal = g.menu_open || g.election.is_some() || g.sim.is_game_over();
                 if modal || (compact && g.any_sheet()) {
@@ -2196,6 +2209,16 @@ impl Game {
     }
 
     fn select_at(&mut self, p: Pt) {
+        let traffic = self.ui.view == panels::MapView::Traffic;
+        let radius = if traffic {
+            f64::from((self.cam.camera().distance * 0.026).clamp(13.0, 46.0))
+        } else {
+            11.0
+        };
+        if let Some(junction) = self.live.scene.junction_near(p, radius) {
+            self.sel = Some(Sel::Junction(junction));
+            return;
+        }
         if p.dist(self.sim.hall) < self.town.hall_radius + 10.0 {
             self.sel = Some(Sel::Hall);
             return;

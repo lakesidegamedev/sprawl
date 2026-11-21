@@ -578,18 +578,20 @@ impl Game {
 
     /// The inspector on the right: the selected building or the town hall, in sections.
     pub(super) fn inspector_ui(&mut self, ui: &mut Ui, sel: Sel) {
-        let (title, status, built, reason) = match sel {
-            Sel::Hall => (
+        let details = match sel {
+            Sel::Hall => Some((
                 "Town hall".to_string(),
                 "Your seat".to_string(),
                 None,
                 "You placed it at an old crossroads. The town grows outward from here.".to_string(),
-            ),
+            )),
             Sel::Lot(i) => {
                 let y = self.sim.why(i);
-                (y.title, y.status, y.built, y.reason)
+                Some((y.title, y.status, y.built, y.reason))
             }
+            Sel::Junction(_) => None,
         };
+        let title = details.as_ref().map_or("Junction", |(title, ..)| title);
         let mut open = true;
         let mut close = false;
         egui::Panel::right("inspector")
@@ -598,7 +600,7 @@ impl Game {
             .frame(theme::bar().inner_margin(egui::Margin::same(14)))
             .show_collapsible(ui, &mut open, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(heading(&title, 17.0));
+                    ui.label(heading(title, 17.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .add(
@@ -614,13 +616,20 @@ impl Game {
                         }
                     });
                 });
+                if let Sel::Junction(point) = sel {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.junction_details(ui, point));
+                    return;
+                }
+                let Some((_, status, built, reason)) = details.as_ref() else {
+                    return;
+                };
                 ui.label(
-                    RichText::new(sentence(&status))
+                    RichText::new(sentence(status))
                         .font(ui_font(12.5))
                         .color(ACCENT),
                 );
-                if let Some(b) = built {
-                    ui.label(RichText::new(sentence(&b)).font(ui_font(12.5)).color(MUTED));
+                if let Some(b) = built.as_deref() {
+                    ui.label(RichText::new(sentence(b)).font(ui_font(12.5)).color(MUTED));
                 }
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])

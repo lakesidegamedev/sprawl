@@ -56,6 +56,7 @@ pub mod woods;
 pub use calendar::{Calendar, DayPhase, Season};
 pub use camera::{Camera, View, pick_ground, pick_terrain, project, ray_ground};
 pub use civic::{ALL_CIVIC, CivicModel, build_civic};
+pub use junction_traffic::{JunctionApproach, JunctionReport, SignalAspect};
 pub use land::Land;
 pub use levels::{
     MAX_LEVEL, build_lot_level, build_lot_level_dense, build_lot_level_district,

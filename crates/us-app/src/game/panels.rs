@@ -2505,6 +2505,9 @@ impl Game {
                                 lab(ui, name, 10.0);
                             }
                         });
+                        if mv == MapView::Traffic {
+                            lab(ui, "Select a junction to inspect its approaches", 11.0);
+                        }
                         if let Some(note) = mv.note() {
                             lab_c(ui, note, 12.0, Color32::from_rgb(170, 176, 196));
                         }
