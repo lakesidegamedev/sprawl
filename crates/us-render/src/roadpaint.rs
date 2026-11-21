@@ -373,7 +373,7 @@ fn seg_cross(a: Pt, b: Pt, c: Pt, d: Pt) -> Option<Pt> {
     let qp = c - a;
     let t = qp.cross(s) / den;
     let u = qp.cross(r) / den;
-    ((0.02..0.98).contains(&t) && (0.02..0.98).contains(&u)).then(|| a + r * t)
+    ((-1e-8..=1.0 + 1e-8).contains(&t) && (-1e-8..=1.0 + 1e-8).contains(&u)).then(|| a + r * t)
 }
 
 /// Junctions of three or more roads that involve at least one of the first `n_mine` roads.
@@ -381,6 +381,9 @@ fn find_nodes(all: &[&RoadDraw], n_mine: usize) -> Vec<Node> {
     let grid = Grid::new(all);
     let mut raw: Vec<Pt> = Vec::new();
     for (i, r) in all.iter().enumerate() {
+        if r.works.is_some() {
+            continue;
+        }
         let closed = is_closed(r.points);
         let ends = [r.points[0], *r.points.last().unwrap()];
         if !closed {
@@ -388,7 +391,7 @@ fn find_nodes(all: &[&RoadDraw], n_mine: usize) -> Vec<Node> {
                 let mut hit = false;
                 for &(j, s) in grid.near(e) {
                     let j = j as usize;
-                    if j == i || (i >= n_mine && j >= n_mine) {
+                    if j == i || all[j].works.is_some() || (i >= n_mine && j >= n_mine) {
                         continue;
                     }
                     let w = &all[j].points[s as usize..s as usize + 2];
@@ -399,7 +402,7 @@ fn find_nodes(all: &[&RoadDraw], n_mine: usize) -> Vec<Node> {
                     } else {
                         ((e - w[0]).dot(ab) / l2).clamp(0.0, 1.0)
                     };
-                    if e.dist(w[0] + ab * t) < 1.6 {
+                    if e.dist(w[0] + ab * t) <= 0.5 {
                         hit = true;
                     }
                 }
@@ -414,7 +417,7 @@ fn find_nodes(all: &[&RoadDraw], n_mine: usize) -> Vec<Node> {
         for w in r.points.windows(2) {
             for (j, s) in grid.along(w[0], w[1]) {
                 let j = j as usize;
-                if j == i {
+                if j == i || all[j].works.is_some() {
                     continue;
                 }
                 let v = &all[j].points[s as usize..s as usize + 2];
@@ -449,7 +452,7 @@ fn find_nodes(all: &[&RoadDraw], n_mine: usize) -> Vec<Node> {
         for j in seen {
             let r = all[j];
             let (s0, d, _) = project(r.points, p);
-            if d > 3.0 {
+            if r.works.is_some() || d > 0.500_001 {
                 continue;
             }
             let total = len(r.points);
@@ -532,9 +535,9 @@ fn find_nodes(all: &[&RoadDraw], n_mine: usize) -> Vec<Node> {
         for a in &mut n.arms {
             let v = &stops[a.road];
             let next = if a.fwd {
-                v.iter().find(|&&s| s > a.s0 + 4.0).map(|s| s - a.s0)
+                v.iter().find(|&&s| s > a.s0 + 0.5).map(|s| s - a.s0)
             } else {
-                v.iter().rev().find(|&&s| s < a.s0 - 4.0).map(|s| a.s0 - s)
+                v.iter().rev().find(|&&s| s < a.s0 - 0.5).map(|s| a.s0 - s)
             };
             if let Some(d) = next {
                 a.avail = a.avail.min(d);
@@ -666,29 +669,124 @@ fn quad(g: &mut Ground, c: Pt, along: Pt, across: Pt, la: f64, lc: f64, z: f32, 
     g.polygon(&[c - a - b, c + a - b, c + a + b, c - a + b], z, col);
 }
 
-fn near_water(g: &Ground, p: Pt, r: f64) -> bool {
+fn near_water(water_at: impl Fn(Pt) -> bool, p: Pt, r: f64) -> bool {
     [(0.0, 0.0), (r, 0.0), (-r, 0.0), (0.0, r), (0.0, -r)]
         .iter()
-        .any(|(dx, dy)| g.water_at(pt(p.x + dx, p.y + dy)))
+        .any(|(dx, dy)| water_at(pt(p.x + dx, p.y + dy)))
+}
+
+fn junction_pad(n: &Node) -> Option<Pad> {
+    [true, false]
+        .into_iter()
+        .map(|fillets| pad_of(n, fillets))
+        .find(|pad| crate::ground::signed_area(&pad.ring) > 0.0)
+}
+
+fn has_signals(arms: &[Arm]) -> bool {
+    us_gen::signalized_junction(arms.iter().map(|arm| arm.class))
+}
+
+fn stop_line(cut: f64) -> f64 {
+    cut + 5.5
+}
+
+fn has_room_for_control(node: &Node, pad: &Pad) -> bool {
+    if node
+        .arms
+        .iter()
+        .any(|a| a.ring || a.class == RoadClass::Highway)
+    {
+        return false;
+    }
+    let mut count = 0;
+    for (arm, &cut) in node.arms.iter().zip(&pad.cut) {
+        if arm.class == RoadClass::Alley {
+            continue;
+        }
+        if arm.avail < 2.0 * car_stop(cut) + 4.0 {
+            return false;
+        }
+        count += 1;
+    }
+    count >= 3
+}
+
+fn car_stop(cut: f64) -> f64 {
+    stop_line(cut) + 2.6
+}
+
+pub(crate) struct TrafficArm {
+    pub road: usize,
+    pub s: f32,
+    pub outward_forward: bool,
+    pub stop: f32,
+}
+
+pub(crate) struct TrafficJunction {
+    pub arms: Vec<TrafficArm>,
+    pub signalized: bool,
+}
+
+/// Use the same arms and paved junction limits for vehicles and road markings.
+pub(crate) fn traffic_junctions(
+    roads: &[RoadDraw],
+    paths: &[crate::instances::Path],
+    land: &crate::Land,
+) -> Vec<TrafficJunction> {
+    let (indices, draws): (Vec<_>, Vec<_>) = roads
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            r.works.is_none()
+                && r.class != RoadClass::Rail
+                && r.points.len() >= 2
+                && r.points.iter().any(|p| p.x >= -200.0 && p.y >= -200.0)
+        })
+        .unzip();
+    find_nodes(&draws, draws.len())
+        .into_iter()
+        .filter_map(|node| {
+            let pad = junction_pad(&node)?;
+            if !has_room_for_control(&node, &pad)
+                || near_water(|p| land.water_at(p).is_some(), node.p, 35.0)
+            {
+                return None;
+            }
+            let mut arms = Vec::new();
+            let ground = land.height_pt(node.p);
+            for (k, a) in node.arms.iter().enumerate() {
+                if a.class == RoadClass::Alley {
+                    continue;
+                }
+                let road = indices[a.road];
+                let path = &paths[road];
+                if path.one_way.is_some() || (path.z(a.s0 as f32) - ground).abs() > 2.5 {
+                    return None;
+                }
+                arms.push(TrafficArm {
+                    road,
+                    s: a.s0 as f32,
+                    outward_forward: a.fwd,
+                    stop: car_stop(pad.cut[k]) as f32,
+                });
+            }
+            Some(TrafficJunction {
+                arms,
+                signalized: has_signals(&node.arms),
+            })
+        })
+        .collect()
 }
 
 /// Junctions: kerb corners, the pad that hides lines across them, zebra crossings.
 fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
-    if n.arms.iter().any(|a| all[a.road].works.is_some()) || near_water(g, n.p, 35.0) {
+    if n.arms.iter().any(|a| all[a.road].works.is_some())
+        || near_water(|p| g.water_at(p), n.p, 35.0)
+    {
         return;
     }
-    let mut pad = pad_of(n, true);
-    if crate::ground::signed_area(&pad.ring) <= 0.0 {
-        // crowded arms: square corners rather than a twisted shape
-        pad = pad_of(n, false);
-        if crate::ground::signed_area(&pad.ring) <= 0.0 {
-            return;
-        }
-    }
-    let big = n
-        .arms
-        .iter()
-        .any(|a| matches!(a.class, RoadClass::Highway | RoadClass::Arterial));
+    let Some(pad) = junction_pad(n) else { return };
+    let signalized = has_signals(&n.arms) && has_room_for_control(n, &pad);
     let highway = n.arms.iter().any(|a| a.class == RoadClass::Highway);
     g.polygon(&Ground::grow(&pad.ring, 0.5), z::CORNER_EDGE, EDGE);
     if highway {
@@ -715,6 +813,25 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
         if !eligible(a) {
             continue;
         }
+        let across = pt(-a.dir.y, a.dir.x);
+        let stop = stop_line(pad.cut[k]);
+        if signalized {
+            let p = at(all[a.road].points, a.s0 + if a.fwd { stop } else { -stop });
+            let forward = tangent_at(all[a.road].points, a.s0 + if a.fwd { stop } else { -stop });
+            let out = if a.fwd { forward } else { forward * -1.0 };
+            let side = pt(-out.y, out.x);
+            let half = a.hw * 0.5;
+            quad(
+                g,
+                p + side * half,
+                out,
+                side,
+                0.22,
+                half - 0.6,
+                z::ZEBRA,
+                WHITE,
+            );
+        }
         let d = pad.cut[k] + 2.9;
         // room for a crossing at each end of the block, not on top of the next one
         if a.avail < 2.0 * d + 3.0 {
@@ -729,7 +846,6 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
         if d + 4.5 > a.straight {
             continue;
         }
-        let across = pt(-a.dir.y, a.dir.x);
         let reach = a.hw - 0.9;
         let c = n.p + a.dir * d;
         // a crossing never lies on another arm of the junction
@@ -757,20 +873,6 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
                 WHITE,
             );
             off += 1.1;
-        }
-        if big && a.avail > 2.0 * d + 12.0 {
-            // a stop line across the lanes that come in to a main junction
-            let half = a.hw * 0.5;
-            quad(
-                g,
-                n.p + a.dir * (d + 2.6) + across * half,
-                a.dir,
-                across,
-                0.22,
-                half - 0.6,
-                z::ZEBRA,
-                WHITE,
-            );
         }
     }
 }
@@ -800,7 +902,19 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], context: &[RoadDraw]) {
         .iter()
         .filter(|r| r.class != RoadClass::Rail && r.points.len() >= 2)
         .count();
-    let nodes = find_nodes(&all, n_mine);
+    let mut nodes = find_nodes(&all, n_mine);
+    if let Some(land) = g.land().filter(|land| land.uses_high_bridges()) {
+        let paths: Vec<_> = all
+            .iter()
+            .map(|road| crate::instances::Path::new_on(road.class, road.points, land))
+            .collect();
+        nodes.retain(|node| {
+            let ground = land.height_pt(node.p);
+            node.arms
+                .iter()
+                .all(|arm| (paths[arm.road].z(arm.s0 as f32) - ground).abs() <= 2.5)
+        });
+    }
     for (i, r) in all.iter().take(n_mine).enumerate() {
         if r.works.is_some() {
             continue;
@@ -1091,6 +1205,28 @@ mod tests {
                 works: None,
             })
             .collect()
+    }
+
+    #[test]
+    fn roads_with_a_shared_interior_vertex_form_a_four_arm_junction() {
+        let center = pt(0.0, 0.0);
+        let avenue = [pt(-100.0, 0.0), center, pt(100.0, 0.0)];
+        let street = [pt(-35.0, -100.0), center, pt(35.0, 100.0)];
+        let roads = [
+            &RoadDraw {
+                class: RoadClass::Arterial,
+                points: &avenue,
+                works: None,
+            },
+            &RoadDraw {
+                class: RoadClass::Local,
+                points: &street,
+                works: None,
+            },
+        ];
+        let nodes = find_nodes(&roads, 1);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].arms.len(), 4);
     }
 
     #[test]

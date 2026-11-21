@@ -1,7 +1,7 @@
 //! The traffic scorer: vehicle hours saved per peak hour by a change, and what it costs to build.
 
 use crate::{Change, Context, End, Score, Scorer};
-use us_traffic::{class_capacity, class_node_delay, class_speed};
+use us_traffic::{class_node_delay, class_speed};
 
 pub struct TrafficScorer;
 
@@ -31,12 +31,11 @@ impl Scorer for TrafficScorer {
             } => {
                 let s = *street as usize;
                 let e = &ctx.net.streets.edges[s];
-                let t0 = e.len / class_speed(*to) + class_node_delay(*to);
-                let cap = class_capacity(*to);
                 let alpha = ctx.params.assign.bpr_alpha;
                 let mut gain = 0.0;
                 for k in 0..2 {
                     let ai = 2 * s + k;
+                    let (t0, cap) = ctx.net.widened_cost(ai, *to);
                     let f = ctx.assignment.arc_flow[ai];
                     gain += f * (ctx.assignment.arc_time[ai] - bpr(t0, cap, f, alpha));
                 }

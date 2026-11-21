@@ -201,6 +201,10 @@ impl Land {
         self.inner.step
     }
 
+    pub(crate) fn uses_high_bridges(&self) -> bool {
+        self.inner.high_bridges
+    }
+
     pub fn is_flat(&self) -> bool {
         self.inner.max - self.inner.min < 1e-4
     }

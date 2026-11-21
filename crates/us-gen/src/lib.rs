@@ -288,6 +288,27 @@ pub enum RoadClass {
     Rail,
 }
 
+/// Seconds reserved for the movements of each signal approach, including clearance.
+pub const SIGNAL_APPROACH_SECONDS: f64 = 9.0;
+/// Seconds of green in each approach phase.
+pub const SIGNAL_GREEN_SECONDS: f64 = 6.5;
+
+/// A surface junction on an avenue or between two collector streets.
+pub fn signalized_junction(arms: impl IntoIterator<Item = RoadClass>) -> bool {
+    let (mut roads, mut collectors, mut arterial) = (0, 0, false);
+    for arm in arms {
+        match arm {
+            RoadClass::Highway => return false,
+            RoadClass::Arterial => arterial = true,
+            RoadClass::Collector => collectors += 1,
+            RoadClass::Rail | RoadClass::Alley => continue,
+            RoadClass::Local => {}
+        }
+        roads += 1;
+    }
+    roads >= 3 && (arterial || collectors >= 3)
+}
+
 impl RoadClass {
     /// Half the paved width in metres.
     pub fn half_width(self) -> f64 {

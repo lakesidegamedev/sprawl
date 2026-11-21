@@ -257,27 +257,33 @@ impl Prop {
             Prop::TrafficLight => {
                 o.bx(-0.1, -0.1, 0.0, 0.1, 0.1, 5.6, STEEL);
                 o.bx(-0.1, -0.1, 5.0, 0.1, 5.6, 5.3, STEEL);
-                for (i, c) in [[214, 60, 52], [236, 190, 60], [70, 190, 100]]
-                    .iter()
-                    .enumerate()
-                {
-                    let y = 1.2 + i as f32 * 1.5;
-                    o.bx(-0.28, y - 0.28, 4.3, 0.28, y + 0.28, 5.3, [40, 42, 48]);
-                    for x in [-0.29f32, 0.29] {
-                        o.poly(
-                            &[
-                                [x, y - 0.2, 4.45],
-                                [x, y + 0.2, 4.45],
-                                [x, y + 0.2, 4.85],
-                                [x, y - 0.2, 4.85],
-                            ],
-                            *c,
-                            false,
-                            false,
-                            true,
-                        );
-                    }
-                }
+                // One active aspect, visible from the incoming lane and overhead.
+                let dark = [40, 42, 48];
+                o.bx(-0.4, 2.4, 4.3, 0.4, 3.2, 5.3, dark);
+                o.poly(
+                    &[
+                        [-0.405, 3.15, 4.4],
+                        [-0.405, 2.45, 4.4],
+                        [-0.405, 2.45, 5.2],
+                        [-0.405, 3.15, 5.2],
+                    ],
+                    MARKER,
+                    false,
+                    false,
+                    true,
+                );
+                o.poly(
+                    &[
+                        [-0.32, 2.45, 5.305],
+                        [0.32, 2.45, 5.305],
+                        [0.32, 3.15, 5.305],
+                        [-0.32, 3.15, 5.305],
+                    ],
+                    MARKER,
+                    false,
+                    false,
+                    true,
+                );
                 // signal head facing the road traffic and a pedestrian box on the pole
                 o.bx(-0.25, -0.3, 2.2, 0.25, 0.2, 3.0, [40, 42, 48]);
             }
@@ -375,8 +381,6 @@ const AD_COLOURS: [Rgb; 6] = [
     [236, 120, 60],
 ];
 
-type Grid = std::collections::BTreeMap<(i32, i32), Vec<(usize, [f32; 2])>>;
-
 /// All fixed props for a set of roads and lots, one list per prop kind (indexed by
 /// `Prop::index`). `centre` is the middle of downtown, where benches and bins stand.
 pub fn make_props(paths: &[Path], lots: &[LotInfo], centre: [f32; 2]) -> [Vec<Instance>; 5] {
@@ -396,63 +400,6 @@ pub fn make_props(paths: &[Path], lots: &[LotInfo], centre: [f32; 2]) -> [Vec<In
             id: PROP_ID_BASE + (prop.index() as u32 * 200_000 + n) * ID_STRIDE / 4,
         });
     };
-    // junctions: end points of arterial and collector roads that meet another road
-    let mut grid: Grid = Default::default();
-    for (i, p) in paths.iter().enumerate() {
-        for v in &p.pts {
-            grid.entry(((v[0] / 6.0).floor() as i32, (v[1] / 6.0).floor() as i32))
-                .or_default()
-                .push((i, *v));
-        }
-    }
-    let mut lit: Vec<[f32; 2]> = Vec::new();
-    for (i, p) in paths.iter().enumerate() {
-        if !matches!(p.class, RoadClass::Arterial) {
-            continue;
-        }
-        for end in [p.pts.first(), p.pts.last()].into_iter().flatten() {
-            let (gx, gy) = ((end[0] / 6.0).floor() as i32, (end[1] / 6.0).floor() as i32);
-            let mut meets = false;
-            for dx in -1..=1 {
-                for dy in -1..=1 {
-                    if let Some(v) = grid.get(&(gx + dx, gy + dy)) {
-                        meets |= v.iter().any(|(j, q)| {
-                            *j != i
-                                && paths[*j].class != RoadClass::Rail
-                                && (q[0] - end[0]).hypot(q[1] - end[1]) < 5.0
-                        });
-                    }
-                }
-            }
-            if !meets
-                || lit
-                    .iter()
-                    .any(|q| (q[0] - end[0]).hypot(q[1] - end[1]) < 14.0)
-            {
-                continue;
-            }
-            lit.push(*end);
-        }
-    }
-    for q in &lit {
-        // the nearest arterial gives the way the corner faces
-        let Some((p, s)) = nearest_on(paths, *q, |c| c == RoadClass::Arterial) else {
-            continue;
-        };
-        let (pt, d) = paths[p].at(s);
-        let hw = paths[p].class.half_width() as f32;
-        let nrm = [-d[1], d[0]];
-        // a pole on the right hand corner, its arm over the road
-        let pos = [pt[0] + nrm[0] * (hw + 1.0), pt[1] + nrm[1] * (hw + 1.0)];
-        let theta = libm::atan2f(-nrm[1], -nrm[0]) - std::f32::consts::FRAC_PI_2;
-        put(
-            &mut out,
-            Prop::TrafficLight,
-            [pos[0], pos[1], paths[p].z(s)],
-            theta,
-            0,
-        );
-    }
     // bus shelters and billboards along the big roads
     for (i, p) in paths.iter().enumerate() {
         let l = p.length();
@@ -561,22 +508,6 @@ pub fn make_props(paths: &[Path], lots: &[LotInfo], centre: [f32; 2]) -> [Vec<In
 
 fn lot_reach(k: LotKind) -> f32 {
     k.nominal_radius() as f32
-}
-
-fn nearest_on(paths: &[Path], q: [f32; 2], ok: impl Fn(RoadClass) -> bool) -> Option<(usize, f32)> {
-    let mut best: Option<(f32, usize, f32)> = None;
-    for (i, p) in paths.iter().enumerate() {
-        if !ok(p.class) {
-            continue;
-        }
-        for (j, v) in p.pts.iter().enumerate() {
-            let d = (v[0] - q[0]).hypot(v[1] - q[1]);
-            if d < 6.0 && best.is_none_or(|b| d < b.0) {
-                best = Some((d, i, p.cum[j]));
-            }
-        }
-    }
-    best.map(|b| (b.1, b.2))
 }
 
 // ---- moving vehicles ----
@@ -790,6 +721,15 @@ pub fn make_fleet(paths: &[Path], lots: &[LotInfo], population: u32) -> Vec<Veh>
 
 /// Where each vehicle is at `time` seconds, by vehicle kind.
 pub fn fleet_instances(paths: &[Path], fleet: &[Veh], time: f32) -> [Vec<Instance>; 5] {
+    controlled_fleet_instances(paths, fleet, &[], time)
+}
+
+pub(crate) fn controlled_fleet_instances(
+    paths: &[Path],
+    fleet: &[Veh],
+    junctions: &[Vec<(f32, f32)>],
+    time: f32,
+) -> [Vec<Instance>; 5] {
     let mut out: [Vec<Instance>; 5] = Default::default();
     for (n, v) in fleet.iter().enumerate() {
         let p = &paths[v.road as usize];
@@ -801,6 +741,14 @@ pub fn fleet_instances(paths: &[Path], fleet: &[Veh], time: f32) -> [Vec<Instanc
             .one_way
             .map_or(v.dir, |forward| if forward { 1.0 } else { -1.0 });
         let s = (v.phase * l + dir * v.speed * time).rem_euclid(l);
+        // Decorative fleet runs never drive through a controlled junction.
+        if junctions.get(v.road as usize).is_some_and(|spans| {
+            spans
+                .iter()
+                .any(|&(lo, hi)| (lo - 6.0..=hi + 6.0).contains(&s))
+        }) {
+            continue;
+        }
         let (pt, d) = p.at(s);
         let hw = p.class.half_width() as f32;
         let side = if p.one_way.is_some() {

@@ -313,7 +313,7 @@ fn node_pair(segs: &[Seg], i: usize, j: usize, tol: f64, splits: &mut [Vec<f64>]
     }
     for (p, u_self) in [(c, 0.0), (d, 1.0)] {
         let (t, dist) = closest_param(p, a, b);
-        if dist <= tol {
+        if dist <= tol && same_level(t, u_self) {
             splits[i].push(t);
             splits[j].push(u_self);
         }
@@ -671,6 +671,28 @@ mod grade_tests {
         assert!(connected.nodes.contains(&pt(-8.0, 0.0)));
         assert!(connected.nodes.contains(&pt(0.0, 10.0)));
         assert!(!connected.nodes.contains(&pt(0.0, 0.0)));
+    }
+
+    #[test]
+    fn an_upper_road_end_does_not_split_the_lower_road() {
+        let mut lines = [
+            GradedLine {
+                class: RoadClass::Arterial,
+                travel: Travel::Both,
+                points: vec![(pt(-50.0, 0.0), 0.0), (pt(50.0, 0.0), 0.0)],
+            },
+            GradedLine {
+                class: RoadClass::Collector,
+                travel: Travel::Both,
+                points: vec![(pt(0.0, 0.0), 10.0), (pt(0.0, 50.0), 10.0)],
+            },
+        ];
+        for _ in 0..2 {
+            let grade = build_graded(&lines, 0.5);
+            assert_eq!(grade.edges.len(), 2);
+            assert_eq!(grade.contract().components().1.len(), 2);
+            lines.reverse();
+        }
     }
 
     #[test]

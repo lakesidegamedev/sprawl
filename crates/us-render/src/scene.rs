@@ -122,6 +122,8 @@ struct Extras {
     volumes: Vec<f32>,
     cars: Vec<Car>,
     traffic: Traffic,
+    junctions: Vec<crate::roadpaint::TrafficJunction>,
+    junction_limits: Vec<Vec<(f32, f32)>>,
     traffic_enabled: bool,
     traffic_hour: f32,
     chimneys: Vec<[f32; 3]>,
@@ -299,6 +301,7 @@ impl Scene {
         self.x.lot_active = vec![true; lots.len()];
         self.x.lots = lots;
         self.x.roads = roads;
+        self.refresh_junctions();
         self.x.traffic = Traffic::default();
         self.x.centre = [self.hall.x, self.hall.y];
         self.x.lamps = instances::lamp_instances(&self.x.paths);
@@ -408,9 +411,19 @@ impl Scene {
         self.x.cars = instances::make_cars(&self.x.paths, &self.x.volumes);
     }
 
+    fn refresh_junctions(&mut self) {
+        self.x.junctions =
+            crate::roadpaint::traffic_junctions(&self.road_draws(), &self.x.paths, &self.land);
+        self.x.junction_limits =
+            crate::junction_traffic::limits(&self.x.junctions, self.x.paths.len());
+    }
+
     /// Set peak-hour rates and measured approach capacities for the living town.
     pub fn set_road_traffic(&mut self, roads: &[[Approach; 2]]) {
         self.x.traffic = Traffic::new(&self.x.paths, roads);
+        self.x
+            .traffic
+            .clear_junctions(&self.x.paths, &self.x.junction_limits);
         self.x.traffic_enabled = true;
     }
 
@@ -500,19 +513,41 @@ impl Scene {
             puffs.extend(instances::hearth_instances(&self.x.hearths, self.time));
         }
         puffs.extend(smoke);
+        let (mut cars, signals) = crate::junction_traffic::instances(
+            &self.x.junctions,
+            &self.x.paths,
+            &self.x.traffic.demand,
+            self.time,
+            crate::road_traffic::daily_demand(self.x.traffic_hour.rem_euclid(24.0)),
+        );
+        let traffic = if self.x.traffic_enabled {
+            self.x
+                .traffic
+                .instances(&self.x.paths, self.time, self.x.traffic_hour)
+        } else {
+            instances::car_instances(&self.x.paths, &self.x.cars, self.time)
+        };
+        let budget = instances::MAX_CARS - cars.len();
+        // Outline ids are unique across both the junction and approach car buffers.
+        let base = cars.len() as u32 * instances::ID_STRIDE;
+        cars.extend(traffic.into_iter().take(budget).map(|mut car| {
+            car.id += base;
+            car
+        }));
+        let mut props = self.x.props.clone();
+        props[crate::fleet::Prop::TrafficLight.index()] = signals;
         FrameInstances {
-            cars: if self.x.traffic_enabled {
-                self.x
-                    .traffic
-                    .instances(&self.x.paths, self.time, self.x.traffic_hour)
-            } else {
-                instances::car_instances(&self.x.paths, &self.x.cars, self.time)
-            },
+            cars,
             puffs,
             people: instances::walker_instances(&self.x.paths, &self.x.walkers, self.time),
             lamps: self.x.lamps.clone(),
-            fleet: crate::fleet::fleet_instances(&self.x.paths, &self.x.fleet, self.time),
-            props: self.x.props.clone(),
+            fleet: crate::fleet::controlled_fleet_instances(
+                &self.x.paths,
+                &self.x.fleet,
+                &self.x.junction_limits,
+                self.time,
+            ),
+            props,
             trains,
             rigs,
             flames,
@@ -605,6 +640,11 @@ impl Scene {
         }
         if !any {
             return;
+        }
+        self.refresh_junctions();
+        if self.x.traffic_enabled {
+            let demand = std::mem::take(&mut self.x.traffic.demand);
+            self.set_road_traffic(&demand);
         }
         if let Some(td) = &self.x.town {
             self.ground = build_ground(&td.town, &self.x.roads, &self.land);

@@ -549,6 +549,62 @@ fn distance_fraction(line: &[Pt], junction: Pt) -> f32 {
     }
 }
 
+/// A contracted street can span several rendered road runs. Preserve the flow on
+/// both sides of a join and account for runs stored in the opposite point order.
+fn edge_runs(
+    grid: &SegGrid,
+    runs: &[(RoadClass, Vec<Pt>)],
+    visible: &[bool],
+    class: RoadClass,
+    line: &[Pt],
+) -> Vec<(usize, bool)> {
+    let mut matched = Vec::new();
+    for pair in line.windows(2) {
+        let mid = pair[0].lerp(pair[1], 0.5);
+        let tangent = (pair[1] - pair[0]).unit();
+        let mut best: Option<(f64, usize, bool)> = None;
+        for (r, s) in grid.near(mid, mid, 3.0) {
+            let (r, s) = (r as usize, s as usize);
+            if !visible[r] || runs[r].0 != class {
+                continue;
+            }
+            let d = dist_pt_seg(mid, runs[r].1[s], runs[r].1[s + 1]);
+            let alignment = tangent.dot((runs[r].1[s + 1] - runs[r].1[s]).unit());
+            let score = d + 2.0 * (1.0 - alignment.abs());
+            if d <= 3.0 && alignment.abs() > 0.65 && best.is_none_or(|b| score < b.0) {
+                best = Some((score, r, alignment < 0.0));
+            }
+        }
+        if let Some((_, road, reversed)) = best {
+            matched.push((road, reversed));
+        }
+    }
+    matched.sort_unstable();
+    matched.dedup();
+    matched
+}
+
+#[cfg(test)]
+mod edge_run_tests {
+    use super::*;
+
+    #[test]
+    fn contracted_street_flow_reaches_both_rendered_runs() {
+        let a = pt(0.0, 0.0);
+        let join = pt(50.0, 0.0);
+        let b = pt(100.0, 0.0);
+        let runs = [
+            (RoadClass::Local, vec![a, join]),
+            (RoadClass::Local, vec![b, join]),
+        ];
+        let grid = SegGrid::from_lines(runs.iter().map(|r| r.1.as_slice()));
+        assert_eq!(
+            edge_runs(&grid, &runs, &[true; 2], RoadClass::Local, &[a, join, b]),
+            [(0, false), (1, true)]
+        );
+    }
+}
+
 /// The worker: assign traffic, choose changes, map the results onto the road runs.
 fn run_traffic(town: Town, runs: Vec<(RoadClass, Vec<Pt>)>, visible: Vec<bool>) -> Done {
     let p = grow_params();
@@ -562,23 +618,7 @@ fn run_traffic(town: Town, runs: Vec<(RoadClass, Vec<Pt>)>, visible: Vec<bool>) 
         let vol = plan.eval.assignment.edge_volume[i];
         wsum += e.len * (vc.clamp(0.0, 1.5) / 1.5);
         lsum += e.len;
-        let k = (e.pts.len() - 1) / 2;
-        let mid = e.pts[k].lerp(e.pts[k + 1], 0.5);
-        let tangent = (e.pts[k + 1] - e.pts[k]).unit();
-        let mut best: Option<(f64, usize, bool)> = None;
-        for (r, s) in grid.near(mid, mid, 3.0) {
-            let (r, s) = (r as usize, s as usize);
-            if !visible[r] || matches!(runs[r].0, RoadClass::Rail | RoadClass::Alley) {
-                continue;
-            }
-            let d = dist_pt_seg(mid, runs[r].1[s], runs[r].1[s + 1]);
-            let alignment = tangent.dot((runs[r].1[s + 1] - runs[r].1[s]).unit());
-            let score = d + 2.0 * (1.0 - alignment.abs());
-            if d <= 3.0 && alignment.abs() > 0.65 && best.is_none_or(|b| score < b.0) {
-                best = Some((score, r, alignment < 0.0));
-            }
-        }
-        if let Some((_, r, reversed)) = best {
+        for (r, reversed) in edge_runs(&grid, &runs, &visible, e.class, &e.pts) {
             rt[r].vc = rt[r].vc.max(vc as f32);
             rt[r].volume = rt[r].volume.max(vol as f32);
             for j in 0..2 {

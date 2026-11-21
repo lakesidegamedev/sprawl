@@ -21,8 +21,10 @@ pub struct Approach {
 #[derive(Default)]
 pub(crate) struct Traffic {
     lanes: Vec<Lane>,
+    pub(crate) demand: Vec<[Approach; 2]>,
 }
 
+#[derive(Clone)]
 struct Lane {
     path: usize,
     reverse: bool,
@@ -36,7 +38,7 @@ struct Lane {
     queue: Option<Box<[f32; SLOTS + 1]>>,
 }
 
-fn daily_demand(hour: f32) -> [f32; 2] {
+pub(crate) fn daily_demand(hour: f32) -> [f32; 2] {
     fn peak(hour: f32, center: f32, width: f32) -> f32 {
         let x = (1.0 - (hour - center).abs() / width).max(0.0);
         x * x * (3.0 - 2.0 * x)
@@ -144,7 +146,70 @@ impl Traffic {
                 }
             }
         }
-        Self { lanes }
+        Self {
+            lanes,
+            demand: approaches.to_vec(),
+        }
+    }
+
+    pub(crate) fn clear_junctions(&mut self, paths: &[Path], spans: &[Vec<(f32, f32)>]) {
+        let mut clear = Vec::new();
+        for lane in self.lanes.drain(..) {
+            let path = &paths[lane.path];
+            if spans[lane.path].is_empty() {
+                clear.push(lane);
+                continue;
+            }
+            let mut fragments = vec![(lane.start, lane.start + lane.extent)];
+            for &(lo, hi) in &spans[lane.path] {
+                let (lo, hi) = if lane.reverse {
+                    (path.length() - hi, path.length() - lo)
+                } else {
+                    (lo, hi)
+                };
+                let mut next = Vec::new();
+                for (a, b) in fragments {
+                    if hi <= a || lo >= b {
+                        next.push((a, b));
+                    } else {
+                        next.push((a, lo));
+                        next.push((hi, b));
+                    }
+                }
+                fragments = next;
+            }
+            for (start, end) in fragments {
+                let extent = end - start;
+                if extent >= MIN_LANE {
+                    let queue = lane
+                        .queue
+                        .as_ref()
+                        .and_then(|_| {
+                            (end >= lane.start + lane.extent - 1.0
+                                || spans[lane.path].iter().any(|&(lo, hi)| {
+                                    let boundary =
+                                        if lane.reverse { path.length() - hi } else { lo };
+                                    (end - boundary).abs() < 1.0
+                                }))
+                            .then(|| {
+                                queue_profile(
+                                    lane.rate,
+                                    lane.capacity,
+                                    (extent / BUMPER_SPACING).floor(),
+                                )
+                            })
+                        })
+                        .flatten();
+                    clear.push(Lane {
+                        start,
+                        extent,
+                        queue,
+                        ..lane.clone()
+                    });
+                }
+            }
+        }
+        self.lanes = clear;
     }
 
     pub(crate) fn instances(&self, paths: &[Path], time: f32, hour: f32) -> Vec<Instance> {
