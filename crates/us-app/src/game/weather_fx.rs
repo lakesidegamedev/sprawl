@@ -94,7 +94,7 @@ impl Game {
         let gust =
             (self.live.scene.time * 0.44).sin() * 0.21 + (self.live.scene.time * 1.23).sin() * 0.10;
         let gust_wind = wind.map(|speed| speed * (1.0 + storm * gust));
-        let drift = std::array::from_fn(|i| previous.drift[i] + gust_wind[i] * dt * 0.85);
+        let drift = std::array::from_fn(|i| previous.drift[i] + gust_wind[i] * dt * 0.24);
         let lead = if sim.weather_tomorrow().sky == us_sim::Sky::Storm {
             ((visual_hour - 14.0) / 10.0).clamp(0.0, 1.0)
         } else {

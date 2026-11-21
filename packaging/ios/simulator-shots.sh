@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs the simulator build on one simulator, launches it and takes screenshots. macOS only.
 #   simulator-shots.sh <iphone|ipad> <Urban Sprawl.app> <output dir>
-# Shots: menu, map selector, town, and the Budget sheet.
+# Shots: menu, map selector, town, the Budget sheet and the phone road toolbar.
 set -euo pipefail
 kind="${1:?iphone or ipad}"; app="${2:?app bundle}"; out="${3:?output dir}"
 bundle=net.lakesidegames.urbansprawl
@@ -95,4 +95,13 @@ running || fail "app stopped while displaying budget"
 step "screenshot budget"
 within 240 xcrun simctl io "$udid" screenshot "$out/$kind-3-budget.png"
 xcrun simctl terminate "$udid" "$bundle" || true
+if [[ "$kind" == iphone ]]; then
+  step "launch town with road controls"
+  SIMCTL_CHILD_URBAN_SPRAWL_SMOKE=600 SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_DAYS=370 \
+    SIMCTL_CHILD_URBAN_SPRAWL_SMOKE_UI=roads within 240 xcrun simctl launch "$udid" "$bundle"
+  sleep 20
+  running || fail "app stopped while displaying road controls"
+  within 240 xcrun simctl io "$udid" screenshot "$out/$kind-6-road-controls.png"
+  xcrun simctl terminate "$udid" "$bundle" || true
+fi
 xcrun simctl shutdown "$udid" || true

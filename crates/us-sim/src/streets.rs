@@ -451,8 +451,8 @@ impl Sim {
     }
 
     /// The next street to build: one that touches the roads already standing, among the
-    /// neighbourhoods already started and the next one in line. Near the town hall and on the
-    /// bigger streets first, with some noise so the edge stays ragged.
+    /// neighbourhoods already started and the next one in line. Fill blocks near existing
+    /// local streets and close loops before extending along a single corridor.
     fn pick_street(&mut self, target: Option<&[Pt]>) -> Option<usize> {
         let touches_open = |me: &Sim, s: usize| {
             me.streets[s].adj.iter().any(|&n| {
@@ -510,41 +510,66 @@ impl Sim {
         if core_infill.is_some() {
             return core_infill;
         }
-        if let Some(pts) = target {
-            // toward the land that is wanted: the candidate nearest to it
-            let near = |p: Pt| pts.iter().map(|q| q.dist(p)).fold(f64::MAX, f64::min);
-            return cands
+        if target.is_none() {
+            let gate = cands
                 .iter()
-                .map(|&s| (near(self.streets[s].mid), s))
-                .min_by(|a, b| a.0.total_cmp(&b.0))
-                .map(|b| b.1);
+                .filter_map(|&s| {
+                    let a = self.streets[s].addition?;
+                    (!self.revealed[a]).then_some(self.order_pos[a])
+                })
+                .min();
+            cands.retain(|&s| {
+                let a = self.streets[s].addition.unwrap();
+                self.revealed[a] || Some(self.order_pos[a]) == gate
+            });
         }
-        let gate = cands
+        let open_blocks: Vec<_> = self
+            .streets
             .iter()
-            .filter_map(|&s| {
-                let a = self.streets[s].addition?;
-                (!self.revealed[a]).then_some(self.order_pos[a])
+            .filter(|st| st.state == StreetState::Open && st.class == RoadClass::Local)
+            .map(|st| st.mid)
+            .collect();
+        let nearest_target = |p: Pt| {
+            target
+                .into_iter()
+                .flatten()
+                .map(|q| q.dist(p))
+                .fold(f64::MAX, f64::min)
+        };
+        cands
+            .into_iter()
+            .map(|s| {
+                let st = &self.streets[s];
+                let blocks = open_blocks
+                    .iter()
+                    .filter(|p| p.dist(st.mid) < 150.0)
+                    .take(5)
+                    .count();
+                let connections = st
+                    .adj
+                    .iter()
+                    .filter(|&&neighbor| {
+                        let other = &self.streets[neighbor as usize];
+                        other.state == StreetState::Open
+                            && matches!(
+                                other.class,
+                                RoadClass::Local | RoadClass::Collector | RoadClass::Arterial
+                            )
+                    })
+                    .take(3)
+                    .count()
+                    .saturating_sub(1);
+                let infill = blocks as f64 * 24.0 + connections as f64 * 45.0;
+                let noise = roll(self.seed ^ 0x57ee7, s as u64, 9) * 55.0;
+                let demand = if target.is_some() {
+                    nearest_target(st.mid) * 0.8
+                } else {
+                    0.0
+                };
+                (st.mid.dist(self.hall) * 0.7 + noise + demand - infill, s)
             })
-            .min();
-        cands.retain(|&s| {
-            let a = self.streets[s].addition.unwrap();
-            self.revealed[a] || Some(self.order_pos[a]) == gate
-        });
-        let mut best: Option<(f64, usize)> = None;
-        for &s in &cands {
-            let st = &self.streets[s];
-            let bonus = match st.class {
-                RoadClass::Collector => 110.0,
-                RoadClass::Arterial => 160.0,
-                _ => 0.0,
-            };
-            let noise = roll(self.seed ^ 0x57ee7, s as u64, 9) * 130.0;
-            let score = st.mid.dist(self.hall) + noise - bonus;
-            if best.is_none_or(|b| score < b.0) {
-                best = Some((score, s));
-            }
-        }
-        best.map(|b| b.1)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, s)| s)
     }
 
     fn next_unrevealed_pos(&self) -> usize {
@@ -552,5 +577,41 @@ impl Sim {
             .iter()
             .position(|&a| !self.revealed[a])
             .unwrap_or(usize::MAX)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn growth_fills_an_open_block_before_extending_an_arterial() {
+        let town = us_gen::generate(us_gen::Preset::Grid, 3);
+        let mut sim = Sim::new_with_rules(&town, hall_sites(&town)[0], 7, 2, Rules::sandbox());
+        let hall = sim.hall;
+        let addition = sim
+            .town
+            .additions
+            .iter()
+            .position(|a| a.zone != us_gen::Zone::Core)
+            .unwrap();
+        sim.revealed[addition] = true;
+        let street = |x, y, class| {
+            Street::open_connector(class, hall + pt(x - 25.0, y), hall + pt(x + 25.0, y))
+        };
+        let planned = |mut st: Street, adj| {
+            st.state = StreetState::Planned;
+            st.addition = Some(addition);
+            st.adj = adj;
+            st
+        };
+        sim.streets = vec![
+            street(180.0, 0.0, RoadClass::Arterial),
+            street(195.0, 130.0, RoadClass::Local),
+            street(220.0, 185.0, RoadClass::Local),
+            planned(street(270.0, 0.0, RoadClass::Arterial), vec![0]),
+            planned(street(220.0, 155.0, RoadClass::Local), vec![1, 2]),
+        ];
+        assert_eq!(sim.pick_street(None), Some(4));
     }
 }
