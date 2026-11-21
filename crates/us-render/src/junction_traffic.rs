@@ -13,19 +13,95 @@ const AMBER: f32 = 1.0;
 const ENTRY: f32 = 5.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Aspect {
+pub enum SignalAspect {
     Green,
     Amber,
     Red,
 }
 
-fn phase(age: f32) -> Aspect {
+fn phase(age: f32) -> SignalAspect {
     if (0.0..GREEN).contains(&age) {
-        Aspect::Green
+        SignalAspect::Green
     } else if (GREEN..GREEN + AMBER).contains(&age) {
-        Aspect::Amber
+        SignalAspect::Amber
     } else {
-        Aspect::Red
+        SignalAspect::Red
+    }
+}
+
+fn timing(node: usize, arm: usize, count: usize, time: f32) -> (f32, i32, f32) {
+    let cycle = count as f32 * SLOT;
+    let now = time + (node as f32 * 2.618).rem_euclid(cycle);
+    let elapsed = now - arm as f32 * SLOT;
+    (
+        elapsed.rem_euclid(cycle),
+        (elapsed / cycle).floor() as i32,
+        cycle,
+    )
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct JunctionApproach {
+    pub class: us_gen::RoadClass,
+    /// Direction from the intersection toward the approaching traffic.
+    pub bearing_deg: f32,
+    pub signal: Option<SignalAspect>,
+    pub seconds_until_green: f32,
+    /// Peak-hour data for this approach, when available from the traffic assignment.
+    pub peak: Option<Approach>,
+}
+
+#[derive(Debug)]
+pub struct JunctionReport {
+    pub point: us_gen::Pt,
+    pub signalized: bool,
+    pub approaches: Vec<JunctionApproach>,
+}
+
+pub(crate) fn report(
+    node: usize,
+    junction: &TrafficJunction,
+    paths: &[Path],
+    demand: &[[Approach; 2]],
+    time: f32,
+) -> JunctionReport {
+    let approaches = junction
+        .arms
+        .iter()
+        .enumerate()
+        .map(|(index, arm)| {
+            let path = &paths[arm.road];
+            let (_, incoming, _) = lane_pose(path, arm, arm.stop, true);
+            let outward = -incoming;
+            let bearing_deg = libm::atan2f(outward.x, outward.y)
+                .to_degrees()
+                .rem_euclid(360.0);
+            let (age, _, cycle) = timing(node, index, junction.arms.len(), time);
+            let signal = junction.signalized.then(|| phase(age));
+            let seconds_until_green = if signal.is_some() && signal != Some(SignalAspect::Green) {
+                cycle - age
+            } else {
+                0.0
+            };
+            let peak = demand
+                .get(arm.road)
+                .map(|flows| flows[direction(arm, true)])
+                .filter(|flow| {
+                    flow.capacity > 0.0 && (path.length() * flow.stop - arm.s).abs() < 3.0
+                });
+            JunctionApproach {
+                class: path.class,
+                bearing_deg,
+                signal,
+                seconds_until_green,
+                peak,
+            }
+        })
+        .collect();
+    JunctionReport {
+        point: junction.point,
+        signalized: junction.signalized,
+        approaches,
     }
 }
 
@@ -121,12 +197,9 @@ pub(crate) fn instances(
     let mut cars = Vec::new();
     let mut signals = Vec::new();
     for (node, junction) in junctions.iter().enumerate() {
-        let cycle = junction.arms.len() as f32 * SLOT;
-        let now = time + (node as f32 * 2.618).rem_euclid(cycle);
         for (index, arm) in junction.arms.iter().enumerate() {
             let path = &paths[arm.road];
-            let start = index as f32 * SLOT;
-            let age = (now - start).rem_euclid(cycle);
+            let (age, lap, cycle) = timing(node, index, junction.arms.len(), time);
             let aspect = phase(age);
             let entry = lane_pose(path, arm, arm.stop, true);
             if junction.signalized {
@@ -135,9 +208,9 @@ pub(crate) fn instances(
                 let (p, _) = path.at(s);
                 let pos = Vec2::from(p) + outward.perp() * (path.class.half_width() as f32 + 1.3);
                 let colour = match aspect {
-                    Aspect::Red => [250, 55, 48],
-                    Aspect::Amber => [255, 186, 46],
-                    Aspect::Green => [45, 234, 120],
+                    SignalAspect::Red => [250, 55, 48],
+                    SignalAspect::Amber => [255, 186, 46],
+                    SignalAspect::Green => [45, 234, 120],
                 };
                 signals.push(Instance {
                     pos: [pos.x, pos.y, path.z(s)],
@@ -156,7 +229,6 @@ pub(crate) fn instances(
                 continue;
             }
             let leaving = age < GREEN;
-            let lap = ((now - start) / cycle).floor() as i32;
             let batch = if leaving { lap } else { lap + 1 };
             let hash = (batch as u32).wrapping_mul(0x9e3779b9)
                 ^ (node as u32).wrapping_mul(0x85ebca6b)
@@ -261,6 +333,20 @@ mod tests {
         ];
         let t = entry as f32 * SLOT;
         let sample = |time| instances(&junctions, &paths, &flows, time, [1.0, 0.0]);
+        let inspection = report(0, junction, &paths, &flows, t - 1.0);
+        assert_eq!(inspection.point, centre);
+        assert_eq!(inspection.approaches[entry].signal, Some(SignalAspect::Red));
+        assert_eq!(inspection.approaches[entry].seconds_until_green, 1.0);
+        assert_eq!(inspection.approaches[entry].peak.unwrap().capacity, 430.0);
+        let north = junction.arms.iter().position(|arm| arm.road == 2).unwrap();
+        assert!(inspection.approaches[north].peak.is_none());
+        let mut other_stop = flows;
+        other_stop[0][0].stop = 0.4;
+        assert!(
+            report(0, junction, &paths, &other_stop, t - 1.0).approaches[entry]
+                .peak
+                .is_none()
+        );
         let (red, lamps) = sample(t - 1.0);
         assert_eq!(lamps[entry].tint, tint([250, 55, 48]));
         let wait = lane_pose(

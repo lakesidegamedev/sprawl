@@ -427,6 +427,34 @@ impl Scene {
         self.x.traffic_enabled = true;
     }
 
+    /// The nearest modeled traffic junction within the requested map distance.
+    pub fn junction_near(&self, point: Pt, radius_m: f64) -> Option<Pt> {
+        self.x
+            .junctions
+            .iter()
+            .map(|j| (j.point, j.point.dist(point)))
+            .filter(|(_, distance)| *distance <= radius_m)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(point, _)| point)
+    }
+
+    /// Current approach phases and the last assigned peak traffic at a selected junction.
+    pub fn junction_report(&self, point: Pt) -> Option<crate::JunctionReport> {
+        let (index, junction) = self
+            .x
+            .junctions
+            .iter()
+            .enumerate()
+            .find(|(_, j)| j.point == point)?;
+        Some(crate::junction_traffic::report(
+            index,
+            junction,
+            &self.x.paths,
+            &self.x.traffic.demand,
+            self.time,
+        ))
+    }
+
     pub fn set_traffic_hour(&mut self, hour: f32) {
         self.x.traffic_hour = hour;
     }

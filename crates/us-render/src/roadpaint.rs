@@ -723,6 +723,7 @@ pub(crate) struct TrafficArm {
 }
 
 pub(crate) struct TrafficJunction {
+    pub point: Pt,
     pub arms: Vec<TrafficArm>,
     pub signalized: bool,
 }
@@ -771,6 +772,7 @@ pub(crate) fn traffic_junctions(
                 });
             }
             Some(TrafficJunction {
+                point: node.p,
                 arms,
                 signalized: has_signals(&node.arms),
             })
