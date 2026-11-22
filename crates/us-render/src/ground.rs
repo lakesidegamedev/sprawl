@@ -28,6 +28,18 @@ const FAR_REACH: f32 = 60_000.0;
 /// Rings of the skirt beyond the apron, outermost first.
 const SKIRT: [f32; 4] = [FAR_REACH, 24_000.0, 9_000.0, 3_800.0];
 
+/// Bring the held edge height into low, broad terrain outside the playable map.
+fn exterior_height(edge: f32, x: f32, y: f32, size: f32) -> f32 {
+    let dx = x - x.clamp(0.0, size);
+    let dy = y - y.clamp(0.0, size);
+    let distance = dx.hypot(dy);
+    let u = (distance / 2200.0).clamp(0.0, 1.0);
+    let blend = u * u * (3.0 - 2.0 * u);
+    let rolling =
+        14.0 * libm::sinf(0.0017 * x + 0.0011 * y) + 8.0 * libm::cosf(0.0028 * y - 0.0006 * x);
+    edge + blend * (rolling - 0.65 * edge)
+}
+
 #[derive(Default)]
 pub struct Ground {
     pub mesh: Mesh,
@@ -359,11 +371,14 @@ impl Ground {
                 // past the map edge the land is held level, so it is shaded level too
                 if x < 0.0 || y < 0.0 || x > size || y > size {
                     // water that runs off the map (the sea) runs on under its sheet
-                    let ground = height.map_or_else(|| land.height(x, y), |f| f(x, y));
+                    let ground = height.map_or_else(
+                        || exterior_height(land.height(x, y), x, y, size),
+                        |sample| sample(x, y),
+                    );
                     let (z, c) = if open_sea && ground < 0.05 {
                         // open sea past the map edge is drawn as water out to the horizon, just
                         // under the sheet where there is one, not as grey shelf rock
-                        (sea - 0.3, crate::scene::WATER)
+                        (sea + layer::WATER - layer::BASE - 0.02, crate::scene::WATER)
                     } else {
                         match land.water_at(pt(x as f64, y as f64)) {
                             Some(level) => (level - 3.0, colour(x, y)),

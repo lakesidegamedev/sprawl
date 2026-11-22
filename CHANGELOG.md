@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Crosswalks and stop lines paint once per approach across neighbourhood boundaries. Closely staggered junctions clear the pavement between their mouths and share that clearance with traffic.
+- Low hills carry the landscape past the edge of temperate towns, and open sea loses its artificial foam edge. Far scenery fades into a weather-lit horizon without washing out the playable map.
+
 ## 1.6.0 Preview 3 (2026-11-22)
 
 <!-- Release coverage: b80b9d7..da824be. -->

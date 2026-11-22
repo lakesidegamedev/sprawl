@@ -138,7 +138,12 @@ fn add_water_at(g: &mut Ground, land: &Land, levels: &Land, t: &Town) {
         } else {
             levels.water_level(w) + layer::WATER - layer::BASE
         };
-        add_water_bands(g, w, z);
+        // The outer edge of the sea polygon is a rendering boundary. Open
+        // water already shades its real coast using the terrain under it.
+        let open_sea = t.preset == us_gen::Preset::Coast && w.iter().any(|p| p.x > t.size + 1000.0);
+        if !open_sea {
+            add_water_bands(g, w, z);
+        }
     }
     if t.preset == us_gen::Preset::Coast && !land.is_flat() {
         crate::harbour::add(&mut g.mesh, levels, t);
