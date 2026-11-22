@@ -647,7 +647,7 @@ impl State {
             let year = g.sim.day / 365;
             if year > g.autosave_year
                 && !g.sim.is_game_over()
-                && !self.smoke.as_ref().is_some_and(|s| s.bench.is_some())
+                && self.smoke.as_ref().is_none_or(|s| s.bench.is_none())
             {
                 g.autosave_year = year;
                 let town = g.name.clone();
