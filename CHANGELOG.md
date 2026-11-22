@@ -2,22 +2,25 @@
 
 ## Unreleased
 
-- Roads has a Round bend tool for existing streets. Preview the new curve and its fixed endpoints before applying it. The edit preserves junctions and checks for steep ground, water and building conflicts.
-- Painted stop lines and animated cars use the same clearance from the shared junction pavement. Short blocks have a common minimum length for traffic signals and signal-delay estimates.
-- Civic placement shows road access, the model envelope and the frontage facing. Use Rotate or press R before placing. Conflicting open roads and reserved alignments are highlighted.
-- Combine utility-capacity scans and throttle HUD totals during play. A per-frame simulation budget limits long batches at fast-forward. Balanced mode lowers world resolution and shadow detail during sustained severe slowdown. A desktop benchmark reports FPS, 95th-percentile frame time and cursor-event-to-frame submission latency.
-- Keep draped rocks and vegetation off sheer cliff faces.
+## 1.6.0 Preview 3 (2026-11-22)
 
-- Mesa sandstone has broader mineral layers, chipped cliff faces and close-up sand ripples. Hills have more exposed soil, and fine terrain and snow detail fades smoothly as you zoom out. Shadow-map edges blend into sunlight, and sandstone no longer picks up the roadworks stripe pattern.
-- Shallow road merges share one paved apron where the lanes overlap. Kerbs, snowbanks and competing lane lines stay outside the shared asphalt. New towns ease short collector hooks into arterials with a curve.
-- Desert towns get dry winters and occasional rain. Old desert saves reopen without winter snowpack or road snow.
-- Downtown roadside shops read as part of the street wall. Vacant central retail sites and parking plots between developed lots can fill with shops, while outer shopping areas keep their large-format stores.
-- Coverage and building-level maps show standing structures. Other overlays keep vacant sites flat. Analysis views use simpler lighting and reuse overlay meshes while map colours stay the same.
-- The People graph shows estimated workers and workplace construction by sector. Empty lot details explain whether new development is waiting on service capacity or arrivals.
-- Building and road catalogs collapse to placement controls while you work on the map. Legal sites stay where you aim. A conflicting planned street is highlighted, with a message that explains the reservation.
-- Balanced graphics reduce the city's render resolution during sustained slow frames. Interface text and controls stay at native resolution. The game also skips repeat street, woodland and lot updates between simulation changes.
-- Winter terrain keeps its sun shadows and wind-shaped surface detail with fewer screen-space shading artifacts. Hills have more varied grass, exposed soil and rock.
-- Big-box sites include larger stores, two-anchor shopping malls and warehouse retailers with pickup bays, with shallower parking lots.
+<!-- Release coverage: b80b9d7..da824be. -->
+
+### For players
+
+- Round a bend on an existing road. The preview shows its fixed connections and checks for conflicts before you commit. At intersections, stop lines and waiting cars line up, and shallow merges share one paved surface.
+- Building and road catalogs collapse while you place something. Civic placement shows the footprint, entrance and road access. Press R to rotate. The preview highlights an open road or reserved alignment that blocks the spot.
+- Desert towns have dry winters and occasional rain. Old desert saves reopen without snowpack. Hills and sandstone have more varied surface detail, and fine winter terrain detail fades as you zoom out.
+- Downtown shops use street-facing layouts, and empty central retail sites can fill in. Shopping malls, warehouse retailers and bigger stores appear on suitable outlying sites.
+- Coverage and building-level maps show completed buildings. The People graph shows estimated workers and workplace construction by sector. Empty lots say whether development is waiting on arrivals or services.
+- Balanced graphics can reduce world and shadow detail during sustained slowdowns. Fast-forward spreads catch-up work across frames while the interface stays at native resolution.
+
+### For developers
+
+- Coverage includes graphics and placement (#72), road joins and terrain (#73), and frame pacing and existing-road editing (#74).
+- Junction shaping shares paved-apron clearance with traffic animation. Short links use a common lower bound for signal placement and traffic-delay estimates. Existing bends can be edited across road-run boundaries and retain their save metadata and graph connections.
+- An adaptive render tier, a frame budget for simulation catch-up, shared utility capacity scans, cached HUD totals and cheaper map-overlay updates reduce repeated work. The desktop benchmark can load a fixed save and report frame pacing and cursor submission time.
+- Desktop installers target Windows x64, Linux x64 and universal macOS. The preview uses the existing save format.
 
 ## 1.6.0 Preview 1 (2026-11-21)
 
