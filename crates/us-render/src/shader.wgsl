@@ -184,17 +184,19 @@ fn lit(world: vec3<f32>, n: vec3<f32>) -> f32 {
     let p = world + n * g.sun.w * 1.5;
     let c = g.light_vp * vec4<f32>(p, 1.0);
     let uv = vec2<f32>(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || c.z > 1.0) {
+    let boundary = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+    if (boundary <= 0.0 || c.z < 0.0 || c.z > 1.0) {
         return 1.0;
     }
     // A soft edge: each tap is already a filtered comparison, and the ring widens the
     // penumbra to about three texels so shadow edges stop stepping along the texel grid.
     let texel = 1.0 / f32(textureDimensions(shadow_tex).x);
     let depth = c.z - g.shade.y;
+    let coverage = smoothstep(0.0, 6.0 * texel, boundary);
     let centre = textureSampleCompareLevel(shadow_tex, shadow_cmp, uv, depth);
     if (g.resolve.w < 0.5 && g.local_lights.w < 0.5) {
         // the light preset (phones by default) keeps the single filtered comparison
-        return centre;
+        return mix(1.0, centre, coverage);
     }
     var sum = centre * 2.0;
     let r = texel * 1.4;
@@ -203,7 +205,7 @@ fn lit(world: vec3<f32>, n: vec3<f32>) -> f32 {
     sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(-r, -r * 0.4), depth);
     sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(r * 0.4, -r), depth);
     if (g.resolve.w < 0.5) {
-        return sum / 6.0;
+        return mix(1.0, sum / 6.0, coverage);
     }
     // the wide ring reaches further across a sloping face, so it compares with more slack
     let far_depth = depth - g.shade.y * 1.6;
@@ -212,7 +214,7 @@ fn lit(world: vec3<f32>, n: vec3<f32>) -> f32 {
     sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(q * 0.3, q), far_depth);
     sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(-q, q * 0.3), far_depth);
     sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + vec2<f32>(-q * 0.3, -q), far_depth);
-    return sum / 10.0;
+    return mix(1.0, sum / 10.0, coverage);
 }
 
 fn packed_surface(n: vec3<f32>, material: u32) -> u32 {
@@ -391,41 +393,22 @@ fn ground_kind(c: vec3<f32>) -> i32 {
     return 0;
 }
 
-// A small tuft in a jittered cell of size `cell`: a short upright stroke with a leaning twin.
-// Returns 1 inside a blade, 0 outside.
 // Terrain detail is filtered by the world-space footprint of a screen pixel.
-fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist: f32, snowy: bool) -> vec3<f32> {
+fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist: f32, footprint: f32, slope: f32, snowy: bool) -> vec3<f32> {
     var c = col;
-    let near_d = dist < 140.0;
-    let mid_d = dist < 600.0;
-    // broad patches at three scales, in three tone bands
-    let big = vnoise(w / 38.0);
-    let mid = vnoise(w / 11.0);
-    var n = big * 0.6 + mid * 0.4;
-    if (mid_d) {
-        n += (vnoise(w / 3.6 + vec2<f32>(5.0, 9.0)) - big) * 0.2;
-    }
-    var k = 1.0;
-    if (n > 0.66) {
-        k = 1.05;
-    } else if (n < 0.34) {
-        k = 0.955;
-    }
     if (snowy) {
-        // a faint cool shade on the lee of a drift only: the drift height is the same noise the
-        // cover uses, and the shade follows its slope away from the sun, so it never sits
-        // in blotches of its own
+        let reach = 1.0 - smoothstep(1.2, 4.5, footprint);
+        if (reach == 0.0) {
+            return c;
+        }
+        // Constant in world space and gradually filtered on grazing slopes.
         let away = -normalize(g.sun.xy + vec2<f32>(0.0001, 0.0)) * 2.4;
-        let here = vnoise(w / 16.0) * 0.7 + vnoise(w / 5.0) * 0.3;
-        let past = vnoise((w + away) / 16.0) * 0.7 + vnoise((w + away) / 5.0) * 0.3;
-        let lee = clamp((here - past) * 5.0, 0.0, 1.0);
-        let s = mix(vec3<f32>(1.0), vec3<f32>(0.93, 0.955, 1.0), lee * 0.8);
-        return c * s;
+        let lee = clamp((vnoise(w / 12.0) - vnoise((w + away) / 12.0)) * 3.5, 0.0, 1.0);
+        return c * mix(vec3<f32>(1.0), vec3<f32>(0.947, 0.970, 1.0), lee * reach);
     }
     if (kind == 1 || kind == 4) {
         // Grassland: a continuous spectrum of variation instead of two glade sizes, so the
         // ground reads as pasture with lusher hollows and drier rises, not as painted blots.
-        let footprint = g.screen.z * dist;
         let rich = g.resolve.w > 0.5 || g.local_lights.w > 0.5;
         var warp = vec2<f32>(0.0);
         if (rich) {
@@ -462,9 +445,23 @@ fn ground_detail(col: vec3<f32>, base: vec3<f32>, kind: i32, w: vec2<f32>, dist:
                 grass = mix(grass, petal, bloom * 0.8);
             }
         }
-        let cut = 1.0 + select(0.0, 0.05 * sign(sin((w.x + w.y * 0.22) * 0.9)) , kind == 4);
+        // Bare soil shows through on steep banks and disturbed slopes.
+        let worn = smoothstep(0.12, 0.48, slope) * smoothstep(0.38, 0.72, 0.6 * field + 0.4 * glade);
+        grass = mix(grass, vec3<f32>(0.45, 0.38, 0.25) * (0.85 + 0.30 * meadow), worn * 0.77);
+        var cut = 1.0;
+        if (kind == 4) {
+            cut += 0.05 * (1.0 - smoothstep(0.3, 2.8, footprint)) * sin((w.x + w.y * 0.22) * 0.9);
+        }
         return grass * cut * (0.90 + 0.17 * meadow + grain);
     }
+    let near_d = dist < 140.0;
+    let big = vnoise(w / 38.0);
+    var n = mix(big, vnoise(w / 11.0), 0.4);
+    let grain = (1.0 - smoothstep(0.6, 2.4, footprint)) * 0.2;
+    if (grain > 0.0) {
+        n += (vnoise(w / 3.6 + vec2<f32>(5.0, 9.0)) - big) * grain;
+    }
+    var k = mix(0.955, 1.05, smoothstep(0.34, 0.66, n));
     if (kind == 2) {
         // crop rows: rows run one way per field colour, a broad band of tone per row
         let alongx = (u32(base.r * 255.0 + 0.5) & 1u) == 0u;
@@ -690,102 +687,79 @@ fn season_leaf(dark: bool, season: i32) -> vec3<f32> {
 }
 
 
-// Natural ground of a land with a rock look: grass on gentle slopes, forest on the lower
-// mountainsides, stone below faces, rock on steep slopes (stepped strata, or fractured granite),
-// bare ground above the tree line and a clean snow cap above the snow line.
-fn terrain_look(world: vec3<f32>, n: vec3<f32>, facet: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
-    // `base` is the gentle ground: grass for the mountain looks, the vertex colour for looks whose
-    // flats, washes and beaches are coloured on the CPU
-    let grass = base;
-    if (g.rock[5].w < 0.5 || g.look.z > 0.5) {
-        return grass;
-    }
+// Use broad mineral beds at every scale and add the seams and chipped faces only
+// while their projected size is resolvable. This holds the formation's silhouette
+// and colour together when it occupies only a few pixels.
+fn terrain_look(world: vec3<f32>, n: vec3<f32>, dx: vec3<f32>, dy: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
+    let w = world.xy;
     let z = world.z;
-    let s = sqrt(max(1.0 - n.z * n.z, 0.0)) / max(n.z, 0.01);
-    let big = vnoise(world.xy / 11.0);
-    let fine = vnoise(world.xy / 3.5);
-    let wide = vnoise(world.xy / 90.0);
+    let pixel = sqrt(max(dot(dx, dx), dot(dy, dy)));
+    let broad = vnoise(w / 90.0);
+    let slope = length(n.xy) / max(n.z, 0.04);
+    let exposure = smoothstep(0.39, 0.98, slope + (broad - 0.5) * 0.15);
     let forest_s = g.rock[7].y;
-    let tree_line = g.rock[5].y + (wide - 0.5) * 70.0;
-    let rock_s = 0.7 + (big - 0.5) * 0.14;
-    let talus_s = 0.45 + (big - 0.5) * 0.1;
-    // the snow edge wanders slowly, so the cap has a clean outline
-    let snow_line = g.rock[5].x - g.wx.x * g.rock[6].w + (wide - 0.5) * 50.0;
-    if (z > snow_line && s < rock_s + 0.4) {
+    let tree_line = g.rock[5].y + (broad - 0.5) * 70.0;
+    let snow_line = g.rock[5].x - g.wx.x * g.rock[6].w + (broad - 0.5) * 50.0;
+    let snow = smoothstep(snow_line - 6.0, snow_line + 8.0, z)
+        * (1.0 - smoothstep(0.61, 1.2, slope));
+    if (snow >= 0.995) {
         return g.rock[6].rgb;
     }
-    if (forest_s > 0.0 && z < tree_line && s > 0.14 && s < forest_s) {
-        // forest canopy: two greens in clumps
-        let c = vnoise(world.xy / 7.0);
-        if (c > 0.55) {
-            return vec3<f32>(52.0, 112.0, 62.0) / 255.0;
+
+    var low = base;
+    if (g.rock[7].z > 0.5) {
+        // Wind-combed dune sheets in the desert, or patches of exposed coast sand.
+        // Vertex colour still carries the beach-to-shelf and plain-to-cap boundaries.
+        let along = vec2<f32>(w.x + w.y * 0.42, w.y - w.x * 0.25);
+        let sand = vnoise(along / vec2<f32>(68.0, 27.0) + broad * 1.9);
+        low *= 0.91 + 0.10 * broad + 0.07 * sand;
+        let ripples = (1.0 - smoothstep(0.20, 0.71, pixel)) * (1.0 - exposure);
+        if (ripples > 0.0) {
+            let crest = sin(along.y * 3.0 + sand * 7.0);
+            low *= 1.0 + 0.045 * crest * ripples;
         }
-        return vec3<f32>(66.0, 130.0, 70.0) / 255.0;
+    } else if (forest_s > 0.0) {
+        let canopy = (1.0 - smoothstep(tree_line - 35.0, tree_line + 18.0, z))
+            * smoothstep(0.06, 0.24, slope) * (1.0 - smoothstep(forest_s - 0.55, forest_s, slope));
+        let trees = mix(vec3<f32>(0.195, 0.393, 0.215), vec3<f32>(0.285, 0.501, 0.288), broad);
+        low = mix(low, trees, canopy * 0.72);
+        low = mix(low, g.rock[4].rgb, smoothstep(tree_line, tree_line + 150.0, z) * 0.64);
     }
-    if (s > talus_s) {
-        let tilt = world.x * 0.061 + world.y * 0.035;
-        // Joints, cracks and fragments are drawn triplanar: each is projected along the dominant
-        // axis of the true face normal, so a face looking along any axis keeps the scale of its
-        // strata and cracks instead of smearing into streaks down the wall.
-        let raw_w = pow(abs(facet), vec3<f32>(6.0)) + vec3<f32>(0.0001);
-        let tw = raw_w / (raw_w.x + raw_w.y + raw_w.z);
-        var cleavage = 0.0;
-        var fragments = 0.0;
-        if (tw.x > 0.02) {
-            // a face looking along x: the wall runs along y
-            cleavage += tw.x * vnoise(vec2<f32>(world.y / 14.0 + 3.1, z / 55.0));
-            fragments += tw.x * vnoise(vec2<f32>(world.y / 3.6 + 7.7, z / 7.8));
-        }
-        if (tw.y > 0.02) {
-            cleavage += tw.y * vnoise(vec2<f32>(world.x / 14.0, z / 55.0));
-            fragments += tw.y * vnoise(vec2<f32>(world.x / 3.6, z / 7.8));
-        }
-        if (tw.z > 0.02) {
-            // a top or a gentle slope: seen from above, with cells as wide as they are tall
-            cleavage += tw.z * vnoise(world.xy / 14.0 + vec2<f32>(11.3, 5.9));
-            fragments += tw.z * vnoise(world.xy / 3.6 + vec2<f32>(2.2, 9.4));
-        }
-        let lithology = vnoise(world.xy / 74.0 + vec2<f32>(z / 40.0, -z / 71.0));
-        var colour = mix(g.rock[0].rgb, g.rock[3].rgb, smoothstep(0.12, 0.91, lithology));
-        if (g.rock[7].x < 0.5) {
-            let warp = (vnoise(world.xy / 60.0 + vec2<f32>(8.0, -1.0)) - 0.5) * 18.0;
-            let layer = (z + tilt + warp + (fragments - 0.5) * 2.1) / max(2.0, g.rock[5].z);
-            let seam = smoothstep(0.82, 1.0, fract(layer)) * smoothstep(0.30, 0.78, cleavage);
-            let bed = 0.5 + 0.5 * sin(layer * 1.9 + lithology * 2.8);
-            colour = mix(colour, g.rock[1].rgb, bed * 0.41) * (1.0 - seam * g.rock[7].w);
-        }
-        let fracture = 1.0 - smoothstep(0.055, 0.22, abs(cleavage - 0.48));
-        colour = colour * (0.88 + fragments * 0.20 - fracture * 0.09);
-        let talus = g.rock[4].rgb * (0.90 + fine * 0.16);
-        let exposure = smoothstep(talus_s - 0.04, rock_s + 0.15, s);
-        let gravel = smoothstep(talus_s, rock_s - 0.06, s);
-        return mix(mix(grass, talus, gravel), colour, exposure);
+    if (exposure <= 0.0) {
+        return mix(low, g.rock[6].rgb, snow);
     }
-    if (forest_s <= 0.0 && s > 0.16) {
-        // a gorge slope too gentle to be rock: dry scrub with bare stone showing through, not a
-        // smooth green slide
-        let blotch = vnoise(world.xy / 8.0);
-        let grain = vnoise(world.xy / 2.6);
-        let bare = 0.42 + (s - 0.16) * 0.6;
-        if (blotch + (grain - 0.5) * 0.3 > 1.0 - bare) {
-            var tc = g.rock[4].rgb;
-            if (grain > 0.6) {
-                tc = tc * 0.88;
-            }
-            return tc;
-        }
-        let dry = vec3<f32>(112.0, 128.0, 70.0) / 255.0;
-        return mix(grass, dry, 0.72);
+
+    let vein = vnoise(w / 74.0 + vec2<f32>(z / 40.0, -z / 71.0));
+    var rock = mix(g.rock[0].rgb, g.rock[3].rgb, smoothstep(0.12, 0.91, vein));
+    if (g.rock[7].x < 0.5) {
+        let tilt = vec3<f32>(0.061, 0.035, 1.0);
+        let band = max(2.0, g.rock[5].z);
+        let layer = (dot(world, tilt) + (broad - 0.5) * 19.0) / band;
+        let bed = smoothstep(-0.58, 0.62, sin(layer * 1.7 + vein * 2.2));
+        rock = mix(rock, mix(g.rock[2].rgb, g.rock[1].rgb, bed), 0.68);
+        let layer_pixel = (abs(dot(dx, tilt)) + abs(dot(dy, tilt))) / band;
+        let seam_weight = 1.0 - smoothstep(0.05, 0.28, layer_pixel);
+        let seam = 1.0 - smoothstep(0.045, 0.16, abs(fract(layer + 0.5) - 0.5));
+        rock *= 1.0 - seam * seam_weight * g.rock[7].w * (0.20 + vein * 0.36);
     }
-    if (z > tree_line) {
-        // alpine meadow thinning to scree with height
-        let up = clamp((z - tree_line) / 180.0, 0.0, 1.0);
-        if (big < up * 0.9) {
-            return g.rock[4].rgb;
+    let detail = 1.0 - smoothstep(0.5, 4.0, pixel);
+    if (detail > 0.0) {
+        // Project chipped seams from two fixed world axes. Crossfade on diagonals
+        // so the pattern does not turn or stretch with the smoothed normal.
+        let axes = n.xy * n.xy;
+        let projection = smoothstep(0.18, 0.82, axes.x / max(0.001, axes.x + axes.y));
+        var chip = 0.0;
+        if (projection < 1.0) {
+            chip += (1.0 - projection) * vnoise(vec2<f32>(w.x / 7.2, z / 4.6));
         }
-        return mix(grass, vec3<f32>(128.0, 160.0, 96.0) / 255.0, 0.5);
+        if (projection > 0.0) {
+            chip += projection * vnoise(vec2<f32>(w.y / 7.2, z / 4.6) + vec2<f32>(8.3, 2.7));
+        }
+        rock *= 1.0 + (chip - 0.5) * (0.26 * detail);
     }
-    return grass;
+    let scree = g.rock[4].rgb * (0.92 + broad * 0.17);
+    let exposed = mix(low, scree, exposure * (1.0 - exposure) * 1.42);
+    return mix(mix(exposed, rock, exposure), g.rock[6].rgb, snow);
 }
 
 // World-space phase offsets spread activity across blocks. Each polygon also
@@ -1299,14 +1273,12 @@ fn road_dress(kind: i32, kb: vec3<f32>, world: vec3<f32>, n: vec3<f32>, px: f32,
     let w = world.xy;
     let cover = smoothstep(0.06, 0.7, g.wx.x) * select(0.0, 1.0, g.look.y > 0.5);
     if (kind == 3) {
-        // junction paving: the same wet asphalt with slush lying in patches
+        // Ploughed junctions have a light film. Keep the same asphalt tone as
+        // the lanes so a joining pad does not read as a separate black polygon.
         let asphalt = vec3<f32>(108.0, 108.0, 120.0) / 255.0;
         let paved = textured_surface(asphalt, asphalt, world, n, px, true, false);
-        let patch_ = vnoise(w / 3.0) * 0.6 + vnoise(w / 1.0) * 0.4;
-        let slush = cover * 0.30 * smoothstep(0.42, 0.74, patch_);
-        let wet_patch = cover * smoothstep(0.30, 0.58, vnoise(w / 4.5 + vec2<f32>(6.0, 2.0)));
-        let wetter = mix(paved, paved * vec3<f32>(0.62, 0.64, 0.70), wet_patch * 0.8);
-        return mix(wetter, vec3<f32>(0.70, 0.72, 0.76), slush);
+        let salt = cover * (0.055 + 0.12 * smoothstep(0.31, 0.75, vnoise(w / 4.0)));
+        return mix(paved, vec3<f32>(0.68, 0.70, 0.74), salt);
     }
     if (kind == 1) {
         let t = clamp((kb.b - 140.0) / 113.0, 0.0, 1.0);
@@ -1356,6 +1328,9 @@ fn road_dress(kind: i32, kb: vec3<f32>, world: vec3<f32>, n: vec3<f32>, px: f32,
     return mix(dirty, vec3<f32>(0.70, 0.71, 0.73), slush * (1.0 - gutter * 0.5));
 }
 
+// Matches the terrain material tag set by the heightfield mesh builder.
+const TERRAIN_SURFACE: u32 = 253u;
+
 @fragment
 fn fs_main(v: VOut) -> FOut {
     var n = normalize(v.normal);
@@ -1397,9 +1372,14 @@ fn fs_main(v: VOut) -> FOut {
     if (dot(facet, n) < 0.0) {
         facet = -facet;
     }
+    let a = v.color.a;
+    let code = u32(round(a * 255.0));
+    let ground = v.id == 0u;
+    let base_terrain = ground && code == TERRAIN_SURFACE;
     var rc = v.color.rgb;
-    if (v.id == 0u && v.color.a > 0.5 && rc.r > 0.72 && abs(rc.g - 0.5) < 0.06 && rc.b < 0.34) {
-        // the road works edge: a dull striped barrier, never a bright orange line
+    if (ground && !base_terrain && code == 255u && near(rc, 196.0, 126.0, 78.0)) {
+        // The muted roadworks cones use a fixed marker. Sandstone can be the
+        // same colour, so the base terrain is excluded before interpreting it.
         let stripe = step(0.5, fract((v.world.x + v.world.y) / 1.4));
         rc = mix(vec3<f32>(0.30, 0.28, 0.27), vec3<f32>(0.55, 0.41, 0.31), stripe);
     }
@@ -1417,12 +1397,9 @@ fn fs_main(v: VOut) -> FOut {
         col = mix(vec3<f32>(0.55, 0.45, 0.36), vec3<f32>(0.52, 0.50, 0.48), hash2(cell))
             * (0.88 + 0.22 * hash2(cell + vec2<i32>(7, 3)));
     }
-    let a = v.color.a;
-    let code = u32(round(a * 255.0));
     let finish = select(0u, code, code >= 240u && code <= 251u);
     let cel = a > 0.5;
     let keep = finish == 0u && a > 0.001 && a < 0.999;
-    let ground = v.id == 0u;
     let exempt = v.id == 16777215u;
     var dress = 0;
     if (ground && cel) {
@@ -1449,28 +1426,20 @@ fn fs_main(v: VOut) -> FOut {
             col = vec3<f32>(f32((v.tint >> 16u) & 255u), f32((v.tint >> 8u) & 255u), f32(v.tint & 255u)) / 255.0;
         }
     }
-    if (ground && abs(col.r * 255.0 - 116.0) < 0.6 && abs(col.g * 255.0 - 172.0) < 0.6 && abs(col.b * 255.0 - 95.0) < 0.6) {
-        col = terrain_look(v.world, n, facet, vec3<f32>(116.0, 172.0, 92.0) / 255.0);
-        if (g.rock[5].w > 0.5 && g.look.z < 0.5 && n.z < 0.9) {
-            l = dot(facet, g.sun.xyz);
+    let rock_terrain = base_terrain && g.rock[5].w > 0.5 && water_kind(col) == 0;
+    if (rock_terrain || coastal_rock) {
+        // Use the heightfield's continuous normal for the material and lighting.
+        // Blend in the real face only where coarse geometry undersells a steep
+        // slope, without flipping whole triangles from one material to another.
+        let slope = (1.0 - smoothstep(0.62, 0.94, facet.z)) * 0.32;
+        if (coastal_rock) {
+            n = normalize(vec3<f32>(n.xy, 0.28));
+        } else {
+            n = normalize(mix(n, facet, slope));
         }
-    } else if (ground && g.rock[7].z > 0.5 && g.look.z < 0.5 && (n.z < 0.92 || facet.z < 0.9)) {
-        // looks with CPU ground colours: only steep ground is repainted here. A wall is judged by
-        // the true normal of its triangle, and lit as if upright: the coarse grid makes tilted
-        // triangles at the foot of a cliff whose sun facing left tall pale spikes on the rock.
-        if (facet.z < 0.9) {
-            n = facet;
-            if (facet.z < 0.86) {
-                let h = normalize(v.normal.xy + vec2<f32>(0.0001, 0.0));
-                n = normalize(vec3<f32>(h * 0.97, 0.24));
-            }
-            l = dot(n, g.sun.xyz);
-        }
-        col = terrain_look(v.world, n, facet, col);
-    }
-    if (coastal_rock && g.look.z < 0.5) {
-        let wall_normal = normalize(vec3<f32>(n.xy, 0.28));
-        col = terrain_look(v.world, wall_normal, facet, col);
+        l = dot(n, g.sun.xyz);
+        let base = select(vec3<f32>(116.0, 172.0, 92.0) / 255.0, col, g.rock[7].z > 0.5);
+        col = terrain_look(v.world, n, world_dx, world_dy, base);
     }
     var emissive = false;
     var haze_twigs = false;
@@ -1640,7 +1609,9 @@ fn fs_main(v: VOut) -> FOut {
         col = water_colour(wkind, v.world, water_px, n);
     } else if (gkind > 0) {
         let snowy = min(col.r, min(col.g, col.b)) > 0.88;
-        col = ground_detail(col, rc, gkind, v.world.xy, v.dist, snowy);
+        let pixel = sqrt(max(dot(world_dx.xy, world_dx.xy), dot(world_dy.xy, world_dy.xy)));
+        let slope = select(0.0, length(n.xy) / max(n.z, 0.05), base_terrain);
+        col = ground_detail(col, rc, gkind, v.world.xy, v.dist, pixel, slope, snowy);
         if (snowy) {
             col = snow_relief(col, v.world.xy, 1.0 - 0.8 * smoothstep(0.8, 3.0, g.screen.z * v.dist));
         }
@@ -1704,7 +1675,7 @@ fn fs_main(v: VOut) -> FOut {
         var d = l - g.sun.z;
         if (g.rock[7].z > 0.5) {
             // flat desert and sea flats must read flat: a faint swell of the land is not shaded
-            d = d * (1.0 - 0.97 * smoothstep(0.9, 0.97, facet.z));
+            d = d * (1.0 - 0.86 * smoothstep(0.90, 0.985, n.z));
         }
         let rock_grade = smoothstep(0.68, 0.95, n.z);
         k = clamp(1.0 + d * mix(0.42, 1.25, rock_grade), 0.71, 1.12);

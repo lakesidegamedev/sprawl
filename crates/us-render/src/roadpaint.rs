@@ -780,8 +780,103 @@ pub(crate) fn traffic_junctions(
         .collect()
 }
 
+/// Where two approaches diverge at a shallow angle, their full road widths can
+/// still overlap past the corner, especially if one ends in a short hook. Draw
+/// one paved apron through the shared width so lane paint, kerbs and snowbanks
+/// cannot cut across the merge. Follow the actual curves beyond the pad.
+fn draw_skew_aprons(
+    g: &mut Ground,
+    node: &Node,
+    neighbours: &[Node],
+    all: &[&RoadDraw],
+    clear: &mut [Vec<(f64, f64)>],
+) {
+    if near_water(|p| g.water_at(p), node.p, 35.0) {
+        return;
+    }
+    let arms = node.arms.as_slice();
+    for (i, first) in arms.iter().enumerate() {
+        let second = &arms[(i + 1) % arms.len()];
+        if first.road == second.road
+            || first.ring
+            || second.ring
+            || first.class == RoadClass::Highway
+            || second.class == RoadClass::Highway
+            || first.dir.dot(second.dir) < 0.70
+        {
+            continue;
+        }
+        let (a, b) = if first.hw >= second.hw {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let (a_line, b_line) = (all[a.road].points, all[b.road].points);
+        let a_sign = if a.fwd { 1.0 } else { -1.0 };
+        let b_sign = if b.fwd { 1.0 } else { -1.0 };
+        let end = if a.fwd { len(a_line) - a.s0 } else { a.s0 }.min(170.0);
+        let mut sections = Vec::new();
+        let mut last = (a.s0, b.s0);
+        let mut offset: f64 = 0.0;
+        loop {
+            let s = a.s0 + a_sign * offset;
+            let centre = at(a_line, s);
+            let forward = tangent_at(a_line, s);
+            let across = pt(-forward.y, forward.x);
+            let (b_s, distance, other) = project(b_line, centre);
+            if distance >= a.hw + b.hw || (b_s - b.s0) * b_sign < -0.75 {
+                break;
+            }
+            let span = (other - centre).dot(across);
+            last = (s, b_s);
+            let other_half = b.hw / forward.dot(tangent_at(b_line, b_s)).abs().max(0.88);
+            // Round the fillet where the outside edges of the two roads meet.
+            // The rounding goes to zero as soon as one edge is clearly outside.
+            let outer = |other_edge: f64| {
+                let blend = (1.0 - (a.hw - other_edge).abs() / 5.0).max(0.0);
+                a.hw.max(other_edge) + 1.25 * blend * blend
+            };
+            sections.push([
+                centre - across * outer(other_half - span),
+                centre + across * outer(span + other_half),
+            ]);
+            if offset >= end {
+                break;
+            }
+            offset = (offset + 4.0).min(end);
+        }
+        // At an ordinary angled junction the standard corner pad covers this much.
+        // Only draw an apron for approaches with sustained surface overlap.
+        if sections.len() <= 5 {
+            continue;
+        }
+        let linked = neighbours
+            .iter()
+            .flat_map(|other| other.arms.iter())
+            .filter(|arm| arm.road == a.road && (a.s0 - arm.s0) * a_sign > 0.5)
+            .filter(|arm| (arm.s0 - a.s0).abs() <= 28.0)
+            .min_by(|l, r| (l.s0 - a.s0).abs().total_cmp(&(r.s0 - a.s0).abs()));
+        let start = if let Some(near) = linked {
+            // Adjacent mouths on the same arterial read as one compound
+            // junction. Clear the short bit of lane paint between their pads.
+            let link = sub_line(a_line, near.s0.min(a.s0), near.s0.max(a.s0));
+            g.ribbon(&link, a.hw as f32, 0.0, z::PAD + 0.006, PAD);
+            near.s0
+        } else {
+            a.s0
+        };
+        clear[a.road].push((start.min(last.0), start.max(last.0)));
+        clear[b.road].push((b.s0.min(last.1), b.s0.max(last.1)));
+        for pair in sections.windows(2) {
+            let [left, right] = pair[0];
+            let [next_left, next_right] = pair[1];
+            g.polygon(&[left, right, next_right, next_left], z::PAD + 0.006, PAD);
+        }
+    }
+}
+
 /// Junctions: kerb corners, the pad that hides lines across them, zebra crossings.
-fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
+fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw], clear: &[Vec<(f64, f64)>]) {
     if n.arms.iter().any(|a| all[a.road].works.is_some())
         || near_water(|p| g.water_at(p), n.p, 35.0)
     {
@@ -835,6 +930,13 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw]) {
             );
         }
         let d = pad.cut[k] + 2.9;
+        let crossing = a.s0 + if a.fwd { d } else { -d };
+        if clear[a.road]
+            .iter()
+            .any(|&(lo, hi)| crossing + 2.0 > lo && crossing - 2.0 < hi)
+        {
+            continue;
+        }
         // room for a crossing at each end of the block, not on top of the next one
         if a.avail < 2.0 * d + 3.0 {
             continue;
@@ -917,6 +1019,10 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], context: &[RoadDraw]) {
                 .all(|arm| (paths[arm.road].z(arm.s0 as f32) - ground).abs() <= 2.5)
         });
     }
+    let mut clear = vec![Vec::new(); all.len()];
+    for node in &nodes {
+        draw_skew_aprons(g, node, &nodes, &all, &mut clear);
+    }
     for (i, r) in all.iter().take(n_mine).enumerate() {
         if r.works.is_some() {
             continue;
@@ -979,10 +1085,10 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], context: &[RoadDraw]) {
             }
             g.polygon(&circle(o, 2.2), z::MEDIAN + 0.01, SHRUB);
         }
-        marks(g, i, r, ring.is_some(), ramp_at, &nodes);
+        marks(g, i, r, ring.is_some(), ramp_at, &nodes, &clear[i]);
     }
     for n in &nodes {
-        draw_node(g, n, &all);
+        draw_node(g, n, &all, &clear);
     }
 }
 
@@ -1018,9 +1124,14 @@ fn point_at(line: &[Pt], along: f64) -> Pt {
 }
 
 /// Keep arterial striping clear of other arterial approaches, even on skew junctions.
-fn arterial_marking_segments(road: usize, line: &[Pt], nodes: &[Node]) -> Vec<Vec<Pt>> {
+fn arterial_marking_segments(
+    road: usize,
+    line: &[Pt],
+    nodes: &[Node],
+    clear: &[(f64, f64)],
+) -> Vec<Vec<Pt>> {
     let total = len(line);
-    let mut cuts = Vec::new();
+    let mut cuts = clear.to_vec();
     for n in nodes {
         for a in n.arms.iter().filter(|a| a.road == road) {
             let reach = n
@@ -1039,6 +1150,10 @@ fn arterial_marking_segments(road: usize, line: &[Pt], nodes: &[Node]) -> Vec<Ve
             }
         }
     }
+    segments_without(line, cuts, total)
+}
+
+fn segments_without(line: &[Pt], mut cuts: Vec<(f64, f64)>, total: f64) -> Vec<Vec<Pt>> {
     cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut pieces = Vec::new();
     let mut start = 0.0;
@@ -1061,6 +1176,7 @@ fn marks(
     ring: bool,
     ramp: Option<(bool, bool)>,
     nodes: &[Node],
+    clear: &[(f64, f64)],
 ) {
     let hw = r.class.half_width() as f32;
     let line = r.points;
@@ -1075,7 +1191,7 @@ fn marks(
             }
         }
         RoadClass::Arterial => {
-            for segment in arterial_marking_segments(i, line, nodes) {
+            for segment in arterial_marking_segments(i, line, nodes, clear) {
                 let stripes = dashes(&segment, 3.0, 6.0);
                 for side in [-1.0f32, 1.0] {
                     g.ribbon(&segment, 0.09, side * 0.22, z::MARK, YELLOW);
@@ -1085,7 +1201,7 @@ fn marks(
                     }
                 }
             }
-            median(g, i, line, nodes);
+            median(g, i, line, nodes, clear);
         }
         RoadClass::Collector if ramp.is_some() => {
             // a one-way slip lane: white edge lines and arrows the way traffic runs
@@ -1113,9 +1229,11 @@ fn marks(
             }
         }
         RoadClass::Collector if !ring => {
-            g.ribbon(line, 0.1, 0.0, z::MARK, YELLOW);
-            for side in [-1.0f32, 1.0] {
-                g.ribbon(line, 0.1, side * (hw - 0.6), z::MARK, WHITE);
+            for segment in segments_without(line, clear.to_vec(), len(line)) {
+                g.ribbon(&segment, 0.1, 0.0, z::MARK, YELLOW);
+                for side in [-1.0f32, 1.0] {
+                    g.ribbon(&segment, 0.1, side * (hw - 0.6), z::MARK, WHITE);
+                }
             }
         }
         RoadClass::Collector => {
@@ -1128,9 +1246,10 @@ fn marks(
 }
 
 /// A planted median down the middle of an arterial, left open where roads join it.
-fn median(g: &mut Ground, road: usize, line: &[Pt], nodes: &[Node]) {
+fn median(g: &mut Ground, road: usize, line: &[Pt], nodes: &[Node], clear: &[(f64, f64)]) {
     let total = len(line);
     let mut cuts: Vec<(f64, f64)> = vec![(0.0, 16.0), (total - 16.0, total)];
+    cuts.extend(clear.iter().map(|&(lo, hi)| (lo - 2.8, hi + 2.8)));
     for n in nodes {
         if n.arms.iter().any(|a| a.road == road) {
             let (s, d, _) = project(line, n.p);
@@ -1229,6 +1348,49 @@ mod tests {
         let nodes = find_nodes(&roads, 1);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].arms.len(), 4);
+    }
+
+    #[test]
+    fn skew_join_paves_over_overlapping_lane_lines() {
+        let avenue = [pt(-120.0, 0.0), pt(240.0, 0.0)];
+        // A short hook enters an arterial. Beyond the hook the carriageways
+        // share pavement for tens of metres before they diverge.
+        let collector = [pt(0.0, 0.0), pt(2.0, 3.0), pt(100.0, 19.0)];
+        let roads = [
+            RoadDraw {
+                class: RoadClass::Arterial,
+                points: &avenue,
+                works: None,
+            },
+            RoadDraw {
+                class: RoadClass::Collector,
+                points: &collector,
+                works: None,
+            },
+        ];
+        let mut g = Ground::on(&crate::Land::flat(512.0));
+        crate::live::add_roads(&mut g, &roads, &[]);
+        let paved = |x: f64, y: f64| {
+            g.mesh.plain.chunks_exact(3).any(|tri| {
+                let vertices = [tri[0], tri[1], tri[2]].map(|i| g.mesh.vertices[i as usize]);
+                if !vertices.iter().all(|v| v.color[..3] == PAD) {
+                    return false;
+                }
+                let pts = vertices.map(|v| pt(v.pos[0] as f64, v.pos[1] as f64));
+                let p = pt(x, y);
+                let sides = [0, 1, 2].map(|i| (pts[(i + 1) % 3] - pts[i]).cross(p - pts[i]));
+                sides.iter().all(|&a| a >= -1e-5) || sides.iter().all(|&a| a <= 1e-5)
+            })
+        };
+        assert!(
+            paved(40.31, 1.63),
+            "lane stripe remains inside the shared asphalt"
+        );
+        assert!(
+            paved(40.31, 7.16),
+            "snow or a kerb can divide the shared asphalt"
+        );
+        assert!(!paved(105.32, 1.63), "the apron continued past the merge");
     }
 
     #[test]

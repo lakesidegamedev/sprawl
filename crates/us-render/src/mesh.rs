@@ -8,6 +8,8 @@ use glam::Vec3;
 pub const ID_GROUND: u32 = 0;
 /// Outline id of a face that takes part in no outline (parking lines, paths).
 pub const ID_NONE: u32 = 0x00FF_FFFF;
+/// Base heightfield material, distinguished from roads, rivers and zoned paving.
+pub(crate) const TERRAIN_SURFACE: u8 = 253;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
