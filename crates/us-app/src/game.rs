@@ -3,6 +3,7 @@
 #![allow(deprecated)]
 
 use crate::cam::CamCtl;
+use crate::graphics::{Display, Graphics, Quality, Resolution, ShadowQuality};
 use crate::theme::{self, ACCENT, BAD, INK, TEXT, heading, ui_font};
 use crate::world::LiveScene;
 use egui::{Align2, Color32, Pos2, RichText, Stroke, vec2};
@@ -39,10 +40,7 @@ const SPEED_LABELS: [&str; 4] = ["II", "1x", "3x", "8x"];
 pub struct Settings {
     pub fullscreen: bool,
     pub ui_scale: f32,
-    pub high_shadows: bool,
-    pub balanced_world_resolution: bool,
-    pub detailed_graphics: bool,
-    pub tilt_shift: bool,
+    pub(crate) graphics: Graphics,
     pub(crate) audio: crate::audio::Preferences,
     /// Day and night cycle (true) or always day (false).
     pub day_night: bool,
@@ -247,6 +245,8 @@ pub struct State {
     fps_acc: (f32, u32),
     world_quality: WorldQuality,
     style: Style,
+    /// The display and graphics settings as last written to disk.
+    saved_display: Display,
     smoke: Option<Smoke>,
     error: Option<String>,
     /// Lakeside launcher handoff, optional sign-in and update check. The game never needs it to play.
@@ -306,6 +306,22 @@ fn to_screen(ndc: (f32, f32), w: u32, h: u32, ppp: f32) -> Pos2 {
     )
 }
 
+/// A graphics control heading: its name, a muted cost hint, and a one line description.
+fn gfx_head(ui: &mut egui::Ui, title: &str, about: &str, cost: &str) {
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        label(ui, title, 14.0);
+        if !cost.is_empty() {
+            ui.label(
+                RichText::new(cost)
+                    .font(ui_font(12.0))
+                    .color(Color32::from_gray(140)),
+            );
+        }
+    });
+    label(ui, about, 12.0);
+}
+
 pub(super) fn label(ui: &mut egui::Ui, text: &str, size: f32) {
     ui.label(RichText::new(text).font(ui_font(size)).color(TEXT));
 }
@@ -332,15 +348,13 @@ impl State {
                     Some((a.parse().ok()?, b.parse().ok()?))
                 }),
             });
+        let display = Display::load();
         let mut st = State {
             screen: Screen::Menu,
             settings: Settings {
-                fullscreen: false,
-                ui_scale: 1.0,
-                high_shadows: !cfg!(any(target_os = "ios", target_os = "android")),
-                balanced_world_resolution: true,
-                detailed_graphics: false,
-                tilt_shift: false,
+                fullscreen: display.fullscreen,
+                ui_scale: display.ui_scale,
+                graphics: display.graphics,
                 audio: crate::audio::Preferences::load(),
                 day_night: true,
                 reduce_motion: std::env::var("URBAN_SPRAWL_REDUCE_MOTION").is_ok_and(|v| v == "1"),
@@ -365,6 +379,7 @@ impl State {
             fps_acc: (0.0, 0),
             world_quality: WorldQuality::default(),
             style: Style::default(),
+            saved_display: display,
             smoke,
             error: None,
             lakeside: us_lakeside::Lakeside::start(),
@@ -389,10 +404,11 @@ impl State {
         }
         // URBAN_SPRAWL_SMOKE_GFX=detailed|native|balanced picks the graphics setting for pictures
         match std::env::var("URBAN_SPRAWL_SMOKE_GFX").as_deref() {
-            Ok("detailed") => st.settings.detailed_graphics = true,
-            Ok("native") => st.settings.balanced_world_resolution = false,
+            Ok("detailed") => st.settings.graphics.detailed_surfaces = true,
+            Ok("native") => st.settings.graphics.resolution = Resolution::P100,
             _ => {}
         }
+        st.settings.graphics.touch();
         if let Some(v) = std::env::var("URBAN_SPRAWL_SMOKE_SCALE")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
@@ -531,19 +547,12 @@ impl State {
     }
 
     pub fn update(&mut self, dt: f32, visual_dt: f32, w: u32, h: u32) {
-        let scale = self
-            .world_quality
-            .scale(visual_dt, self.settings.balanced_world_resolution);
-        let under_pressure = self.world_quality.tier == 2;
-        self.style.shadow_size = if self.settings.high_shadows && !under_pressure {
-            4096
-        } else {
-            2048
-        };
-        self.style.high_detail = self.settings.detailed_graphics;
-        self.style.contact_shade =
-            (self.settings.high_shadows && !under_pressure) || self.settings.detailed_graphics;
-        self.style.tilt_shift = self.settings.tilt_shift;
+        let gfx = self.settings.graphics;
+        let auto = gfx.resolution == Resolution::Auto;
+        let adaptive = self.world_quality.scale(visual_dt, auto);
+        let scale = gfx.resolution.fixed_scale().unwrap_or(adaptive);
+        let under_pressure = auto && self.world_quality.tier == 2;
+        gfx.apply_to(&mut self.style, under_pressure);
         self.style.window_world_scale = scale;
         self.autopilot();
         if self.screen == Screen::Load && self.saves.is_empty() && self.smoke.is_some() {
@@ -1166,40 +1175,123 @@ impl State {
             }
             label(ui, "UI scale", 14.0);
             ui.add(egui::Slider::new(&mut self.settings.ui_scale, 0.8..=1.8).step_by(0.1));
-            label(ui, "Shadows", 14.0);
-            ui.horizontal(|ui| {
-                ui.selectable_value(
-                    &mut self.settings.high_shadows,
-                    true,
-                    RichText::new("Crisp").font(ui_font(16.0)),
-                );
-                ui.selectable_value(
-                    &mut self.settings.high_shadows,
-                    false,
-                    RichText::new("Fast").font(ui_font(16.0)),
-                );
-            });
-            label(ui, "World resolution", 14.0);
-            ui.horizontal(|ui| {
-                ui.selectable_value(
-                    &mut self.settings.balanced_world_resolution,
-                    false,
-                    "Native",
-                );
-                ui.selectable_value(
-                    &mut self.settings.balanced_world_resolution,
-                    true,
-                    "Balanced",
-                )
-                .on_hover_text(
-                    "Adjusts the city resolution on slower frames. Menus and text stay sharp.",
-                );
-            });
-            ui.checkbox(
-                &mut self.settings.detailed_graphics,
-                "Detailed atmosphere and surfaces",
+            ui.add_space(6.0);
+            ui.label(heading("Graphics", 22.0));
+            let before = self.settings.graphics;
+            let g = &mut self.settings.graphics;
+            label(ui, "Quality preset", 14.0);
+            label(
+                ui,
+                "Sets every graphics control below. Change one and this reads Custom.",
+                12.0,
             );
-            ui.checkbox(&mut self.settings.tilt_shift, "Mild tilt shift");
+            ui.horizontal_wrapped(|ui| {
+                for q in Quality::PICKABLE.into_iter().chain([Quality::Custom]) {
+                    let on = g.quality == q;
+                    let text = RichText::new(q.name()).font(ui_font(16.0));
+                    let r = ui.selectable_label(on, text);
+                    if r.clicked() && q != Quality::Custom {
+                        g.apply_preset(q);
+                    }
+                }
+            });
+            gfx_head(
+                ui,
+                "Resolution",
+                "How sharp the city is drawn. Menus and text stay sharp.",
+                "Higher cost at 100%",
+            );
+            ui.horizontal_wrapped(|ui| {
+                for r in Resolution::ALL {
+                    let text = RichText::new(r.name()).font(ui_font(16.0));
+                    let resp = ui.selectable_value(&mut g.resolution, r, text);
+                    if r == Resolution::Auto {
+                        resp.on_hover_text("Adjusts the city resolution on slower frames.");
+                    }
+                }
+            });
+            gfx_head(
+                ui,
+                "Shadows",
+                "How crisp shadows are. Auto resolution lowers this on slow frames.",
+                "Higher cost",
+            );
+            ui.horizontal(|ui| {
+                for q in ShadowQuality::ALL {
+                    let text = RichText::new(q.name()).font(ui_font(16.0));
+                    ui.selectable_value(&mut g.shadows, q, text);
+                }
+            });
+            gfx_head(
+                ui,
+                "Ambient shading",
+                "Darkens creases and the ground at the foot of walls.",
+                "Small cost",
+            );
+            ui.checkbox(&mut g.ambient_shading, "On");
+            gfx_head(
+                ui,
+                "Atmosphere and surfaces",
+                "Finer haze, smoother edges and detailed surface lighting.",
+                "Higher cost",
+            );
+            ui.checkbox(&mut g.detailed_surfaces, "On");
+            gfx_head(
+                ui,
+                "Distant detail",
+                "Far buildings are drawn simply. Full detail shows every part at any distance.",
+                "Highest cost at full detail",
+            );
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut g.reduced_far_detail,
+                    true,
+                    RichText::new("Simplified far away").font(ui_font(16.0)),
+                );
+                ui.selectable_value(
+                    &mut g.reduced_far_detail,
+                    false,
+                    RichText::new("Full detail").font(ui_font(16.0)),
+                );
+            });
+            gfx_head(ui, "Outlines", "Line width around buildings and roads.", "");
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut g.bold_outlines,
+                    false,
+                    RichText::new("Thin").font(ui_font(16.0)),
+                );
+                ui.selectable_value(
+                    &mut g.bold_outlines,
+                    true,
+                    RichText::new("Bold").font(ui_font(16.0)),
+                );
+            });
+            gfx_head(
+                ui,
+                "Tilt shift",
+                "Soft focus at the top and bottom of the view.",
+                "Small cost",
+            );
+            ui.checkbox(&mut g.tilt_shift, "Mild tilt shift");
+            gfx_head(
+                ui,
+                "VSync",
+                "Matches the screen refresh. Off may tear but can feel more responsive.",
+                "",
+            );
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut g.vsync, true, RichText::new("On").font(ui_font(16.0)));
+                ui.selectable_value(
+                    &mut g.vsync,
+                    false,
+                    RichText::new("Off").font(ui_font(16.0)),
+                );
+            });
+            if *g != before {
+                g.touch();
+            }
+            ui.add_space(6.0);
             label(ui, "Day and night", 14.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(
@@ -1257,6 +1349,7 @@ impl State {
                 ui.add_space(8.0);
                 self.account_ui(ui);
             }
+            self.store_display(ctx);
             ui.add_space(10.0);
             if theme::button(ui, "Back").clicked() {
                 if self.settings_from_game && self.game.is_some() {
@@ -1272,6 +1365,21 @@ impl State {
                 }
             }
         });
+    }
+
+    /// Writes window, UI scale and graphics choices once they change and no slider is held.
+    fn store_display(&mut self, ctx: &egui::Context) {
+        let now = Display {
+            fullscreen: self.settings.fullscreen,
+            ui_scale: self.settings.ui_scale,
+            graphics: self.settings.graphics,
+        };
+        if now != self.saved_display && !ctx.input(|i| i.pointer.any_down()) {
+            if let Err(err) = now.save() {
+                crate::log(&format!("could not store graphics preferences: {err}"));
+            }
+            self.saved_display = now;
+        }
     }
 
     fn note(&self, text: impl Into<String>) {

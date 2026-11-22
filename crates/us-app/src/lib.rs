@@ -6,6 +6,7 @@ mod cam;
 #[cfg(test)]
 mod capture;
 pub(crate) mod game;
+mod graphics;
 mod platform;
 mod saves;
 mod theme;
