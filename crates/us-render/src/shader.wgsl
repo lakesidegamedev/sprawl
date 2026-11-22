@@ -1267,18 +1267,71 @@ fn snow_relief(col: vec3<f32>, w: vec2<f32>, amount: f32) -> vec3<f32> {
     return mix(col, c, amount);
 }
 
+// Farmland and woodlots past the edge of the playable map, so a green countryside runs
+// on instead of stopping at a square. Fields share the in-map palette, carry hedgerows
+// only while they are resolvable, and fade into plain land with distance from the edge.
+fn exterior_country(col: vec3<f32>, w: vec2<f32>, px: f32) -> vec3<f32> {
+    let size = 1.0 / g.terrain.z;
+    let outside = length(max(max(-w, w - vec2<f32>(size)), vec2<f32>(0.0)));
+    let reach = smoothstep(0.0, 160.0, outside) * (1.0 - smoothstep(2400.0, 5600.0, outside));
+    if (reach <= 0.0) {
+        return col;
+    }
+    // each district of farms is laid out on its own slightly turned grid
+    let district = vec2<i32>(floor(w / 2600.0));
+    let turn = (hash2(district) - 0.5) * 0.7;
+    let cs = cos(turn);
+    let sn = sin(turn);
+    let r = vec2<f32>(cs * w.x - sn * w.y, sn * w.x + cs * w.y);
+    let span = vec2<f32>(560.0 + 260.0 * hash2(district + vec2<i32>(3, 9)), 430.0);
+    let cell = vec2<i32>(floor(r / span));
+    let f = fract(r / span);
+    let pick = i32(hash2(cell + vec2<i32>(17, 3)) * 13.0);
+    let tone = 0.95 + 0.10 * hash2(cell + vec2<i32>(5, 41));
+    // the in-map field palette, with pasture (the plain land) as the commonest use
+    var crop = col;
+    switch (pick) {
+        case 0: { crop = vec3<f32>(176.0, 198.0, 106.0) / 255.0; }
+        case 1: { crop = vec3<f32>(198.0, 186.0, 124.0) / 255.0; }
+        case 2: { crop = vec3<f32>(140.0, 172.0, 96.0) / 255.0; }
+        case 3: { crop = vec3<f32>(206.0, 194.0, 140.0) / 255.0; }
+        case 4: { crop = vec3<f32>(222.0, 194.0, 100.0) / 255.0; }
+        case 5: { crop = vec3<f32>(170.0, 134.0, 94.0) / 255.0; }
+        case 6: { crop = vec3<f32>(168.0, 190.0, 110.0) / 255.0; }
+        default: {}
+    }
+    var c = mix(col, crop * tone, 0.85);
+    let edge = min(min(f.x, 1.0 - f.x) * span.x, min(f.y, 1.0 - f.y) * span.y);
+    let hedge = (1.0 - smoothstep(1.5, 4.0 + px, edge)) * (1.0 - smoothstep(5.0, 30.0, px));
+    c = mix(c, col * vec3<f32>(0.55, 0.70, 0.50), hedge * 0.75);
+    // woodlots on the poorer ground between the farms, with ragged soft edges
+    let lot = vnoise(w / 640.0) * 0.55 + vnoise(w / 230.0 + vec2<f32>(11.0, 4.0)) * 0.3
+        + vnoise(w / 70.0 + vec2<f32>(3.0, 8.0)) * 0.15;
+    let wood = smoothstep(0.60, 0.68, lot);
+    let canopy = vec3<f32>(0.26, 0.42, 0.20) * (0.86 + 0.28 * vnoise(w / 9.0));
+    c = mix(c, canopy, wood);
+    return mix(col, c, reach);
+}
+
 // The ploughed banks along a kerb (kind 1) and the worn lanes of a cleared road (kind 2). The
 // geometry carries a position across the strip in its blue channel.
 fn road_dress(kind: i32, kb: vec3<f32>, world: vec3<f32>, n: vec3<f32>, px: f32, gradb: vec2<f32>) -> vec3<f32> {
     let w = world.xy;
     let cover = smoothstep(0.06, 0.7, g.wx.x) * select(0.0, 1.0, g.look.y > 0.5);
     if (kind == 3) {
-        // Ploughed junctions have a light film. Keep the same asphalt tone as
-        // the lanes so a joining pad does not read as a separate black polygon.
+        // Traffic crossing a junction churns its slush into broken patches instead
+        // of the parallel wheel paths of a lane. Match the lanes' average cover and
+        // contrast so the paving does not read as a separate dark polygon.
         let asphalt = vec3<f32>(108.0, 108.0, 120.0) / 255.0;
         let paved = textured_surface(asphalt, asphalt, world, n, px, true, false);
-        let salt = cover * (0.055 + 0.12 * smoothstep(0.31, 0.75, vnoise(w / 4.0)));
-        return mix(paved, vec3<f32>(0.68, 0.70, 0.74), salt);
+        let detail = 1.0 - smoothstep(0.10, 0.45, px);
+        let churn = vnoise(w / 0.85) * 0.55 + vnoise(w / 0.32 + vec2<f32>(5.0, 2.0)) * 0.45;
+        let patches = mix(0.28, 0.12 + 0.4 * smoothstep(0.3, 0.8, churn), detail);
+        let wet = mix(paved, paved * 0.80, cover * (1.0 - patches) * 0.7 * detail);
+        let salt = cover * (0.04 + 0.08 * smoothstep(0.31, 0.75, vnoise(w / 4.0)));
+        let salted = mix(wet, vec3<f32>(0.66, 0.67, 0.69), salt);
+        let slush = cover * clamp(0.06 + 0.5 * patches, 0.0, 0.8);
+        return mix(salted, vec3<f32>(0.70, 0.71, 0.73), slush);
     }
     if (kind == 1) {
         let t = clamp((kb.b - 140.0) / 113.0, 0.0, 1.0);
@@ -1440,6 +1493,9 @@ fn fs_main(v: VOut) -> FOut {
         l = dot(n, g.sun.xyz);
         let base = select(vec3<f32>(116.0, 172.0, 92.0) / 255.0, col, g.rock[7].z > 0.5);
         col = terrain_look(v.world, n, world_dx, world_dy, base);
+    }
+    if (base_terrain && g.look.z < 0.5 && is_green(col) && min(col.r, min(col.g, col.b)) < 0.8) {
+        col = exterior_country(col, v.world.xy, g.screen.z * v.dist);
     }
     var emissive = false;
     var haze_twigs = false;

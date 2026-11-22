@@ -54,7 +54,17 @@ pub fn ground_terrain(g: &mut Ground, land: &Land, t: &Town) {
             let coast = t.preset == us_gen::Preset::Coast;
             let height = |x: f32, y: f32| {
                 if coast && (x < 0.0 || y < 0.0 || x > size || y > size) {
-                    t.terrain.height(x as f64, y as f64) as f32
+                    let h = t.terrain.height(x as f64, y as f64) as f32;
+                    // Hollows in the farmland behind the coast stay dry. Only land on the
+                    // sea side of the coastline may fall to sea level past the map edge.
+                    match t.terrain.rock_coast() {
+                        us_gen::RockCoast::Coast(c) => {
+                            let inland = c.inland(x as f64, y as f64) as f32;
+                            let floor = 1.5 * crate::rock::smooth(0.0, 150.0, inland);
+                            h.max(floor)
+                        }
+                        _ => h,
+                    }
                 } else {
                     land.height(x, y)
                 }
