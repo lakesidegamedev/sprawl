@@ -49,6 +49,8 @@ pub struct Style {
     pub tilt_shift: bool,
     /// Darken creases and the ground at the foot of walls from the depth of the picture.
     pub contact_shade: bool,
+    /// Wait for the display refresh when presenting to a window (off may tear but lowers latency).
+    pub vsync: bool,
 }
 
 /// A chunk uses its far form when one metre of it spans less than this share of the frame height
@@ -74,6 +76,7 @@ impl Default for Style {
             high_detail: false,
             tilt_shift: false,
             contact_shade: true,
+            vsync: true,
         }
     }
 }
@@ -294,6 +297,7 @@ struct SurfaceState {
     format: wgpu::TextureFormat,
     alpha: wgpu::CompositeAlphaMode,
     size: Option<(u32, u32)>,
+    vsync: bool,
 }
 
 pub struct Renderer {
@@ -517,6 +521,7 @@ impl Renderer {
                     format,
                     alpha,
                     size: None,
+                    vsync: true,
                 })
             }
         };
@@ -1547,7 +1552,7 @@ impl Renderer {
         let (format, frame) = {
             let device = &self.device;
             let st = self.surface.as_mut()?;
-            if st.size != Some((width, height)) {
+            if st.size != Some((width, height)) || st.vsync != style.vsync {
                 st.surface.configure(
                     device,
                     &wgpu::SurfaceConfiguration {
@@ -1556,13 +1561,18 @@ impl Renderer {
                         color_space: wgpu::SurfaceColorSpace::Auto,
                         width,
                         height,
-                        present_mode: wgpu::PresentMode::AutoVsync,
+                        present_mode: if style.vsync {
+                            wgpu::PresentMode::AutoVsync
+                        } else {
+                            wgpu::PresentMode::AutoNoVsync
+                        },
                         desired_maximum_frame_latency: 2,
                         alpha_mode: st.alpha,
                         view_formats: vec![],
                     },
                 );
                 st.size = Some((width, height));
+                st.vsync = style.vsync;
             }
             let frame = match st.surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(f)

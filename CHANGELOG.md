@@ -2,10 +2,27 @@
 
 ## Unreleased
 
-- Crosswalks and stop lines paint once per approach across neighbourhood boundaries. Closely staggered junctions clear the pavement between their mouths and share that clearance with traffic.
-- Low hills carry the landscape past the edge of temperate towns, and open sea loses its artificial foam edge. Far scenery fades into a weather-lit horizon without washing out the playable map.
-- Lane lines and dashes stop where junction paving begins, so no fragments of paint are left inside a junction. In snow, junction paving carries the same churned slush as the lanes around it instead of reading as a dark patch.
-- Fields, hedgerows and woodlots continue past the edge of green maps, so the town no longer sits in a plain square. On coast maps the farmland behind the shore stays dry instead of showing strips of sea.
+## 1.6.0 Preview 4 (2026-11-22)
+
+<!-- Release coverage: 2a7e116..(Preview 4 merge). Covers #76, #77 and the Preview 4 release pull request. -->
+
+### For players
+
+- Graphics settings have a Quality preset (Low, Medium, High, Ultra) over separate controls for resolution, shadows, ambient shading, atmosphere and surfaces, distant detail, outlines, tilt shift and VSync. Each control says what it does and what it costs. Graphics, window mode and UI scale are remembered between launches. High matches the previous default look.
+- Fast-forward is smoother in large towns. In a 31,000-person town at 8x, the longest pauses are about a fifth as long, and the health and other map views refresh about seven times faster.
+- Junctions look tidier. Crosswalks and stop lines are painted once per approach, even where two neighbourhoods meet. Lane lines stop where junction paving starts, so no stray paint is left inside a junction. Closely staggered side streets share one clear stretch of paving.
+- In snow, junctions carry the same churned slush as the lanes leading into them instead of showing as dark patches.
+- The land past the edge of the map carries on. Green maps continue into fields, hedgerows and woodlots, and temperate towns sit among low hills that fade into the horizon. On coast maps the farmland behind the shore stays dry, and the open sea has no foam line at its outer edge.
+
+### For developers
+
+- Coverage: junction markings and the exterior horizon (#76), lane paint against junction paving and exterior farmland (#77), graphics settings and 8x frame cost in the Preview 4 release pull request.
+- Graphics settings live in `us-app` `graphics.rs` and map onto `Style`. A new `Style::vsync` reconfigures the surface between `AutoVsync` and `AutoNoVsync`. Preferences are stored next to the audio preferences; a missing or unreadable file gives the defaults.
+- When only lots changed, `Scene::replace_lots` refreshes lots, props, the vehicle fleet and chimneys and keeps road paths, junctions, lamps, trains, walkers and cars. Delivery truck scoring and prop placement look up nearby lots in a grid instead of scanning every lot. Road paths keep a bounding box, so lamp, walker and furniture placement skip distant roads. A frame that has already spent its sync budget on a new day defers the next building cell rebuild by one frame.
+- Measured with the ignored `frame_cost_at_8x` probe on the 29,744-resident Winding save at 8x with the health overlay (CPU only, no drawing): frame time p95 30.1 to 26.6 ms, p99 333 to 70 ms, worst 1,566 to 431 ms; overlay refresh p99 293 to 40 ms.
+- Lane paint is trimmed against each junction control pad, with a regression test on real towns. Winter junction pads use a churned slush pattern matched to the worn lanes. Coast exterior heights stay above sea level more than 150 m inland of the coastline. The terrain shader paints in-palette fields, hedgerows and woodlots beyond the playable square on green ground.
+- Ignored capture tests in `us-app` render the live scene for junction surveys, a player-built stagger, horizon views and save reopening.
+- Desktop installers target Windows x64, Linux x64 and universal macOS. The preview uses the existing save format.
 
 ## 1.6.0 Preview 3 (2026-11-22)
 

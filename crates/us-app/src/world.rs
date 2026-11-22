@@ -235,6 +235,8 @@ pub struct LiveScene {
     /// Lots or roads changed since the scene was last told the geometry.
     geo_dirty: bool,
     geo_at: Instant,
+    /// A frame already over its sync budget left the cell queue alone; the next one must not.
+    cells_deferred: bool,
     traffic_day: Option<i32>,
     sync_day: Option<i32>,
     /// The chunk that holds every tram track, and what it was last drawn from.
@@ -827,6 +829,7 @@ impl LiveScene {
             triangles: 0,
             geo_dirty: true,
             geo_at: Instant::now(),
+            cells_deferred: false,
             traffic_day: None,
             sync_day: None,
             tram_chunk: None,
@@ -1105,7 +1108,11 @@ impl LiveScene {
                 }
             })
             .collect();
-        self.scene.set_geometry(lots, roads);
+        if self.scene.roads_match(&roads) {
+            self.scene.replace_lots(lots);
+        } else {
+            self.scene.set_geometry(lots, roads);
+        }
         self.refresh_traffic(sim);
         for (i, k) in self.look.iter().enumerate() {
             if matches!(k.state, 1 | 3 | 4) {
@@ -1809,11 +1816,19 @@ impl LiveScene {
                 self.scene.refresh_chimneys();
             }
         }
-        while let Some(c) = self.queue.pop_front() {
-            self.dirty.remove(&c);
-            self.rebuild_cell(sim, c);
-            if t0.elapsed().as_secs_f32() * 1000.0 > max_ms {
-                break;
+        // A new day's bookkeeping can use the whole budget. Then the buildings wait one frame
+        // rather than stack another cell on top; a deferred frame always rebuilds one.
+        let over = t0.elapsed().as_secs_f32() * 1000.0 > max_ms;
+        if over && !self.cells_deferred && !self.queue.is_empty() {
+            self.cells_deferred = true;
+        } else {
+            self.cells_deferred = false;
+            while let Some(c) = self.queue.pop_front() {
+                self.dirty.remove(&c);
+                self.rebuild_cell(sim, c);
+                if t0.elapsed().as_secs_f32() * 1000.0 > max_ms {
+                    break;
+                }
             }
         }
         if self.geo_dirty && self.geo_at.elapsed().as_secs_f32() > 1.0 {

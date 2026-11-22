@@ -317,6 +317,28 @@ impl Scene {
         self.refresh_chimneys();
     }
 
+    /// Whether `roads` are the roads the scene was last given, so only lots need refreshing.
+    pub fn roads_match(&self, roads: &[RoadInfo]) -> bool {
+        self.x.roads.len() == roads.len()
+            && self
+                .x
+                .roads
+                .iter()
+                .zip(roads)
+                .all(|(a, b)| a.class == b.class && a.works == b.works && a.points == b.points)
+    }
+
+    /// Like `set_geometry` when the roads are unchanged: lots appeared or went away. Road
+    /// paths, junctions, lamps, trains, walkers and cars stay as they are.
+    pub fn replace_lots(&mut self, lots: Vec<LotInfo>) {
+        self.x.overlay_dirty = true;
+        self.x.lot_active = vec![true; lots.len()];
+        self.x.lots = lots;
+        self.x.props = crate::fleet::make_props(&self.x.paths, &self.x.lots, self.x.centre);
+        self.rebuild_fleet();
+        self.refresh_chimneys();
+    }
+
     /// Change what the overlay and smoke know about one lot of a hand-built scene.
     pub fn set_lot_info(&mut self, i: usize, kind: LotKind, level: u8, active: bool) {
         if let Some(l) = self.x.lots.get_mut(i) {

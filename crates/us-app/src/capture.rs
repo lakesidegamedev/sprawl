@@ -425,3 +425,89 @@ fn reopen_saves() {
         );
     }
 }
+
+/// CPU cost of a frame at 8x on an existing save, without drawing: the simulation days due
+/// at 60 frames a second, the live scene sync, and a health coverage overlay refreshed twice a
+/// second as the map view does. Prints percentiles per part.
+#[test]
+#[ignore = "reads URBAN_SPRAWL_CAPTURE_SAVE; a timing probe, not a check"]
+fn frame_cost_at_8x() {
+    use std::time::Instant;
+    let Some(save) = std::env::var_os("URBAN_SPRAWL_CAPTURE_SAVE") else {
+        return;
+    };
+    let overlay: bool = std::env::var("URBAN_SPRAWL_CAPTURE_OVERLAY").is_ok_and(|v| v == "1");
+    let mut sim = crate::saves::load(Path::new(&save)).expect("save loads");
+    let town = Arc::new(sim.town().clone());
+    let mut live = LiveScene::new(town, &sim, true);
+    live.sync(&mut sim, 1.0e9);
+    let (dt, days_per_second) = (1.0f64 / 60.0, 8.0 / 1.3);
+    let mut acc = 0.0f64;
+    let (mut step_ms, mut sync_ms, mut over_ms, mut frame_ms) = (vec![], vec![], vec![], vec![]);
+    let mut ov_age = 0.0;
+    for _ in 0..(60 * 40) {
+        let f0 = Instant::now();
+        acc = (acc + dt * days_per_second).min(16.0);
+        let t = Instant::now();
+        let mut steps = 0;
+        while acc >= 1.0 && (steps == 0 || t.elapsed().as_millis() < 5) {
+            acc -= 1.0;
+            sim.step_day();
+            steps += 1;
+        }
+        step_ms.push(t.elapsed().as_secs_f64() * 1e3);
+        let t = Instant::now();
+        live.sync(&mut sim, 5.0);
+        sync_ms.push(t.elapsed().as_secs_f64() * 1e3);
+        let t = Instant::now();
+        ov_age += dt;
+        if overlay && ov_age > 0.5 {
+            ov_age = 0.0;
+            let mut lots = sim.lot_values(us_sim::MapKind::Coverage(us_sim::Service::Health));
+            let structures = sim
+                .lots()
+                .iter()
+                .zip(&mut lots)
+                .map(|(l, v)| {
+                    if matches!(
+                        l.phase,
+                        us_sim::Phase::Hidden | us_sim::Phase::Cleared { .. }
+                    ) {
+                        *v = f32::NAN;
+                    }
+                    matches!(
+                        l.phase,
+                        us_sim::Phase::Built { .. } | us_sim::Phase::Empty { .. }
+                    )
+                })
+                .collect();
+            live.ensure_geometry(&sim);
+            live.scene.set_overlay(Some(us_render::Overlay {
+                kind: us_render::OverlayKind::ServiceCoverage,
+                lots,
+                structures,
+                roads: Vec::new(),
+            }));
+        }
+        over_ms.push(t.elapsed().as_secs_f64() * 1e3);
+        live.scene.time += dt as f32;
+        let _ = live.scene.instances();
+        frame_ms.push(f0.elapsed().as_secs_f64() * 1e3);
+    }
+    let report = |name: &str, v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        let p = |q: f64| v[((v.len() - 1) as f64 * q) as usize];
+        eprintln!(
+            "{name:>8}: p50 {:7.2} p95 {:7.2} p99 {:7.2} max {:7.2} ms",
+            p(0.5),
+            p(0.95),
+            p(0.99),
+            v[v.len() - 1]
+        );
+    };
+    eprintln!("day {} pop {} overlay {overlay}", sim.day, sim.population());
+    report("steps", &mut step_ms);
+    report("sync", &mut sync_ms);
+    report("overlay", &mut over_ms);
+    report("frame", &mut frame_ms);
+}

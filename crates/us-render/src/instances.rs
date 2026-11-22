@@ -138,6 +138,7 @@ fn on_other_carriageway(paths: &[Path], own: &Path, at: [f32; 2], main_only: boo
         !std::ptr::eq(o, own)
             && o.class != RoadClass::Rail
             && (!main_only || matches!(o.class, RoadClass::Arterial | RoadClass::Collector))
+            && o.near_box(at, o.class.half_width() as f32 + 1.0)
             && o.pts.windows(2).any(|w| {
                 let (ax, ay, bx, by) = (w[0][0], w[0][1], w[1][0], w[1][1]);
                 let reach = o.class.half_width() as f32 + 1.0;
@@ -161,6 +162,7 @@ fn on_other_carriageway(paths: &[Path], own: &Path, at: [f32; 2], main_only: boo
 pub(crate) fn on_any_carriageway(paths: &[Path], at: [f32; 2]) -> bool {
     paths.iter().any(|o| {
         o.class != RoadClass::Rail
+            && o.near_box(at, o.class.half_width() as f32)
             && o.pts.windows(2).any(|w| {
                 let (ax, ay, bx, by) = (w[0][0], w[0][1], w[1][0], w[1][1]);
                 let reach = o.class.half_width() as f32 - 0.3;
@@ -229,6 +231,16 @@ pub struct Path {
     pub cum: Vec<f32>,
     /// Height of the road surface at each point (empty on level ground).
     pub zs: Vec<f32>,
+    /// Bounding box of the points: min x, min y, max x, max y.
+    pub bounds: [f32; 4],
+}
+
+impl Path {
+    /// Whether `at` lies within `reach` of the bounding box of the line.
+    fn near_box(&self, at: [f32; 2], reach: f32) -> bool {
+        let [x0, y0, x1, y1] = self.bounds;
+        at[0] >= x0 - reach && at[0] <= x1 + reach && at[1] >= y0 - reach && at[1] <= y1 + reach
+    }
 }
 
 impl Path {
@@ -259,12 +271,17 @@ impl Path {
             }
             cum.push(s);
         }
+        let bounds = pts.iter().fold(
+            [f32::MAX, f32::MAX, f32::MIN, f32::MIN],
+            |[x0, y0, x1, y1], p| [x0.min(p[0]), y0.min(p[1]), x1.max(p[0]), y1.max(p[1])],
+        );
         Path {
             class,
             one_way: None,
             pts,
             cum,
             zs,
+            bounds,
         }
     }
 
