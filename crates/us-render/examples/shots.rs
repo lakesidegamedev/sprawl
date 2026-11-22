@@ -167,6 +167,7 @@ fn views(r: &mut Renderer, out: &Out) {
                 lots: lot_vals(&|i, d| {
                     ((1.0 - d as f32 / 1700.0) * 0.8 + noise(i) * 0.25).clamp(0.0, 1.0)
                 }),
+                structures: vec![],
                 roads: vec![],
             },
         ),
@@ -178,6 +179,7 @@ fn views(r: &mut Renderer, out: &Out) {
                     let lv = (5.0 - d as f32 / 380.0 + noise(i)).clamp(1.0, 5.0).floor();
                     lv / 5.0 - 0.01
                 }),
+                structures: vec![],
                 roads: vec![],
             },
         ),
@@ -190,6 +192,7 @@ fn views(r: &mut Renderer, out: &Out) {
                     .iter()
                     .map(|l| use_category(l.kind) as f32)
                     .collect(),
+                structures: vec![],
                 roads: vec![],
             },
         ),
@@ -200,6 +203,7 @@ fn views(r: &mut Renderer, out: &Out) {
                 lots: lot_vals(&|i, d| {
                     ((1.0 - d as f32 / 1400.0) + (noise(i) - 0.5) * 0.3).clamp(0.0, 0.999)
                 }),
+                structures: vec![],
                 roads: vec![],
             },
         ),
@@ -211,6 +215,7 @@ fn views(r: &mut Renderer, out: &Out) {
                     (0.5 + 0.45 * libm_sin(d as f32 / 260.0) + (noise(i) - 0.5) * 0.2)
                         .clamp(0.0, 0.999)
                 }),
+                structures: vec![],
                 roads: vec![],
             },
         ),
@@ -219,6 +224,7 @@ fn views(r: &mut Renderer, out: &Out) {
             Overlay {
                 kind: OverlayKind::Traffic,
                 lots: vec![],
+                structures: vec![],
                 roads: road_vals.clone(),
             },
         ),

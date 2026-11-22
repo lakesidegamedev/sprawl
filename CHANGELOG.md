@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Desert towns get dry winters and occasional rain. Old desert saves reopen without winter snowpack or road snow.
+- Downtown roadside shops read as part of the street wall. Vacant central retail sites and parking plots between developed lots can fill with shops, while outer shopping areas keep their large-format stores.
+- Coverage and building-level maps show standing structures. Other overlays keep vacant sites flat. Analysis views use simpler lighting and reuse overlay meshes while map colours stay the same.
+- The People graph shows estimated workers and workplace construction by sector. Empty lot details explain whether new development is waiting on service capacity or arrivals.
+- Building and road catalogs collapse to placement controls while you work on the map. Legal sites stay where you aim. A conflicting planned street is highlighted, with a message that explains the reservation.
+- Balanced graphics reduce the city's render resolution during sustained slow frames. Interface text and controls stay at native resolution. The game also skips repeat street, woodland and lot updates between simulation changes.
+- Winter terrain keeps its sun shadows and wind-shaped surface detail with fewer screen-space shading artifacts. Hills have more varied grass, exposed soil and rock.
+- Big-box sites include larger stores, two-anchor shopping malls and warehouse retailers with pickup bays, with shallower parking lots.
+
 ## 1.6.0 Preview 1 (2026-11-21)
 
 <!-- Release coverage starts at 92cbdff. -->

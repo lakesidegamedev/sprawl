@@ -353,13 +353,11 @@ impl Game {
                         )
                         .clicked()
                         {
-                            if on {
-                                u.build_open = false;
-                                u.tool = None;
-                            } else {
-                                u.build_open = true;
-                                u.road = None;
-                            }
+                            u.build_open = !on;
+                            u.tool = None;
+                            u.civic_site = None;
+                            u.road = None;
+                            u.road_pts.clear();
                         }
                         let on = u.build_open && u.road.is_some();
                         if rail_button(

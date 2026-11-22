@@ -8,7 +8,7 @@ const SLOTS: usize = 96;
 const BUMPER_SPACING: f32 = 6.8;
 const MIN_LANE: f32 = 12.0;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Approach {
     /// Vehicles arriving per hour at the peak of the daily demand curve.
     pub rate: f32,

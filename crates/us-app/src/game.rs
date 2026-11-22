@@ -162,6 +162,43 @@ struct Smoke {
     sync_total_ms: f32,
 }
 
+/// A two-step world scale with hysteresis. The UI is always drawn at native resolution.
+#[derive(Default)]
+struct WorldQuality {
+    slow_for: f32,
+    fast_for: f32,
+    reduced: bool,
+}
+
+impl WorldQuality {
+    fn scale(&mut self, elapsed: f32, balanced: bool) -> f32 {
+        if !balanced {
+            *self = Self::default();
+            return 1.0;
+        }
+        if self.reduced {
+            self.fast_for = if elapsed < 0.023 {
+                self.fast_for + elapsed
+            } else {
+                0.0
+            };
+            if self.fast_for > 2.0 {
+                *self = Self::default();
+            }
+        } else {
+            self.slow_for = if elapsed > 0.036 {
+                self.slow_for + elapsed.min(0.10)
+            } else {
+                0.0
+            };
+            if self.slow_for > 0.65 {
+                self.reduced = true;
+            }
+        }
+        if self.reduced { 0.66 } else { 0.8 }
+    }
+}
+
 pub struct State {
     screen: Screen,
     pub settings: Settings,
@@ -184,6 +221,7 @@ pub struct State {
     touches: touch::Touches,
     fps: f32,
     fps_acc: (f32, u32),
+    world_quality: WorldQuality,
     style: Style,
     smoke: Option<Smoke>,
     error: Option<String>,
@@ -297,6 +335,7 @@ impl State {
             touches: touch::Touches::default(),
             fps: 0.0,
             fps_acc: (0.0, 0),
+            world_quality: WorldQuality::default(),
             style: Style::default(),
             smoke,
             error: None,
@@ -467,11 +506,9 @@ impl State {
         self.style.high_detail = self.settings.detailed_graphics;
         self.style.contact_shade = self.settings.high_shadows || self.settings.detailed_graphics;
         self.style.tilt_shift = self.settings.tilt_shift;
-        self.style.window_world_scale = if self.settings.balanced_world_resolution {
-            0.8
-        } else {
-            1.0
-        };
+        self.style.window_world_scale = self
+            .world_quality
+            .scale(visual_dt, self.settings.balanced_world_resolution);
         self.autopilot();
         if self.screen == Screen::Load && self.saves.is_empty() && self.smoke.is_some() {
             self.refresh_saves();
@@ -1052,6 +1089,9 @@ impl State {
                     &mut self.settings.balanced_world_resolution,
                     true,
                     "Balanced",
+                )
+                .on_hover_text(
+                    "Adjusts the city resolution on slower frames. Menus and text stay sharp.",
                 );
             });
             ui.checkbox(
@@ -1713,7 +1753,7 @@ impl State {
                 g.more_sheet(ctx);
             }
             if g.placed && !g.sim.is_game_over() {
-                if compact && g.ui.tool.is_some() {
+                if g.ui.tool.is_some() {
                     g.civic_placement_ui(ctx);
                 } else if compact && g.sel.is_none() && g.road_active().is_none() {
                     g.growth_banner_ui(ctx);
@@ -2305,4 +2345,24 @@ fn split_row(
         egui::Rect::from_min_max(full.min, egui::pos2(full.max.x, bottom)),
         egui::Sense::hover(),
     );
+}
+
+#[cfg(test)]
+mod world_quality_tests {
+    use super::WorldQuality;
+
+    #[test]
+    fn balanced_world_scale_changes_only_after_sustained_pressure() {
+        let mut quality = WorldQuality::default();
+        assert_eq!(quality.scale(0.24, true), 0.8);
+        for _ in 0..20 {
+            quality.scale(0.04, true);
+        }
+        assert_eq!(quality.scale(0.016, true), 0.66);
+        for _ in 0..140 {
+            quality.scale(0.016, true);
+        }
+        assert_eq!(quality.scale(0.016, true), 0.8);
+        assert_eq!(quality.scale(0.2, false), 1.0);
+    }
 }

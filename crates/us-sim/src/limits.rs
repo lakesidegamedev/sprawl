@@ -207,6 +207,61 @@ impl Sim {
         (self.jobs() as f64 + 20.0) / (w + 20.0)
     }
 
+    /// The model treats 45% of residents as potential workers.
+    pub fn estimated_workers(population: i64) -> i64 {
+        (population as f64 * WORKER_SHARE).round() as i64
+    }
+
+    /// Current starts and the readiness of visible vacant parcels for each job sector.
+    pub fn job_growth(&self) -> [String; 2] {
+        let room = self.start_room();
+        let mut sites = [0; 2];
+        let mut ready = [0; 2];
+        let mut capacity = [None; 2];
+        let mut projects = [0; 2];
+        for &i in &self.vacant {
+            let kind = self.infill_kind(i);
+            let sector = match class_of(kind) {
+                Some(Class::Shops) => 0,
+                Some(Class::Industry) => 1,
+                _ => continue,
+            };
+            sites[sector] += 1;
+            match self.start_blocker(kind, &room) {
+                None => ready[sector] += 1,
+                Some(StartBlocker::Capacity(c)) => capacity[sector] = Some(c),
+                Some(StartBlocker::Arrivals) => {}
+            }
+        }
+        for l in &self.lots {
+            if !matches!(l.phase, Phase::Building { .. }) {
+                continue;
+            }
+            match class_of(l.kind) {
+                Some(Class::Shops) => projects[0] += 1,
+                Some(Class::Industry) => projects[1] += 1,
+                _ => {}
+            }
+        }
+        std::array::from_fn(|i| {
+            let status = if sites[i] == 0 {
+                "no vacant sites on open streets".into()
+            } else if self.shortage_today() {
+                "today's water or power shortage slows building".into()
+            } else if ready[i] > 0 {
+                format!(
+                    "{} of {} vacant sites ready for builders",
+                    ready[i], sites[i]
+                )
+            } else if let Some(c) = capacity[i] {
+                format!("waiting for {} capacity", c.label().to_lowercase())
+            } else {
+                "waiting for incoming businesses to fill a site".into()
+            };
+            format!("{} under construction · {status}", projects[i])
+        })
+    }
+
     fn tax_factor(&self, c: Class) -> f64 {
         (growth_mult(self.tax.get(c) as f64 / 10.0) / growth_mult(7.0)).clamp(0.05, 1.6)
     }
@@ -398,12 +453,19 @@ impl Sim {
     /// of arrivals. Lots that are not homes, shops or industry (schools, parks and so on) are
     /// the town's own and always can.
     pub(crate) fn can_start(&self, kind: LotKind, room: &[i64; 4]) -> bool {
-        let Some(c) = class_of(kind) else {
-            return true;
-        };
-        !self.class_blocked(c)
-            && self.queue.get(c) >= 0.5 * Sim::units_at(kind, 1) as f64
-            && Sim::fits_room(room, kind, 1)
+        self.start_blocker(kind, room).is_none()
+    }
+
+    pub(crate) fn start_blocker(&self, kind: LotKind, room: &[i64; 4]) -> Option<StartBlocker> {
+        let class = class_of(kind)?;
+        for c in Capacity::ALL {
+            let demand = Sim::lot_demand(kind, 1, c);
+            if demand > 0 && (self.stalled[c.index()] || demand > room[c.index()].max(0)) {
+                return Some(StartBlocker::Capacity(c));
+            }
+        }
+        (self.queue.get(class) < 0.5 * Sim::units_at(kind, 1) as f64)
+            .then_some(StartBlocker::Arrivals)
     }
 
     pub(crate) fn take_units(&mut self, kind: LotKind, units: i64) {
@@ -426,4 +488,10 @@ impl Sim {
                     <= room[k.index()].max(0)
             })
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum StartBlocker {
+    Capacity(Capacity),
+    Arrivals,
 }

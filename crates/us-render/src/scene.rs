@@ -109,6 +109,7 @@ struct TownData {
 }
 
 struct OverlayState {
+    values: Overlay,
     mesh: Mesh,
     rev: u64,
 }
@@ -141,6 +142,7 @@ struct Extras {
     centre: [f32; 2],
     overlay: Option<OverlayState>,
     overlay_rev: u64,
+    overlay_dirty: bool,
     town: Option<TownData>,
 }
 
@@ -298,6 +300,7 @@ impl Scene {
                 path
             })
             .collect();
+        self.x.overlay_dirty = true;
         self.x.lot_active = vec![true; lots.len()];
         self.x.lots = lots;
         self.x.roads = roads;
@@ -315,11 +318,12 @@ impl Scene {
     }
 
     /// Change what the overlay and smoke know about one lot of a hand-built scene.
-    pub fn set_lot_info(&mut self, i: usize, level: u8, active: bool) {
+    pub fn set_lot_info(&mut self, i: usize, kind: LotKind, level: u8, active: bool) {
         if let Some(l) = self.x.lots.get_mut(i) {
+            l.kind = kind;
             l.level = level.clamp(1, levels::MAX_LEVEL);
             self.x.lot_active[i] = active;
-            self.refresh_chimneys();
+            self.x.overlay_dirty = true;
         }
     }
 
@@ -331,7 +335,7 @@ impl Scene {
         self.x.roads.len()
     }
 
-    fn refresh_chimneys(&mut self) {
+    pub fn refresh_chimneys(&mut self) {
         let mut v = Vec::new();
         let mut hearths = Vec::new();
         for (i, l) in self.x.lots.iter().enumerate() {
@@ -366,6 +370,15 @@ impl Scene {
                 self.x.overlay = None;
             }
             Some(ov) => {
+                if !self.x.overlay_dirty
+                    && self
+                        .x
+                        .overlay
+                        .as_ref()
+                        .is_some_and(|old| old.values.same_display(&ov))
+                {
+                    return;
+                }
                 let roads: Vec<(RoadClass, &[Pt])> = self
                     .x
                     .roads
@@ -385,7 +398,9 @@ impl Scene {
                 };
                 let mesh = overlay::build_mesh(&self.x.lots, &mass, hall, &roads, &ov, &self.land);
                 self.x.overlay_rev += 1;
+                self.x.overlay_dirty = false;
                 self.x.overlay = Some(OverlayState {
+                    values: ov,
                     mesh,
                     rev: self.x.overlay_rev,
                 });
@@ -420,6 +435,9 @@ impl Scene {
 
     /// Set peak-hour rates and measured approach capacities for the living town.
     pub fn set_road_traffic(&mut self, roads: &[[Approach; 2]]) {
+        if self.x.traffic_enabled && self.x.traffic.demand == roads {
+            return;
+        }
         self.x.traffic = Traffic::new(&self.x.paths, roads);
         self.x
             .traffic
@@ -638,6 +656,7 @@ impl Scene {
             c.hi = hi;
             c.rev += 1;
         }
+        self.x.overlay_dirty = true;
         self.refresh_chimneys();
     }
 

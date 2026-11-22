@@ -65,7 +65,7 @@ fn every_style_has_a_believable_year() {
         );
         assert!(f(Sky::Storm) <= 25.0, "{p:?} storms {}", f(Sky::Storm));
         assert!(f(Sky::HeatWave) <= 40.0, "{p:?} heat {}", f(Sky::HeatWave));
-        if p == Preset::Sunbelt {
+        if matches!(p, Preset::Mesa | Preset::Sunbelt) {
             assert_eq!(f(Sky::Snow) + f(Sky::Blizzard), 0.0);
             assert!(f(Sky::HeatWave) >= 3.0);
         } else {
@@ -460,4 +460,31 @@ fn an_old_save_without_weather_starts_calm_and_keeps_going() {
         loaded.step_day();
     }
     assert!(loaded.dryness() >= 0.0);
+}
+
+#[test]
+fn desert_forecasts_never_accumulate_snow() {
+    for preset in [Preset::Sunbelt, Preset::Mesa] {
+        for seed in 1..=4 {
+            assert!(
+                (0..365 * 4).all(|day| {
+                    !matches!(
+                        crate::climate::weather_on(seed, preset, day).sky,
+                        Sky::Snow | Sky::Blizzard
+                    )
+                }),
+                "{preset:?} seed {seed}"
+            );
+        }
+    }
+}
+
+#[test]
+fn loading_a_desert_removes_legacy_snow() {
+    let mut s = sim(Preset::Mesa);
+    s.wx.snow_cover = 0.6;
+    s.wx.road_snow = 0.5;
+    let loaded = Sim::load(&s.save()).unwrap();
+    assert_eq!(loaded.wx.snow_cover, 0.0);
+    assert_eq!(loaded.wx.road_snow, 0.0);
 }

@@ -116,6 +116,10 @@ struct Style {
     flood: f64,
 }
 
+fn dry_desert(preset: Preset) -> bool {
+    matches!(preset, Preset::Mesa | Preset::Sunbelt)
+}
+
 fn style(p: Preset) -> Style {
     match p {
         // prairie: windy, dry, big summer storms
@@ -177,11 +181,10 @@ fn style(p: Preset) -> Style {
             wind_dir: 1.2,
             flood: 1.1,
         },
-        // red rock high desert: hot summers, cold nights and the odd dusting of snow, dry,
-        // windy, rare flash floods in the washes
+        // Red rock desert: hot summers, mild winter days and rare flash floods.
         Preset::Mesa => Style {
-            mean: 13.0,
-            amp: 15.5,
+            mean: 17.5,
+            amp: 10.5,
             wet: 0.55,
             storm: 0.9,
             wind: 1.4,
@@ -246,7 +249,7 @@ pub(crate) fn weather_on(seed: u64, p: Preset, day: i32) -> Weather {
         let storm_p = st.storm * (0.06 + 0.42 * season.max(0.0));
         if temp >= 13.0 && precip >= 0.45 && roll(seed ^ 0x5702, 6, day as u64) < storm_p {
             Sky::Storm
-        } else if temp <= 0.5 {
+        } else if temp <= 0.5 && !dry_desert(p) {
             if precip >= 0.7 && temp < -1.0 {
                 Sky::Blizzard
             } else {
@@ -1211,6 +1214,10 @@ impl Sim {
             gloom: r.f64()?.clamp(0.0, 1.0),
             ..Climate::default()
         };
+        if dry_desert(self.town.preset) {
+            c.snow_cover = 0.0;
+            c.road_snow = 0.0;
+        }
         let n = r.len(4)?;
         for _ in 0..n {
             c.shortage_days.push(r.i32()?);

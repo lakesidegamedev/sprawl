@@ -90,6 +90,59 @@ pub fn supermarket(region: Region, rng: &mut Rng) -> Obj {
     o
 }
 
+/// A shopping centre with two anchor wings and a glazed entrance concourse.
+pub fn shopping_mall(region: Region, rng: &mut Rng) -> Obj {
+    let mut o = Obj::new();
+    let (wall, _) = wall_pick(region, rng);
+    let accent = rng.pick(&SIGNS);
+    let plan = [(-34.0, -1.0, -9.0, 31.0), (9.0, 4.0, 34.0, 31.0)];
+    for (i, (x0, y0, x1, y1)) in plan.into_iter().enumerate() {
+        let height = if i == 0 { 10.0 } else { 8.6 };
+        let trim = if i == 0 { wall } else { mix(wall, WHITE, 0.25) };
+        o.bx(x0, y0, 0.0, x1, y1, height, trim);
+        flat_roof(&mut o, (x0, y0, x1, y1), height, trim);
+        o.win_s(x0 + 3.0, x1 - 3.0, 0.5, 3.7, y0, GLASS_D);
+        o.win_s(x0 + 3.5, x1 - 3.5, 5.4, 7.0, y0, accent);
+        rooftop_gear(
+            &mut o,
+            (x0 + 3.0, y0 + 4.0, x1 - 3.0, y1 - 3.0),
+            height + 0.6,
+            2,
+            rng,
+        );
+    }
+    o.bx(-9.0, -4.0, 0.0, 9.0, 31.0, 7.8, STEEL);
+    o.win_s(-8.2, 8.2, 0.4, 6.4, -4.0, GLASS);
+    o.win_s(-3.0, 3.0, 0.2, 3.1, -4.0, DOOR);
+    o.bx_top(-9.6, -6.4, 6.4, 9.6, -3.7, 7.0, accent, STEEL);
+    for y in [5.0f32, 13.0, 21.0] {
+        o.bx_top(-6.5, y, 7.8, 6.5, y + 4.0, 9.0, STEEL, GLASS);
+    }
+    o.slab(-34.0, -10.0, 0.0, 34.0, -4.0, 0.13, CONC);
+    let stalls = parking(56.0, 16.0, rng);
+    o.add_placed(&stalls, 0.0, -18.0, 0.0);
+    o
+}
+
+/// Deep warehouse retail with a tall front awning and a side pickup bay.
+pub fn warehouse_market(region: Region, rng: &mut Rng) -> Obj {
+    let mut o = Obj::new();
+    let (wall, _) = wall_pick(region, rng);
+    let accent = rng.pick(&SIGNS);
+    o.bx_top(-32.0, -5.0, 0.0, 30.0, 39.0, 9.0, wall, deck_of(wall));
+    o.bx_top(-28.0, -10.0, 4.8, 22.0, -4.7, 6.5, accent, STEEL);
+    for x in [-20.0f32, -5.0, 10.0] {
+        o.bx(x - 0.4, -9.0, 0.0, x + 0.4, -8.1, 4.8, STEEL);
+        o.win_s(x - 5.0, x + 5.0, 0.6, 3.9, -5.0, GLASS_D);
+    }
+    o.win_s(-18.0, 13.0, 6.9, 8.1, -5.0, accent);
+    o.bx_top(29.8, 2.0, 0.0, 35.0, 24.0, 4.0, wall, STEEL);
+    let stalls = parking(60.0, 16.0, rng);
+    o.add_placed(&stalls, 0.0, -19.0, 0.0);
+    rooftop_gear(&mut o, (-28.0, 1.0, 25.0, 34.0), 9.0, 5, rng);
+    o
+}
+
 pub fn bank(region: Region, rng: &mut Rng) -> Obj {
     let mut o = Obj::new();
     let stone = rng.pick(&[STONE, [226, 220, 206], [196, 188, 176]]);
@@ -1123,7 +1176,8 @@ fn variant_raw(
             80..=89 => Some(recycling_centre(region, rng)),
             _ => None,
         },
-        LotKind::BigBox if r < 35 => Some(supermarket(region, rng)),
+        LotKind::BigBox if r < 30 => Some(shopping_mall(region, rng)),
+        LotKind::BigBox if r < 60 => Some(warehouse_market(region, rng)),
         LotKind::Strip if r < 25 => Some(car_dealership(region, rng)),
         LotKind::FastFood if r < 35 => Some(diner(region, rng)),
         LotKind::School if r < 40 => Some(school_b(region, rng)),

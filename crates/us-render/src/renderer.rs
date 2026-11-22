@@ -1663,7 +1663,11 @@ impl Renderer {
         let wl = &scene.weather;
         let shadow_tone = cal.map_or(style.shadow_tone, |c| c.shadow_tone());
         // clouds put the hard shadows out
-        let shadow_tone = shadow_tone + (1.0 - shadow_tone) * wl.overcast.clamp(0.0, 1.0);
+        let shadow_tone = if map_view {
+            1.0
+        } else {
+            shadow_tone + (1.0 - shadow_tone) * wl.overcast.clamp(0.0, 1.0)
+        };
         let mut tone = cal.map_or([1.0; 3], |c| c.tone());
         // a darker, cooler light under cloud, and the flash of lightning
         let oc = wl.overcast.clamp(0.0, 1.0);
@@ -2454,7 +2458,9 @@ fn light_matrix(scene: &Scene, view: &View, sun: Vec3, size: u32) -> (Mat4, f32,
         lo = lo.min(p);
         hi = hi.max(p);
     }
-    let half = ((hi.x - lo.x).max(hi.y - lo.y) / 2.0) * 1.03 + 6.0;
+    let extent = ((hi.x - lo.x).max(hi.y - lo.y) / 2.0) * 1.03 + 6.0;
+    // Hold texel size through small camera changes so the world-space snap is stable.
+    let half = 2.0_f32.powf((extent.log2() * 12.0).ceil() / 12.0);
     let texel = 2.0 * half / size as f32;
     let anchor = lv.transform_point3(Vec3::ZERO);
     let snap = |middle: f32, origin: f32| ((middle - origin) / texel).round() * texel + origin;
