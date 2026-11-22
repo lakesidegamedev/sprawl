@@ -284,8 +284,8 @@ impl Sim {
     /// Capacities that are full (blocked) or close to it, worst first.
     pub fn growth_alerts(&self) -> Vec<GrowthAlert> {
         let mut out = Vec::new();
-        for c in Capacity::ALL {
-            let st = self.committed_status(c);
+        for st in self.committed_capacities() {
+            let c = st.capacity;
             let blocked = self.stalled[c.index()];
             if !blocked && st.ratio() < crate::limits::WARN_AT {
                 continue;

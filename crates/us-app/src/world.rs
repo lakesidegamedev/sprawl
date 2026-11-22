@@ -329,6 +329,16 @@ fn civic_model(c: Option<CivicKind>) -> Option<CivicModel> {
     }
 }
 
+/// Preview the model envelope separately from the lot's clearance radius.
+pub(crate) fn civic_preview_footprint(preset: Preset, kind: CivicKind) -> [f32; 4] {
+    let mut rng = Rng::new(0x5eed_0000, 13);
+    match civic_model(Some(kind)) {
+        Some(model) => build_civic(model, &mut rng),
+        None => kit::build_lot_for(preset, kind.lot_kind(), kind.radius() as f32, &mut rng),
+    }
+    .footprint()
+}
+
 /// What one lot is drawn with: the building, and its trees, each standing on the ground under it.
 struct LotDraw {
     building: Obj,

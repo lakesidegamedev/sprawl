@@ -43,8 +43,8 @@ mod traffic;
 mod trams;
 mod value;
 
-pub use avenues::{RoadError, RoadPlan, UpgradePlan};
-pub use civic::{civic_capacity_pct, civic_reach_multiplier};
+pub use avenues::{RoadBendPlan, RoadError, RoadPlan, UpgradePlan};
+pub use civic::{civic_capacity_pct, civic_facing, civic_reach_multiplier};
 pub use climate::{Sky, Weather, WeatherCosts};
 pub use density::max_level_at;
 pub use districts::{

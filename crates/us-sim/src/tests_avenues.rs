@@ -217,3 +217,52 @@ fn road_dragged_onto_wide_avenue_joins_the_routing_graph() {
     let (finish, _) = graph.attach(d).unwrap();
     assert!((graph.distances(start, 500.0)[finish as usize] - 300.0).abs() < 1.0);
 }
+
+#[test]
+fn a_saved_winding_collector_bend_can_be_rounded_in_place() {
+    let town = us_gen::generate_version(Preset::Winding, 3, 4);
+    let mut sim = Sim::new_with_rules(&town, hall_sites(&town)[0], 7, 2, Rules::sandbox());
+    let bend = pt(2690.26354801923, 1868.915140905603);
+    let indices: Vec<_> = sim
+        .runs
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.class == RoadClass::Collector && r.points.contains(&bend))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(indices.len(), 2);
+    let outer: Vec<_> = indices
+        .iter()
+        .map(|&i| {
+            sim.runs[i]
+                .points
+                .iter()
+                .copied()
+                .find(|&p| p != bend)
+                .unwrap()
+        })
+        .collect();
+    for &i in &indices {
+        if !sim.road_open(i) {
+            sim.open_street(sim.runs[i].street as usize);
+        }
+    }
+    let preview = sim
+        .check_round_bend(bend)
+        .expect("the hooked collector crosses an editable road seam");
+    sim.round_bend(bend).unwrap();
+    for (&i, p) in indices.iter().zip(outer) {
+        assert!(sim.runs[i].points.contains(&p));
+        assert!(!sim.runs[i].points.contains(&bend));
+    }
+    let midpoint = preview.curve[preview.curve.len() / 2];
+    assert!(
+        indices
+            .iter()
+            .all(|&i| sim.runs[i].points.contains(&midpoint))
+    );
+    let reloaded = Sim::load(&sim.save()).unwrap();
+    for i in indices {
+        assert_eq!(reloaded.runs[i].points, sim.runs[i].points);
+    }
+}

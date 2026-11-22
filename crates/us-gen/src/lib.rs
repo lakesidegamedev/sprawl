@@ -293,6 +293,8 @@ pub enum RoadClass {
 pub const SIGNAL_APPROACH_SECONDS: f64 = 9.0;
 /// Seconds of green in each approach phase.
 pub const SIGNAL_GREEN_SECONDS: f64 = 6.5;
+/// Short blocks cannot hold a stopped approach at each end of the street.
+pub const MIN_SIGNAL_LINK_M: f64 = 22.0;
 
 /// A surface junction on an avenue or between two collector streets.
 pub fn signalized_junction(arms: impl IntoIterator<Item = RoadClass>) -> bool {

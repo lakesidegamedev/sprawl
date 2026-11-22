@@ -703,7 +703,7 @@ fn has_room_for_control(node: &Node, pad: &Pad) -> bool {
         if arm.class == RoadClass::Alley {
             continue;
         }
-        if arm.avail < 2.0 * car_stop(cut) + 4.0 {
+        if arm.avail < (2.0 * car_stop(cut) + 4.0).max(us_gen::MIN_SIGNAL_LINK_M) {
             return false;
         }
         count += 1;
@@ -744,10 +744,12 @@ pub(crate) fn traffic_junctions(
                 && r.points.iter().any(|p| p.x >= -200.0 && p.y >= -200.0)
         })
         .unzip();
-    find_nodes(&draws, draws.len())
+    let nodes = find_nodes(&draws, draws.len());
+    let clear = skew_junction_clearance(None, &nodes, &draws, |p| land.water_at(p).is_some());
+    nodes
         .into_iter()
         .filter_map(|node| {
-            let pad = junction_pad(&node)?;
+            let pad = control_pad(&node, &clear)?;
             if !has_room_for_control(&node, &pad)
                 || near_water(|p| land.water_at(p).is_some(), node.p, 35.0)
             {
@@ -784,16 +786,42 @@ pub(crate) fn traffic_junctions(
 /// still overlap past the corner, especially if one ends in a short hook. Draw
 /// one paved apron through the shared width so lane paint, kerbs and snowbanks
 /// cannot cut across the merge. Follow the actual curves beyond the pad.
+fn skew_junction_clearance(
+    mut ground: Option<&mut Ground>,
+    nodes: &[Node],
+    all: &[&RoadDraw],
+    water: impl Fn(Pt) -> bool,
+) -> Vec<Vec<(f64, f64)>> {
+    let mut clear = vec![Vec::new(); all.len()];
+    for node in nodes {
+        if !near_water(&water, node.p, 35.0) {
+            draw_skew_aprons(&mut ground, node, nodes, all, &mut clear);
+        }
+    }
+    for spans in &mut clear {
+        spans.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        let mut merged: Vec<(f64, f64)> = Vec::new();
+        for &(start, end) in spans.iter() {
+            if let Some(last) = merged.last_mut()
+                && start <= last.1 + 0.8
+            {
+                last.1 = last.1.max(end);
+            } else {
+                merged.push((start, end));
+            }
+        }
+        *spans = merged;
+    }
+    clear
+}
+
 fn draw_skew_aprons(
-    g: &mut Ground,
+    ground: &mut Option<&mut Ground>,
     node: &Node,
     neighbours: &[Node],
     all: &[&RoadDraw],
     clear: &mut [Vec<(f64, f64)>],
 ) {
-    if near_water(|p| g.water_at(p), node.p, 35.0) {
-        return;
-    }
     let arms = node.arms.as_slice();
     for (i, first) in arms.iter().enumerate() {
         let second = &arms[(i + 1) % arms.len()];
@@ -859,20 +887,45 @@ fn draw_skew_aprons(
         let start = if let Some(near) = linked {
             // Adjacent mouths on the same arterial read as one compound
             // junction. Clear the short bit of lane paint between their pads.
-            let link = sub_line(a_line, near.s0.min(a.s0), near.s0.max(a.s0));
-            g.ribbon(&link, a.hw as f32, 0.0, z::PAD + 0.006, PAD);
+            if let Some(g) = ground.as_deref_mut() {
+                let link = sub_line(a_line, near.s0.min(a.s0), near.s0.max(a.s0));
+                g.ribbon(&link, a.hw as f32, 0.0, z::PAD + 0.006, PAD);
+            }
             near.s0
         } else {
             a.s0
         };
         clear[a.road].push((start.min(last.0), start.max(last.0)));
         clear[b.road].push((b.s0.min(last.1), b.s0.max(last.1)));
-        for pair in sections.windows(2) {
-            let [left, right] = pair[0];
-            let [next_left, next_right] = pair[1];
-            g.polygon(&[left, right, next_right, next_left], z::PAD + 0.006, PAD);
+        if let Some(g) = ground.as_deref_mut() {
+            for pair in sections.windows(2) {
+                let [left, right] = pair[0];
+                let [next_left, next_right] = pair[1];
+                g.polygon(&[left, right, next_right, next_left], z::PAD + 0.006, PAD);
+            }
         }
     }
+}
+
+/// A vehicle must hold outside all shared asphalt on its approach. Use this
+/// distance for both the painted line and the vehicle stop and turn paths.
+fn control_pad(node: &Node, clear: &[Vec<(f64, f64)>]) -> Option<Pad> {
+    let mut pad = junction_pad(node)?;
+    for (cut, arm) in pad.cut.iter_mut().zip(&node.arms) {
+        let mut extent = *cut;
+        for &(start, end) in &clear[arm.road] {
+            let range = if arm.fwd {
+                (start - arm.s0, end - arm.s0)
+            } else {
+                (arm.s0 - end, arm.s0 - start)
+            };
+            if range.0 <= extent + 0.8 && range.1 > extent {
+                extent = range.1;
+            }
+        }
+        *cut = extent;
+    }
+    Some(pad)
 }
 
 /// Junctions: kerb corners, the pad that hides lines across them, zebra crossings.
@@ -882,7 +935,9 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw], clear: &[Vec<(f64, f64
     {
         return;
     }
-    let Some(pad) = junction_pad(n) else { return };
+    let Some(pad) = control_pad(n, clear) else {
+        return;
+    };
     let signalized = has_signals(&n.arms) && has_room_for_control(n, &pad);
     let highway = n.arms.iter().any(|a| a.class == RoadClass::Highway);
     g.polygon(&Ground::grow(&pad.ring, 0.5), z::CORNER_EDGE, EDGE);
@@ -1019,10 +1074,10 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], context: &[RoadDraw]) {
                 .all(|arm| (paths[arm.road].z(arm.s0 as f32) - ground).abs() <= 2.5)
         });
     }
-    let mut clear = vec![Vec::new(); all.len()];
-    for node in &nodes {
-        draw_skew_aprons(g, node, &nodes, &all, &mut clear);
-    }
+    let land = g.land().cloned();
+    let clear = skew_junction_clearance(Some(g), &nodes, &all, |p| {
+        land.as_ref().is_some_and(|land| land.water_at(p).is_some())
+    });
     for (i, r) in all.iter().take(n_mine).enumerate() {
         if r.works.is_some() {
             continue;

@@ -452,6 +452,7 @@ pub enum RoadMode {
     Collector,
     /// Widen a street to the next class.
     Upgrade,
+    RoundBend,
 }
 
 impl RoadMode {
@@ -493,6 +494,8 @@ pub struct UiState {
     pub dist_stats_age: f32,
     pub tool: Option<CivicKind>,
     pub(super) civic_site: Option<Pt>,
+    pub(super) civic_rotation: u8,
+    pub(super) civic_bounds: Option<[f32; 4]>,
     /// The road tool, when chosen (only live while the Build window is open).
     pub road: Option<RoadMode>,
     /// Points of the road being drawn.
@@ -548,6 +551,8 @@ impl Default for UiState {
             dist_stats_age: 9.0,
             tool: None,
             civic_site: None,
+            civic_rotation: 0,
+            civic_bounds: None,
             road: None,
             road_pts: Vec::new(),
             road_angle_snap: true,
@@ -711,6 +716,7 @@ impl Game {
             }
             K::KeyG => u.stats_open = !u.stats_open,
             K::KeyJ => u.news_open = !u.news_open,
+            K::KeyR if u.tool.is_some() => u.civic_rotation = (u.civic_rotation + 1) % 4,
             K::KeyR => u.rivals_open = !u.rivals_open,
             K::KeyF => u.trams.open = !u.trams.open,
             K::KeyI => {
@@ -791,6 +797,12 @@ impl Game {
                 }
                 "low" => self.cam.set_angle(n as f32, 18.0),
                 "tilt" => self.cam.set_tilt(n as f32),
+                "speed" => {
+                    self.speed = super::SPEEDS
+                        .iter()
+                        .position(|&speed| speed == n as f64)
+                        .unwrap_or(0)
+                }
                 "pan" => {
                     // look at a point east and north of the town hall in metres, `pan:E:N`
                     // (a leading `m` makes a number negative), from 330 m
@@ -1548,10 +1560,10 @@ impl Game {
                         }
                         lab(
                             ui,
-                            if mode == RoadMode::Upgrade {
-                                "Widen street"
-                            } else {
-                                mode.class().name()
+                            match mode {
+                                RoadMode::Upgrade => "Widen street",
+                                RoadMode::RoundBend => "Round bend",
+                                _ => mode.class().name(),
                             },
                             12.0,
                         );
@@ -1580,6 +1592,7 @@ impl Game {
                     (RoadMode::Avenue, "Avenue"),
                     (RoadMode::Collector, "Collector"),
                     (RoadMode::Upgrade, "Upgrade"),
+                    (RoadMode::RoundBend, "Round bend"),
                 ] {
                     if m == RoadMode::Local && !self.rules.city_planning {
                         continue;
@@ -1791,13 +1804,19 @@ impl Game {
                                     egui::Button::new("Build").min_size(vec2(48.0, theme::TOUCH)),
                                 )
                                 .clicked();
+                            if ui.button("Rotate").clicked() {
+                                self.ui.civic_rotation = (self.ui.civic_rotation + 1) % 4;
+                            }
                             cancel = ui
                                 .add(egui::Button::new("Cancel").min_size(vec2(50.0, theme::TOUCH)))
                                 .clicked();
                         });
                     } else {
                         ui.horizontal(|ui| {
-                            lab(ui, "Click a site to build", 12.0);
+                            lab(ui, "Click to build", 12.0);
+                            if btn(ui, "Rotate (R)", false, 12.0).clicked() {
+                                self.ui.civic_rotation = (self.ui.civic_rotation + 1) % 4;
+                            }
                             cancel = btn(ui, "Cancel", false, 12.0).clicked();
                         });
                     }
@@ -1820,6 +1839,18 @@ impl Game {
     /// The road tool's text and buttons in the Build window.
     fn road_panel(&mut self, ui: &mut Ui, compact: bool) {
         let Some(mode) = self.ui.road else { return };
+        if mode == RoadMode::RoundBend {
+            wrapped(
+                ui,
+                "Point at a bend to preview the curve. Click to apply.",
+                11.0,
+                TEXT,
+            );
+            if btn(ui, "Done", false, 11.0).clicked() {
+                self.ui.road = None;
+            }
+            return;
+        }
         if mode == RoadMode::Upgrade {
             wrapped(
                 ui,
@@ -1904,6 +1935,13 @@ impl Game {
         let Some(mode) = self.road_active() else {
             return;
         };
+        if mode == RoadMode::RoundBend {
+            match self.sim.round_bend(p) {
+                Ok(()) => self.toast("Road bend rounded.", false),
+                Err(error) => self.toast(error.text(), true),
+            }
+            return;
+        }
         if mode == RoadMode::Upgrade {
             match self.sim.upgrade_street(p) {
                 Ok(_) => self.toast("Street widening started.", false),
@@ -1939,6 +1977,9 @@ impl Game {
         let Some(mode) = self.road_active() else {
             return;
         };
+        if matches!(mode, RoadMode::Upgrade | RoadMode::RoundBend) {
+            return;
+        }
         if self.ui.road_pts.len() < 2 {
             self.toast("Mark at least two points.", true);
             return;
@@ -2013,6 +2054,30 @@ impl Game {
             )
             .map(|s| super::to_screen(s, w, h, ppp))
         };
+        if mode == RoadMode::RoundBend {
+            let Some(c) = cursor else { return };
+            let (label, colour, marker) = match self.sim.check_round_bend(c) {
+                Ok(plan) => {
+                    self.draw_path(painter, view, &plan.original, GOLD, 2.0, w, h, ppp);
+                    self.draw_path(painter, view, &plan.curve, GOOD, 4.0, w, h, ppp);
+                    for p in [plan.curve[0], plan.curve[plan.curve.len() - 1]] {
+                        if let Some(mark) = screen(self, p) {
+                            painter.circle_stroke(mark, 5.0, Stroke::new(2.0, INK));
+                        }
+                    }
+                    (
+                        format!("Round bend · {} · endpoints fixed", money(plan.cost)),
+                        GOOD,
+                        c,
+                    )
+                }
+                Err(error) => (error.text(), BAD, error.at().unwrap_or(c)),
+            };
+            if let Some(s) = screen(self, marker) {
+                self.label_at(painter, s + vec2(18.0, 18.0), &label, colour);
+            }
+            return;
+        }
         if mode == RoadMode::Upgrade {
             let Some(c) = cursor else { return };
             let (text, col, path) = match self.sim.check_upgrade(c) {
@@ -2191,7 +2256,7 @@ impl Game {
         let hover = ctx.pointer_hover_pos();
         let pinned = self.ui.fixed_ghost.or(self.ui.civic_site);
         let (p, verdict) = if let Some(p) = pinned {
-            (p, self.sim.check_civic(kind, p))
+            (p, self.sim.civic_access(kind, p))
         } else {
             if self.compact {
                 return;
@@ -2208,7 +2273,7 @@ impl Game {
                 return;
             };
             self.sim
-                .preview_civic_site(kind, pt(g.x as f64, g.y as f64))
+                .preview_civic_access(kind, pt(g.x as f64, g.y as f64))
         };
         let pos = match (
             pinned,
@@ -2224,10 +2289,51 @@ impl Game {
             (Some(_), Some(s)) => super::to_screen(s, w, h, ppp),
             _ => hover.unwrap_or(Pos2::ZERO),
         };
-        if verdict == Err(us_sim::PlaceError::ReservedStreet)
-            && let Some((a, b)) = self.sim.reserved_civic_street(kind, p)
-        {
-            self.draw_path(painter, view, &[a, b], GOLD, 4.0, w, h, ppp);
+        match verdict {
+            Ok(access) => {
+                self.draw_path(painter, view, &[p, access], GOLD, 2.5, w, h, ppp);
+                let facing = us_sim::civic_facing(p, access, self.ui.civic_rotation);
+                if let Some([x0, y0, x1, y1]) = self.ui.civic_bounds {
+                    let (sin, cos) = facing.sin_cos();
+                    let outline =
+                        [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]].map(|[x, y]| {
+                            let (x, y) = (f64::from(x), f64::from(y));
+                            p + pt(cos * x - sin * y, sin * x + cos * y)
+                        });
+                    self.draw_path(painter, view, &outline, INK, 2.0, w, h, ppp);
+                }
+                // Civic models face along their local negative y-axis.
+                let forward = pt(facing.sin(), -facing.cos());
+                let across = pt(-forward.y, forward.x);
+                let nose = p + forward * kind.radius();
+                let base = nose - forward * 4.0;
+                self.draw_path(
+                    painter,
+                    view,
+                    &[base - across * 2.0, nose, base + across * 2.0],
+                    INK,
+                    2.5,
+                    w,
+                    h,
+                    ppp,
+                );
+            }
+            Err(error @ (us_sim::PlaceError::OnRoad | us_sim::PlaceError::ReservedStreet)) => {
+                let reserved = error == us_sim::PlaceError::ReservedStreet;
+                if let Some((a, b)) = self.sim.civic_road_conflict(kind, p, reserved) {
+                    self.draw_path(
+                        painter,
+                        view,
+                        &[a, b],
+                        if reserved { GOLD } else { BAD },
+                        5.0,
+                        w,
+                        h,
+                        ppp,
+                    );
+                }
+            }
+            Err(_) => {}
         }
         let ok = verdict.is_ok();
         let col = if ok { GOOD } else { BAD };
@@ -2251,7 +2357,7 @@ impl Game {
             return;
         }
         let text = match verdict {
-            Ok(()) => format!("{}  {}", kind.label(), money(kind.cost())).to_string(),
+            Ok(_) => format!("{}  {}", kind.label(), money(kind.cost())),
             Err(e) => e.text().to_string(),
         };
         let galley = painter.layout(text, ui_font(12.0), INK, 220.0);
@@ -2270,7 +2376,10 @@ impl Game {
     /// A click on the map while a building tool is chosen.
     pub(super) fn place_tool(&mut self, p: Pt) {
         let Some(kind) = self.ui.tool else { return };
-        match self.sim.place_civic(kind, p) {
+        match self
+            .sim
+            .place_civic_rotated(kind, p, self.ui.civic_rotation)
+        {
             Ok(_) => {
                 self.toast(
                     format!(

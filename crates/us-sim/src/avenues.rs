@@ -64,6 +64,30 @@ pub struct RoadPlan {
     give_up: Vec<usize>,
 }
 
+/// A local edit to an existing street. Both ends of the edited piece stay fixed.
+#[derive(Clone, Debug)]
+pub struct RoadBendPlan {
+    pub original: Vec<Pt>,
+    pub curve: Vec<Pt>,
+    pub cost: i64,
+    replacements: Vec<(usize, Vec<Pt>)>,
+}
+
+#[derive(Clone, Copy)]
+struct RunEnd {
+    run: usize,
+    front: bool,
+    bend: Pt,
+    next: Pt,
+    tip: bool,
+}
+
+#[derive(Clone, Copy)]
+enum BendTarget {
+    Interior(usize, usize),
+    Boundary(RunEnd, RunEnd),
+}
+
 /// Why a road cannot go there, with the spot for the ghost to mark.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RoadError {
@@ -117,6 +141,10 @@ pub enum RoadError {
     },
     /// Upgrade: no street there, or nothing bigger to upgrade to.
     NoStreet,
+    NoBend,
+    BendJunction {
+        at: Pt,
+    },
     NotUpgradable,
     NotOpen,
 }
@@ -141,6 +169,10 @@ impl RoadError {
             RoadError::AlongRoad { .. } => "It runs along another road.".into(),
             RoadError::TooPoor { cost } => format!("Not enough money: it costs ${cost}."),
             RoadError::NoStreet => "Click a street to upgrade.".into(),
+            RoadError::NoBend => "Point at a bend on an open street.".into(),
+            RoadError::BendJunction { .. } => {
+                "Rounding here would move or create another junction.".into()
+            }
             RoadError::NotUpgradable => {
                 "That street is already the biggest class you can build.".into()
             }
@@ -153,6 +185,7 @@ impl RoadError {
         match self {
             RoadError::StartNotOnRoad { at }
             | RoadError::OutOfBounds { at }
+            | RoadError::BendJunction { at }
             | RoadError::TooShort { at }
             | RoadError::TooLong { at }
             | RoadError::TooSharp { at }
@@ -216,6 +249,19 @@ fn nearest_on(p: Pt, a: Pt, b: Pt) -> Pt {
         (((p.x - a.x) * abx + (p.y - a.y) * aby) / l2).clamp(0.0, 1.0)
     };
     pt(a.x + abx * t, a.y + aby * t)
+}
+
+fn bend_curve(start: Pt, control: Pt, end: Pt) -> Vec<Pt> {
+    (0..=12)
+        .map(|i| match i {
+            0 => start,
+            12 => end,
+            _ => {
+                let t = f64::from(i) / 12.0;
+                start.lerp(control, t).lerp(control.lerp(end, t), t)
+            }
+        })
+        .collect()
 }
 
 impl Sim {
@@ -673,6 +719,253 @@ impl Sim {
                 Some(at),
             );
         }
+    }
+
+    /// Preview rounding a bend without moving any of its existing junctions.
+    pub fn check_round_bend(&self, at: Pt) -> Result<RoadBendPlan, RoadError> {
+        let editable = || {
+            self.runs.iter().enumerate().filter(|(i, r)| {
+                self.road_open(*i)
+                    && matches!(
+                        r.class,
+                        RoadClass::Local | RoadClass::Collector | RoadClass::Arterial
+                    )
+            })
+        };
+        let sharp = |a: Pt, bend: Pt, b: Pt| {
+            let left = bend - a;
+            let right = b - bend;
+            left.len() > 0.6
+                && right.len() > 0.6
+                && (-0.40..0.92).contains(&left.unit().dot(right.unit()))
+        };
+        let interior = editable().flat_map(|(i, road)| {
+            road.points
+                .windows(3)
+                .enumerate()
+                .filter_map(move |(corner, w)| {
+                    let distance = at.dist(w[1]);
+                    (distance <= 13.0 && sharp(w[0], w[1], w[2]))
+                        .then_some((distance, BendTarget::Interior(i, corner + 1)))
+                })
+        });
+        // Runs split at neighbourhood borders. A bend can straddle that seam
+        // even when both pieces are the same through street on the map.
+        let ends: Vec<_> = editable()
+            .flat_map(|(run, road)| {
+                let points = &road.points;
+                let last = points.len().checked_sub(1);
+                let end = |front: bool| {
+                    let last = last.filter(|&n| n > 0)?;
+                    let (bend, next) = if front {
+                        (points[0], points[1])
+                    } else {
+                        (points[last], points[last - 1])
+                    };
+                    (at.dist(bend) <= 13.0).then_some(RunEnd {
+                        run,
+                        front,
+                        bend,
+                        next,
+                        tip: last == 1,
+                    })
+                };
+                [end(true), end(false)].into_iter().flatten()
+            })
+            .collect();
+        let boundary = ends.iter().enumerate().flat_map(|(i, &left)| {
+            ends[i + 1..].iter().filter_map(move |&right| {
+                (left.run != right.run
+                    && left.bend.dist(right.bend) < 0.01
+                    && self.runs[left.run].class == self.runs[right.run].class
+                    && sharp(left.next, left.bend, right.next))
+                .then_some((at.dist(left.bend), BendTarget::Boundary(left, right)))
+            })
+        });
+        let (_, target) = interior
+            .chain(boundary)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .ok_or(RoadError::NoBend)?;
+        let (run, a, bend, b, a_tip, b_tip) = match target {
+            BendTarget::Interior(run, corner) => {
+                let points = &self.runs[run].points;
+                (
+                    run,
+                    points[corner - 1],
+                    points[corner],
+                    points[corner + 1],
+                    corner == 1,
+                    corner + 2 == points.len(),
+                )
+            }
+            BendTarget::Boundary(left, right) => (
+                left.run, left.next, left.bend, right.next, left.tip, right.tip,
+            ),
+        };
+        let road = &self.runs[run];
+        let (left, right) = (a.dist(bend), b.dist(bend));
+        // For a short hooked end, use the endpoint and ease into the next
+        // continuous segment. For an interior bend, trim both legs equally.
+        let (original, curve) = if a_tip && left <= 9.0 && right >= 28.0 {
+            let direction = (b - bend).unit();
+            let end = bend + direction * 26.0;
+            (
+                vec![a, bend, end],
+                bend_curve(a, bend + direction * 12.0, end),
+            )
+        } else if b_tip && right <= 9.0 && left >= 28.0 {
+            let direction = (a - bend).unit();
+            let start = bend + direction * 26.0;
+            (
+                vec![start, bend, b],
+                bend_curve(start, bend + direction * 12.0, b),
+            )
+        } else {
+            let reach = (left.min(right) * 0.45).min(18.0);
+            if reach < 2.0 {
+                return Err(RoadError::NoBend);
+            }
+            let start = bend + (a - bend).unit() * reach;
+            let end = bend + (b - bend).unit() * reach;
+            (vec![start, bend, end], bend_curve(start, bend, end))
+        };
+        let fixed = [curve[0], curve[curve.len() - 1]];
+        let away_from_anchors = |p: Pt| fixed.iter().all(|q| p.dist(*q) > 0.8);
+        let (mut min, mut max) = (bend, bend);
+        for p in &curve {
+            min.x = min.x.min(p.x);
+            min.y = min.y.min(p.y);
+            max.x = max.x.max(p.x);
+            max.y = max.y.max(p.y);
+        }
+        min = min - pt(1.0, 1.0);
+        max = max + pt(1.0, 1.0);
+        for (other_run, other) in self.runs.iter().enumerate() {
+            let replaced = |segment: usize| match target {
+                BendTarget::Interior(i, corner) => {
+                    other_run == i && (segment == corner - 1 || segment == corner)
+                }
+                BendTarget::Boundary(a, b) => [a, b].iter().any(|end| {
+                    other_run == end.run
+                        && segment == if end.front { 0 } else { other.points.len() - 2 }
+                }),
+            };
+            for (segment, w) in other.points.windows(2).enumerate() {
+                if replaced(segment)
+                    || w[0].x.min(w[1].x) > max.x
+                    || w[0].x.max(w[1].x) < min.x
+                    || w[0].y.min(w[1].y) > max.y
+                    || w[0].y.max(w[1].y) < min.y
+                {
+                    continue;
+                }
+                let touches = |path: &[Pt]| {
+                    let first =
+                        segment == 0 && away_from_anchors(w[0]) && dist_to_path(w[0], path) < 0.55;
+                    let last = segment + 2 == other.points.len()
+                        && away_from_anchors(w[1])
+                        && dist_to_path(w[1], path) < 0.55;
+                    first
+                        || last
+                        || path.windows(2).any(|pair| {
+                            seg_cross(pair[0], pair[1], w[0], w[1]).is_some_and(away_from_anchors)
+                        })
+                };
+                if touches(&original) || touches(&curve) {
+                    return Err(RoadError::BendJunction { at: bend });
+                }
+            }
+        }
+        let width = road.class.half_width();
+        for p in &curve {
+            if self.town.water.iter().any(|ring| point_in_ring(*p, ring)) {
+                return Err(RoadError::InWater { at: *p });
+            }
+            if self.town.slope_at(*p) > 0.18 {
+                return Err(RoadError::TooSteep { at: *p });
+            }
+        }
+        for (p, radius) in self
+            .town
+            .stations
+            .iter()
+            .map(|st| (st.pos, st.radius))
+            .chain(std::iter::once((self.hall, self.town.hall_radius)))
+            .chain(
+                self.lots
+                    .iter()
+                    .filter(|l| {
+                        matches!(
+                            l.phase,
+                            Phase::Built { .. } | Phase::Building { .. } | Phase::Empty { .. }
+                        )
+                    })
+                    .map(|l| (l.pos, l.radius)),
+            )
+        {
+            if dist_to_path(p, &curve) + 0.5 < (width + radius).min(dist_to_path(p, &original)) {
+                return Err(RoadError::Occupied { at: p });
+            }
+        }
+        let cost = (path_len(&curve) * build_cost_per_m(road.class) / 3.0) as i64
+            * self.rules.difficulty.cost_pct()
+            / 100;
+        if !self.can_afford(cost) {
+            return Err(RoadError::TooPoor { cost });
+        }
+        let replacements = match target {
+            BendTarget::Interior(run, corner) => {
+                let mut points = self.runs[run].points.clone();
+                let first = usize::from(curve[0] == a);
+                let last = curve.len() - usize::from(curve[curve.len() - 1] == b);
+                points.splice(corner..corner + 1, curve[first..last].iter().copied());
+                vec![(run, points)]
+            }
+            BendTarget::Boundary(left, right) => {
+                let middle = curve.len() / 2;
+                let replace = |end: RunEnd, mut piece: Vec<Pt>| {
+                    let mut points = self.runs[end.run].points.clone();
+                    if piece[0] == end.next {
+                        piece.remove(0);
+                    }
+                    if end.front {
+                        piece.reverse();
+                        points.splice(0..1, piece);
+                    } else {
+                        points.pop();
+                        points.extend(piece);
+                    }
+                    (end.run, points)
+                };
+                vec![
+                    replace(left, curve[..=middle].to_vec()),
+                    replace(right, curve[middle..].iter().rev().copied().collect()),
+                ]
+            }
+        };
+        Ok(RoadBendPlan {
+            original,
+            curve,
+            cost,
+            replacements,
+        })
+    }
+
+    /// Apply the same validated curve shown by the preview. Road and street
+    /// identities stay stable, including their lot frontage and upkeep.
+    pub fn round_bend(&mut self, at: Pt) -> Result<(), RoadError> {
+        let plan = self.check_round_bend(at)?;
+        self.charge(plan.cost);
+        for (run, points) in plan.replacements {
+            self.runs[run].points = points;
+            self.run_traffic[run] = RoadTraffic::default();
+        }
+        self.roads_version += 1;
+        self.net_dirty = true;
+        self.avenues.traffic_kick = true;
+        self.values_stale = true;
+        self.log(EventKind::Road, "Rounded a road bend.".into(), Some(at));
+        Ok(())
     }
 
     // ----- upgrades -----

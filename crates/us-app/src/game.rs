@@ -122,6 +122,7 @@ struct Game {
     banner: Option<(String, f32)>,
     menu_open: bool,
     stats: Stats,
+    stats_age: f32,
     coach: Coach,
     ui: panels::UiState,
     rules: us_sim::Rules,
@@ -150,9 +151,26 @@ struct Demo {
     cam: CamCtl,
 }
 
+#[derive(Default)]
+struct DesktopBench {
+    started: Option<Instant>,
+    frames_ms: Vec<f32>,
+    input_ms: Vec<f32>,
+    input_at: Option<Instant>,
+}
+
+fn percentile_95(samples: &mut [f32]) -> Option<f32> {
+    if samples.is_empty() {
+        return None;
+    }
+    samples.sort_unstable_by(f32::total_cmp);
+    Some(samples[(samples.len() * 95).div_ceil(100) - 1])
+}
+
 struct Smoke {
     start: Instant,
     secs: f32,
+    bench: Option<DesktopBench>,
     stage: u8,
     frames: u32,
     worst: f32,
@@ -288,12 +306,16 @@ pub(super) fn label(ui: &mut egui::Ui, text: &str, size: f32) {
 
 impl State {
     pub fn new() -> State {
-        let smoke = std::env::var("URBAN_SPRAWL_SMOKE")
-            .ok()
+        let benchmark = std::env::var("URBAN_SPRAWL_DESKTOP_BENCH").ok();
+        let smoke = benchmark
+            .clone()
+            .or_else(|| std::env::var("URBAN_SPRAWL_SMOKE").ok())
             .and_then(|s| s.parse::<f32>().ok())
+            .filter(|secs| secs.is_finite() && *secs > 0.0)
             .map(|secs| Smoke {
                 start: Instant::now(),
                 secs,
+                bench: benchmark.is_some().then(DesktopBench::default),
                 stage: 0,
                 frames: 0,
                 worst: 0.0,
@@ -392,6 +414,11 @@ impl State {
     // ----- input -----
 
     pub fn cursor_moved(&mut self, x: f32, y: f32, height_px: u32) {
+        if let Some(bench) = self.smoke.as_mut().and_then(|s| s.bench.as_mut())
+            && bench.started.is_some()
+        {
+            bench.input_at.get_or_insert_with(Instant::now);
+        }
         let (dx, dy) = (x - self.cursor.0, y - self.cursor.1);
         self.cursor = (x, y);
         let travel = (dx * dx + dy * dy).sqrt();
@@ -583,16 +610,15 @@ impl State {
                 }
             }
         }
-        if g.placed && g.speed > 0 && !g.menu_open && g.election.is_none() {
-            g.day_acc += dt as f64 * SPEEDS[g.speed] / DAY_SECONDS;
+        if g.placed && g.speed > 0 && !g.menu_open && g.election.is_none() && !g.sim.is_game_over()
+        {
+            g.day_acc = (g.day_acc + f64::from(dt) * SPEEDS[g.speed] / DAY_SECONDS).min(16.0);
+            let frame_start = Instant::now();
             let mut steps = 0;
-            while g.day_acc >= 1.0 && steps < 16 {
+            while g.day_acc >= 1.0 && (steps == 0 || frame_start.elapsed().as_millis() < 5) {
                 g.day_acc -= 1.0;
                 g.sim.step_day();
                 steps += 1;
-            }
-            if steps == 16 {
-                g.day_acc = 0.0;
             }
         }
         let t0 = Instant::now();
@@ -610,7 +636,10 @@ impl State {
                 g.election = Some(r.clone());
             }
             let year = g.sim.day / 365;
-            if year > g.autosave_year && !g.sim.is_game_over() {
+            if year > g.autosave_year
+                && !g.sim.is_game_over()
+                && !self.smoke.as_ref().is_some_and(|s| s.bench.is_some())
+            {
                 g.autosave_year = year;
                 let town = g.name.clone();
                 match crate::saves::write_autosave(&crate::saves::save_dir(), &mut g.sim, &town) {
@@ -621,7 +650,11 @@ impl State {
             }
         }
         let Some(g) = self.game.as_mut() else { return };
-        g.refresh_stats();
+        g.stats_age += visual_dt;
+        if g.stats_age >= 0.25 {
+            g.stats_age = 0.0;
+            g.refresh_stats();
+        }
         // Give animation a real-time clock during slow frames. A separate cap
         // keeps suspend/resume from advancing weather or traffic in one jump.
         g.live.scene.set_time(g.live.scene.time + visual_dt);
@@ -704,6 +737,19 @@ impl State {
         }
         if let Some(s) = self.smoke.as_mut() {
             s.frames += 1;
+            if let Some(bench) = &mut s.bench
+                && s.stage >= 3
+                && drawn
+            {
+                if bench.started.is_some() {
+                    bench.frames_ms.push(dt * 1_000.0);
+                    if let Some(input) = bench.input_at.take() {
+                        bench.input_ms.push(input.elapsed().as_secs_f32() * 1_000.0);
+                    }
+                } else {
+                    bench.started = Some(Instant::now());
+                }
+            }
             if s.stage >= 3 {
                 s.worst = s.worst.max(dt);
             }
@@ -821,6 +867,29 @@ impl State {
     fn autopilot(&mut self) {
         let Some(s) = self.smoke.as_mut() else { return };
         let t = s.start.elapsed().as_secs_f32();
+        if s.stage == 0
+            && t > 1.5
+            && s.bench.is_some()
+            && let Some(path) = std::env::var_os("URBAN_SPRAWL_BENCH_SAVE")
+        {
+            s.stage = 2;
+            let path = std::path::PathBuf::from(path);
+            match crate::saves::load(&path) {
+                Ok(sim) => {
+                    self.start_loaded(sim, None);
+                    if let Some(g) = &mut self.game
+                        && let Ok(spec) = std::env::var("URBAN_SPRAWL_SMOKE_UI")
+                    {
+                        g.ui_hook(&spec);
+                    }
+                }
+                Err(error) => {
+                    eprintln!("desktop benchmark could not load the save: {error}");
+                    self.quit = true;
+                }
+            }
+            return;
+        }
         match s.stage {
             0 if t > 1.5 && std::env::var("URBAN_SPRAWL_SMOKE_SCREEN").is_ok() => {
                 match std::env::var("URBAN_SPRAWL_SMOKE_SCREEN").as_deref() {
@@ -832,6 +901,9 @@ impl State {
                 s.stage = 3;
             }
             0 if t > 1.5 => {
+                if s.bench.is_some() {
+                    self.mode = Mode::Sandbox;
+                }
                 self.seed_text = "1".into();
                 if let Ok(v) = std::env::var("URBAN_SPRAWL_SMOKE_SEED") {
                     self.seed_text = v;
@@ -886,7 +958,27 @@ impl State {
                     g.sim.set_tax_x10(tax);
                 }
             }
-            3 if t > s.secs => {
+            3 if s.bench.as_ref().map_or(t > s.secs, |bench| {
+                bench
+                    .started
+                    .is_some_and(|start| start.elapsed().as_secs_f32() >= s.secs)
+            }) =>
+            {
+                if let Some(bench) = &mut s.bench {
+                    let fps = (bench.frames_ms.len() as f32) * 1_000.0
+                        / bench.frames_ms.iter().sum::<f32>().max(0.001);
+                    let slow = percentile_95(&mut bench.frames_ms).unwrap_or(0.0);
+                    let input = percentile_95(&mut bench.input_ms)
+                        .map_or_else(|| "no cursor events".to_owned(), |ms| format!("{ms:.1} ms"));
+                    eprintln!(
+                        "desktop benchmark: {} frames, {:.1} FPS, p95 frame {:.1} ms, p95 cursor event to submitted frame {}, {} input samples",
+                        bench.frames_ms.len(),
+                        fps,
+                        slow,
+                        input,
+                        bench.input_ms.len()
+                    );
+                }
                 if let Some(g) = self.game.as_ref() {
                     eprintln!(
                         "smoke: day {} built {} pop {} treasury {} chunks {} tris {} ground {} fps {:.1} worst-frame {:.0} ms sync max {:.1} ms avg {:.2} ms",
@@ -2055,6 +2147,7 @@ impl Game {
             banner: None,
             menu_open: false,
             stats: Stats::default(),
+            stats_age: 1.0,
             coach: Coach::default(),
             ui: panels::UiState::default(),
             rules,

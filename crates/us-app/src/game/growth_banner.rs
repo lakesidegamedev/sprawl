@@ -290,6 +290,8 @@ impl Game {
         self.close_sheets();
         self.sel = None;
         self.ui.tool = Some(kind);
+        self.ui.civic_rotation = 0;
+        self.ui.civic_bounds = Some(crate::world::civic_preview_footprint(self.preset, kind));
         self.ui.civic_site = None;
         self.ui.road = None;
         self.ui.road_pts.clear();
