@@ -1122,6 +1122,18 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], context: &[RoadDraw]) {
     let clear = junction_clearance(Some(g), &nodes, &all, n_mine, |p| {
         land.as_ref().is_some_and(|land| land.water_at(p).is_some())
     });
+    // the paving each junction lays over lane paint: lines stop at its edge
+    let pad_rings: Vec<Vec<Pt>> = nodes
+        .iter()
+        .filter(|n| {
+            !n.arms.iter().any(|a| all[a.road].works.is_some())
+                && !n.arms.iter().any(|a| a.class == RoadClass::Highway)
+                && !near_water(|p| g.water_at(p), n.p, 35.0)
+        })
+        .filter_map(|n| control_pad(n, &clear))
+        .map(|pad| pad.ring)
+        .collect();
+    let pads = Pads::new(&pad_rings);
     for (i, r) in all.iter().take(n_mine).enumerate() {
         if r.works.is_some() {
             continue;
@@ -1184,7 +1196,7 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], context: &[RoadDraw]) {
             }
             g.polygon(&circle(o, 2.2), z::MEDIAN + 0.01, SHRUB);
         }
-        marks(g, i, r, ring.is_some(), ramp_at, &nodes, &clear[i]);
+        marks(g, i, r, ramp_at, &nodes, &clear[i], &pads);
     }
     for n in &nodes {
         draw_node(g, n, &all, n_mine, &clear);
@@ -1268,17 +1280,156 @@ fn segments_without(line: &[Pt], mut cuts: Vec<(f64, f64)>, total: f64) -> Vec<V
     pieces
 }
 
+/// Even-odd test of a point against a closed ring.
+fn inside_ring(ring: &[Pt], p: Pt) -> bool {
+    let mut inside = false;
+    let mut j = ring.len().wrapping_sub(1);
+    for i in 0..ring.len() {
+        let (a, b) = (ring[i], ring[j]);
+        if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+fn pad_bounds(ring: &[Pt]) -> (Pt, Pt) {
+    ring.iter().fold(
+        (pt(f64::MAX, f64::MAX), pt(f64::MIN, f64::MIN)),
+        |(lo, hi), p| {
+            (
+                pt(lo.x.min(p.x), lo.y.min(p.y)),
+                pt(hi.x.max(p.x), hi.y.max(p.y)),
+            )
+        },
+    )
+}
+
+/// Junction paving rings that lane paint must stop at, each with its bounding box.
+struct Pads<'a> {
+    rings: Vec<(&'a [Pt], (Pt, Pt))>,
+}
+
+impl<'a> Pads<'a> {
+    fn new(rings: &'a [Vec<Pt>]) -> Self {
+        Pads {
+            rings: rings
+                .iter()
+                .map(|r| (r.as_slice(), pad_bounds(r)))
+                .collect(),
+        }
+    }
+
+    fn near(&self, line: &[Pt], reach: f64) -> Pads<'a> {
+        let (lo, hi) = pad_bounds(line);
+        Pads {
+            rings: self
+                .rings
+                .iter()
+                .filter(|(_, (a, b))| {
+                    a.x <= hi.x + reach
+                        && b.x >= lo.x - reach
+                        && a.y <= hi.y + reach
+                        && b.y >= lo.y - reach
+                })
+                .copied()
+                .collect(),
+        }
+    }
+
+    fn covers(&self, p: Pt) -> bool {
+        self.rings.iter().any(|(ring, (lo, hi))| {
+            p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y && inside_ring(ring, p)
+        })
+    }
+}
+
+/// Paint a line `offset` metres left of `line`, leaving out what junction paving covers.
+/// A short piece that would stay visible between two pads, or past a pad's oblique edge,
+/// is a sliver in the middle of the junction, so it is left out as well.
+fn paint_clear_of_pads(
+    g: &mut Ground,
+    line: &[Pt],
+    half: f32,
+    offset: f32,
+    z: f32,
+    col: Rgb,
+    pads: &Pads,
+) {
+    for piece in clear_of_pads(line, f64::from(offset), pads) {
+        g.ribbon(&piece, half, offset, z, col);
+    }
+}
+
+fn clear_of_pads(line: &[Pt], offset: f64, pads: &Pads) -> Vec<Vec<Pt>> {
+    const STEP: f64 = 0.5;
+    const SLIVER: f64 = 2.5;
+    let pads = pads.near(line, offset.abs() + 1.0);
+    if pads.rings.is_empty() {
+        return vec![line.to_vec()];
+    }
+    let total = len(line);
+    let n = (total / STEP).ceil().max(1.0) as usize;
+    let covered: Vec<bool> = (0..=n)
+        .map(|k| {
+            let s = (k as f64 * STEP).min(total);
+            let p = at(line, s);
+            let d = tangent_at(line, s);
+            pads.covers(p + pt(-d.y, d.x) * offset)
+        })
+        .collect();
+    if !covered.iter().any(|&c| c) {
+        return vec![line.to_vec()];
+    }
+    let mut out = Vec::new();
+    let mut k = 0;
+    while k <= n {
+        if covered[k] {
+            k += 1;
+            continue;
+        }
+        let first = k;
+        while k <= n && !covered[k] {
+            k += 1;
+        }
+        let last = k - 1;
+        let bounded = first > 0 || last < n;
+        let (s0, s1) = (first as f64 * STEP, (last as f64 * STEP).min(total));
+        if bounded && s1 - s0 < SLIVER {
+            continue;
+        }
+        // reach half a step under the pad so the paint meets its edge
+        let lo = if first > 0 { s0 - STEP * 0.5 } else { 0.0 };
+        let hi = if last < n { s1 + STEP * 0.5 } else { total };
+        out.push(sub_line(line, lo.max(0.0), hi.min(total)));
+    }
+    out
+}
+
+/// Whether junction paving covers any part of a dash painted `offset` metres to the left.
+fn dash_under_pad(dash: &[Pt], offset: f64, pads: &Pads) -> bool {
+    let total = len(dash);
+    (0..=4).any(|k| {
+        let s = total * k as f64 / 4.0;
+        let d = tangent_at(dash, s);
+        pads.covers(at(dash, s) + pt(-d.y, d.x) * offset)
+    })
+}
+
 fn marks(
     g: &mut Ground,
     i: usize,
     r: &RoadDraw,
-    ring: bool,
     ramp: Option<(bool, bool)>,
     nodes: &[Node],
     clear: &[(f64, f64)],
+    pads: &Pads,
 ) {
     let hw = r.class.half_width() as f32;
     let line = r.points;
+    let ring = ring_arc(r).is_some();
+    let pads = pads.near(line, f64::from(hw) + 1.0);
     match r.class {
         RoadClass::Highway => {
             g.ribbon(line, 0.6, 0.0, z::MARK + 0.02, BARRIER);
@@ -1293,9 +1444,20 @@ fn marks(
             for segment in arterial_marking_segments(i, line, nodes, clear) {
                 let stripes = dashes(&segment, 3.0, 6.0);
                 for side in [-1.0f32, 1.0] {
-                    g.ribbon(&segment, 0.09, side * 0.22, z::MARK, YELLOW);
-                    g.ribbon(&segment, 0.12, side * (hw - 0.7), z::MARK, WHITE);
-                    for d in &stripes {
+                    paint_clear_of_pads(g, &segment, 0.09, side * 0.22, z::MARK, YELLOW, &pads);
+                    paint_clear_of_pads(
+                        g,
+                        &segment,
+                        0.12,
+                        side * (hw - 0.7),
+                        z::MARK,
+                        WHITE,
+                        &pads,
+                    );
+                    for d in stripes
+                        .iter()
+                        .filter(|d| !dash_under_pad(d, side as f64 * 5.0, &pads))
+                    {
                         g.ribbon(d, 0.12, side * 5.0, z::MARK, WHITE);
                     }
                 }
@@ -1307,7 +1469,7 @@ fn marks(
             let (exit, front) = ramp.unwrap();
             let rw = RAMP_HW as f32;
             for side in [-1.0f32, 1.0] {
-                g.ribbon(line, 0.12, side * (rw - 0.5), z::MARK, WHITE);
+                paint_clear_of_pads(g, line, 0.12, side * (rw - 0.5), z::MARK, WHITE, &pads);
             }
             let total = len(line);
             for at in [22.0, 70.0] {
@@ -1324,20 +1486,23 @@ fn marks(
                 if !exit {
                     dir = dir * -1.0;
                 }
+                if pads.covers(p - dir * 2.6) || pads.covers(p + dir * 2.6) {
+                    continue;
+                }
                 arrow(g, p, dir);
             }
         }
         RoadClass::Collector if !ring => {
             for segment in segments_without(line, clear.to_vec(), len(line)) {
-                g.ribbon(&segment, 0.1, 0.0, z::MARK, YELLOW);
+                paint_clear_of_pads(g, &segment, 0.1, 0.0, z::MARK, YELLOW, &pads);
                 for side in [-1.0f32, 1.0] {
-                    g.ribbon(&segment, 0.1, side * (hw - 0.6), z::MARK, WHITE);
+                    paint_clear_of_pads(g, &segment, 0.1, side * (hw - 0.6), z::MARK, WHITE, &pads);
                 }
             }
         }
         RoadClass::Collector => {
             for side in [-1.0f32, 1.0] {
-                g.ribbon(line, 0.1, side * (hw - 0.6), z::MARK, WHITE);
+                paint_clear_of_pads(g, line, 0.1, side * (hw - 0.6), z::MARK, WHITE, &pads);
             }
         }
         _ => {}
@@ -1425,6 +1590,75 @@ mod tests {
                 works: None,
             })
             .collect()
+    }
+
+    /// Lane paint stops at junction paving instead of leaving a sliver inside it: no
+    /// white or yellow line vertex lies more than 1.5 m inside any pad.
+    #[test]
+    fn lane_paint_leaves_no_sliver_inside_junction_paving() {
+        for (preset, seed) in [
+            (Preset::Winding, 3),
+            (Preset::Grid, 5),
+            (Preset::Crossroads, 2),
+        ] {
+            let t = generate(preset, seed);
+            let d = draws(&t);
+            let mut g = Ground::default();
+            paint(&mut g, &d, &[]);
+            let all: Vec<&RoadDraw> = d
+                .iter()
+                .filter(|r| r.class != RoadClass::Rail && r.points.len() >= 2)
+                .collect();
+            let nodes = find_nodes(&all, all.len());
+            let clear = junction_clearance(None, &nodes, &all, all.len(), |_| false);
+            let pads: Vec<Vec<Pt>> = nodes
+                .iter()
+                .filter(|n| !n.arms.iter().any(|a| a.class == RoadClass::Highway))
+                .filter_map(|n| control_pad(n, &clear))
+                .map(|pad| pad.ring)
+                .collect();
+            let depth = |ring: &[Pt], p: Pt| {
+                (0..ring.len())
+                    .map(|i| {
+                        let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                        let d = b - a;
+                        let u = ((p - a).dot(d) / d.dot(d).max(1e-9)).clamp(0.0, 1.0);
+                        p.dist(a + d * u)
+                    })
+                    .fold(f64::MAX, f64::min)
+            };
+            let mut deep = 0;
+            for v in &g.mesh.vertices {
+                let paint = v.color[..3] == WHITE || v.color[..3] == YELLOW;
+                if !paint || (v.pos[2] - z::MARK).abs() > 1e-4 {
+                    continue;
+                }
+                let p = pt(f64::from(v.pos[0]), f64::from(v.pos[1]));
+                if pads.iter().any(|r| inside_ring(r, p) && depth(r, p) > 1.5) {
+                    deep += 1;
+                }
+            }
+            assert_eq!(
+                deep,
+                0,
+                "{} {seed}: lane paint inside junction paving",
+                preset.name()
+            );
+        }
+    }
+
+    #[test]
+    fn a_stub_between_two_pads_is_left_unpainted() {
+        let line = [pt(0.0, 0.0), pt(40.0, 0.0)];
+        let square = |x0: f64, x1: f64| vec![pt(x0, -5.0), pt(x1, -5.0), pt(x1, 5.0), pt(x0, 5.0)];
+        // a 1.5 m gap between two pads, then a long clear run
+        let rings = vec![square(-1.0, 10.0), square(11.5, 20.0)];
+        let pads = Pads::new(&rings);
+        let pieces = clear_of_pads(&line, 0.0, &pads);
+        assert_eq!(pieces.len(), 1);
+        assert!(pieces[0][0].x > 19.0 && pieces[0][0].x < 20.5);
+        assert!(dash_under_pad(&[pt(8.5, 0.0), pt(11.5, 0.0)], 0.0, &pads));
+        assert!(!dash_under_pad(&[pt(25.0, 0.0), pt(28.0, 0.0)], 0.0, &pads));
     }
 
     #[test]

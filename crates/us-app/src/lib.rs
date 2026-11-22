@@ -3,6 +3,8 @@
 
 mod audio;
 mod cam;
+#[cfg(test)]
+mod capture;
 pub(crate) mod game;
 mod platform;
 mod saves;

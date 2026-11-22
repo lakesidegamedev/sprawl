@@ -445,6 +445,11 @@ impl Scene {
         self.x.traffic_enabled = true;
     }
 
+    /// Points of every modeled traffic junction, in a stable order.
+    pub fn junction_points(&self) -> Vec<Pt> {
+        self.x.junctions.iter().map(|j| j.point).collect()
+    }
+
     /// The nearest modeled traffic junction within the requested map distance.
     pub fn junction_near(&self, point: Pt, radius_m: f64) -> Option<Pt> {
         self.x

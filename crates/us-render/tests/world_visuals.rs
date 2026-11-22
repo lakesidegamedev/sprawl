@@ -23,6 +23,34 @@ fn the_open_ocean_has_no_foam_on_the_mesh_boundary() {
     }
 }
 
+/// Past the edge of a coast map only the sea side may be open water. Low ground behind
+/// the coast used to become long straight channels across the farmland.
+#[test]
+fn coast_farmland_past_the_map_edge_stays_dry() {
+    let town = generate(Preset::Coast, 3);
+    let us_gen::RockCoast::Coast(coast) = town.terrain.rock_coast() else {
+        panic!("a coast town has a coastline");
+    };
+    let land = us_render::Land::from_town(&town);
+    let mut ground = us_render::ground::Ground::on(&land);
+    us_render::live::ground_terrain(&mut ground, &land, &town);
+    let size = town.size as f32;
+    let mut sea = 0;
+    for v in &ground.mesh.vertices {
+        let [x, y, _] = v.pos;
+        let outside = x < 0.0 || y < 0.0 || x > size || y > size;
+        if outside && v.color[..3] == [66, 132, 200] {
+            sea += 1;
+            let inland = coast.inland(f64::from(x), f64::from(y));
+            assert!(
+                inland < 150.0,
+                "open water {inland:.0} m inland at ({x}, {y})"
+            );
+        }
+    }
+    assert!(sea > 0, "the sea still runs on past the map edge");
+}
+
 #[test]
 fn overlay_has_one_block_per_lot() {
     let t = town();

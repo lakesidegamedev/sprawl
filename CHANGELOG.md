@@ -4,6 +4,8 @@
 
 - Crosswalks and stop lines paint once per approach across neighbourhood boundaries. Closely staggered junctions clear the pavement between their mouths and share that clearance with traffic.
 - Low hills carry the landscape past the edge of temperate towns, and open sea loses its artificial foam edge. Far scenery fades into a weather-lit horizon without washing out the playable map.
+- Lane lines and dashes stop where junction paving begins, so no fragments of paint are left inside a junction. In snow, junction paving carries the same churned slush as the lanes around it instead of reading as a dark patch.
+- Fields, hedgerows and woodlots continue past the edge of green maps, so the town no longer sits in a plain square. On coast maps the farmland behind the shore stays dry instead of showing strips of sea.
 
 ## 1.6.0 Preview 3 (2026-11-22)
 
