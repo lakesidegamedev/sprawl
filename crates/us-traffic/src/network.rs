@@ -48,12 +48,16 @@ pub fn class_node_delay(c: RoadClass) -> f64 {
 fn approach_cost(
     class: RoadClass,
     length: f64,
-    arms: impl ExactSizeIterator<Item = RoadClass>,
+    arms: impl Clone + ExactSizeIterator<Item = (RoadClass, f64)>,
 ) -> (f64, f64) {
     let count = arms.len();
     let travel = length / class_speed(class);
     let cap = class_capacity(class);
-    if !us_gen::signalized_junction(arms) {
+    if arms
+        .clone()
+        .any(|(_, length)| length < us_gen::MIN_SIGNAL_LINK_M)
+        || !us_gen::signalized_junction(arms.map(|(class, _)| class))
+    {
         return (travel + class_node_delay(class), cap);
     }
     let cycle = count as f64 * us_gen::SIGNAL_APPROACH_SECONDS;
@@ -123,9 +127,10 @@ impl Network {
                 let (t0, cap) = approach_cost(
                     e.class,
                     e.len,
-                    junction_streets[to as usize]
-                        .iter()
-                        .map(|&street| streets.edges[street].class),
+                    junction_streets[to as usize].iter().map(|&street| {
+                        let edge = &streets.edges[street];
+                        (edge.class, edge.len)
+                    }),
                 );
                 arcs.push(Arc {
                     from,
@@ -178,11 +183,8 @@ impl Network {
             self.junction_streets[arc.to as usize]
                 .iter()
                 .map(|&street| {
-                    if street == widened {
-                        class
-                    } else {
-                        self.streets.edges[street].class
-                    }
+                    let edge = &self.streets.edges[street];
+                    (if street == widened { class } else { edge.class }, edge.len)
                 }),
         )
     }
@@ -284,6 +286,25 @@ mod tests {
             assert!(incoming.cap < outgoing.cap);
             assert!(incoming.t0 > outgoing.t0);
         }
+    }
+
+    #[test]
+    fn short_blocks_do_not_pay_signal_delay() {
+        let cost = approach_cost(
+            RoadClass::Arterial,
+            100.0,
+            [
+                (RoadClass::Arterial, 100.0),
+                (RoadClass::Arterial, 100.0),
+                (RoadClass::Local, 12.0),
+            ]
+            .into_iter(),
+        );
+        assert_eq!(cost.1, class_capacity(RoadClass::Arterial));
+        assert_eq!(
+            cost.0,
+            100.0 / class_speed(RoadClass::Arterial) + class_node_delay(RoadClass::Arterial)
+        );
     }
 
     #[test]

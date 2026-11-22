@@ -583,6 +583,9 @@ fn scatter_cell(
     let roll = rng.f32();
     let clear = cx.roads.clearance(p);
     let slope = cx.land.slope(x, y);
+    if slope > 1.15 && cx.land.rock().is_some() {
+        return; // Ground-draped props cannot sit on a sheer rock face.
+    }
     let step = rng.below(4);
     let mut put = |tpl: usize, scale: f32, rng: &mut Rng| {
         out.push(Item {

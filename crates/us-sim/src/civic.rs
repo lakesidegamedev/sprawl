@@ -61,6 +61,16 @@ impl Sim {
     ///
     /// Returns the index of the new lot in `lots()` (lots are only ever appended).
     pub fn place_civic(&mut self, kind: CivicKind, p: Pt) -> Result<usize, PlaceError> {
+        self.place_civic_rotated(kind, p, 0)
+    }
+
+    /// Place using quarter turns from the default street-facing orientation.
+    pub fn place_civic_rotated(
+        &mut self,
+        kind: CivicKind,
+        p: Pt,
+        quarter_turns: u8,
+    ) -> Result<usize, PlaceError> {
         let (at, give_up) = self.civic_plan(kind, p)?;
         let r = kind.radius();
         let cost = kind.cost();
@@ -90,7 +100,7 @@ impl Sim {
             pos: p,
             addition: self.addition_of(p).unwrap_or(0),
             radius: r,
-            facing: libm::atan2(at.y - p.y, at.x - p.x),
+            facing: civic_facing(p, at, quarter_turns),
             src,
             exempt: false,
             civic: Some(kind),
@@ -109,7 +119,14 @@ impl Sim {
     /// Preview the selected site. Preserve a legal point and only move an invalid
     /// point when a roadside snap actually makes it buildable.
     pub fn preview_civic_site(&self, kind: CivicKind, p: Pt) -> (Pt, Result<(), PlaceError>) {
-        let raw = self.check_civic(kind, p);
+        let (site, access) = self.preview_civic_access(kind, p);
+        (site, access.map(|_| ()))
+    }
+
+    /// The same snapping and validation as the placement tool, with the access
+    /// point on the street that a successful placement would use.
+    pub fn preview_civic_access(&self, kind: CivicKind, p: Pt) -> (Pt, Result<Pt, PlaceError>) {
+        let raw = self.civic_access(kind, p);
         if raw.is_ok()
             || matches!(
                 raw,
@@ -121,8 +138,10 @@ impl Sim {
             return (p, raw);
         }
         let site = self.roadside_site(kind, p);
-        if site != p && self.check_civic(kind, site).is_ok() {
-            return (site, Ok(()));
+        if site != p
+            && let Ok(at) = self.civic_access(kind, site)
+        {
+            return (site, Ok(at));
         }
         (p, raw)
     }
@@ -168,10 +187,15 @@ impl Sim {
 
     /// The part of a planned street under the rejected footprint.
     pub fn reserved_civic_street(&self, kind: CivicKind, p: Pt) -> Option<(Pt, Pt)> {
+        self.civic_road_conflict(kind, p, true)
+    }
+
+    /// Highlight the stretch of pavement or planned alignment that blocks the site.
+    pub fn civic_road_conflict(&self, kind: CivicKind, p: Pt, reserved: bool) -> Option<(Pt, Pt)> {
         for run in self
             .runs
             .iter()
-            .filter(|run| !self.street_visible(run.street))
+            .filter(|run| self.street_visible(run.street) != reserved)
         {
             let clearance = run.class.half_width() + civic_road_clearance(kind);
             for w in run
@@ -197,7 +221,11 @@ impl Sim {
     /// Whether a civic building could be placed at `p` right now, without placing it. The same
     /// rules as `place_civic`, for a ghost preview.
     pub fn check_civic(&self, kind: CivicKind, p: Pt) -> Result<(), PlaceError> {
-        self.civic_plan(kind, p).map(|_| ())
+        self.civic_access(kind, p).map(|_| ())
+    }
+
+    pub fn civic_access(&self, kind: CivicKind, p: Pt) -> Result<Pt, PlaceError> {
+        self.civic_plan(kind, p).map(|(at, _)| at)
     }
 
     /// Validate a placement. Returns the nearest point on the road and the lots it takes over.
@@ -277,6 +305,12 @@ impl Sim {
         }
         Ok((at, give_up))
     }
+}
+
+/// Convert the roadward direction to the civic lot's rotation.
+pub fn civic_facing(site: Pt, road: Pt, quarter_turns: u8) -> f64 {
+    libm::atan2(road.y - site.y, road.x - site.x)
+        + f64::from(1 + quarter_turns % 4) * std::f64::consts::FRAC_PI_2
 }
 
 fn civic_road_clearance(kind: CivicKind) -> f64 {
@@ -369,11 +403,20 @@ mod tests {
         assert!(raw.dist(site) > kind.radius());
         let before = sim.treasury;
         assert_eq!(sim.snap_civic_site(kind, raw), site);
+        let (preview_site, access) = sim.preview_civic_access(kind, raw);
+        assert_eq!(preview_site, site);
+        let access = access.unwrap();
+        let facing = civic_facing(site, access, 0);
+        let front = pt(libm::sin(facing), -libm::cos(facing));
+        assert!(front.dot((access - site).unit()) > 0.999_99);
         let placed = sim
-            .place_civic(kind, site)
+            .place_civic_rotated(kind, site, 1)
             .expect("previewed site permits placement");
         assert_eq!(sim.lots()[placed].pos, site);
+        assert_eq!(sim.lots()[placed].facing, civic_facing(site, access, 1));
         assert_eq!(sim.treasury, before - kind.cost());
+        let loaded = Sim::load(&sim.save()).unwrap();
+        assert_eq!(loaded.lots()[placed].facing, sim.lots()[placed].facing);
     }
 
     #[test]
