@@ -26,6 +26,7 @@ const IDS_PER_CELL: u32 = 60_000;
 const WORKS_DAYS: i32 = 40;
 /// Roadworks are redrawn this many times over their length.
 const WORKS_STEPS: i32 = 8;
+const JUNCTION_CONTEXT_M: f64 = 48.0;
 
 type Cell = (i32, i32);
 /// Which ground chunk a road belongs to: an addition, or `None` for the skeleton and connectors.
@@ -57,6 +58,7 @@ struct RunWork {
 }
 
 struct PrevRun {
+    group: Group,
     class: RoadClass,
     points: Vec<Pt>,
     work: RunWork,
@@ -248,6 +250,37 @@ pub struct LiveScene {
     /// Woodland chunks waiting to be redrawn, a few each frame.
     woods_dirty: std::collections::BTreeSet<us_render::woods::Cell>,
     woods_roads_ver: u32,
+}
+
+fn road_bounds(points: impl Iterator<Item = Pt>) -> Option<(Pt, Pt)> {
+    let mut points = points.peekable();
+    let first = *points.peek()?;
+    Some(points.fold((first, first), |(lo, hi), p| {
+        (
+            us_gen::pt(lo.x.min(p.x), lo.y.min(p.y)),
+            us_gen::pt(hi.x.max(p.x), hi.y.max(p.y)),
+        )
+    }))
+}
+
+fn road_bounds_overlap((a_lo, a_hi): (Pt, Pt), (b_lo, b_hi): (Pt, Pt)) -> bool {
+    a_hi.x > b_lo.x - JUNCTION_CONTEXT_M
+        && a_lo.x < b_hi.x + JUNCTION_CONTEXT_M
+        && a_hi.y > b_lo.y - JUNCTION_CONTEXT_M
+        && a_lo.y < b_hi.y + JUNCTION_CONTEXT_M
+}
+
+fn road_near_bounds(points: &[Pt], bounds: (Pt, Pt)) -> bool {
+    points.windows(2).any(|pair| {
+        let [a, b] = [pair[0], pair[1]];
+        road_bounds_overlap(
+            (
+                us_gen::pt(a.x.min(b.x), a.y.min(b.y)),
+                us_gen::pt(a.x.max(b.x), a.y.max(b.y)),
+            ),
+            bounds,
+        )
+    })
 }
 
 fn cell_of(x: f64, y: f64) -> Cell {
@@ -782,6 +815,7 @@ impl LiveScene {
                 .road_runs()
                 .iter()
                 .map(|r| PrevRun {
+                    group: r.addition,
                     class: r.class,
                     points: r.points.clone(),
                     work: RunWork::default(),
@@ -1235,52 +1269,20 @@ impl LiveScene {
                 .collect(),
             None => Vec::new(),
         };
-        // roads of the skeleton and of the neighbouring additions that meet these ones: they only
-        // decide where junctions are, each is drawn by its own group
-        let context: Vec<RoadDraw> = match group {
-            None => Vec::new(),
-            Some(_) => {
-                let (mut lo, mut hi) = (
-                    Pt {
-                        x: f64::MAX,
-                        y: f64::MAX,
-                    },
-                    Pt {
-                        x: f64::MIN,
-                        y: f64::MIN,
-                    },
-                );
-                for d in &draws {
-                    for p in d.points {
-                        lo = Pt {
-                            x: lo.x.min(p.x),
-                            y: lo.y.min(p.y),
-                        };
-                        hi = Pt {
-                            x: hi.x.max(p.x),
-                            y: hi.y.max(p.y),
-                        };
-                    }
-                }
-                runs.iter()
-                    .enumerate()
-                    .filter(|(i, r)| r.addition != group && sim.road_visible(*i))
-                    .filter(|(_, r)| {
-                        r.points.windows(2).any(|pair| {
-                            pair[0].x.max(pair[1].x) > lo.x - 30.0
-                                && pair[0].x.min(pair[1].x) < hi.x + 30.0
-                                && pair[0].y.max(pair[1].y) > lo.y - 30.0
-                                && pair[0].y.min(pair[1].y) < hi.y + 30.0
-                        })
-                    })
-                    .map(|(i, r)| RoadDraw {
-                        class: r.class,
-                        points: r.points.as_slice(),
-                        works: self.works_progress(i, day),
-                    })
-                    .collect()
-            }
-        };
+        // Each approach paints its own markings. The skeleton needs the same
+        // junction context as an addition so its side of a junction is drawn too.
+        let bounds = road_bounds(draws.iter().flat_map(|road| road.points.iter().copied()));
+        let context: Vec<RoadDraw> = runs
+            .iter()
+            .enumerate()
+            .filter(|(i, r)| r.addition != group && sim.road_visible(*i))
+            .filter(|(_, r)| bounds.is_some_and(|bounds| road_near_bounds(&r.points, bounds)))
+            .map(|(i, r)| RoadDraw {
+                class: r.class,
+                points: r.points.as_slice(),
+                works: self.works_progress(i, day),
+            })
+            .collect();
         let mesh = roads_ground_state_ctx_on(&self.land, &draws, &culs, &context);
         let (zlo, zhi) = self.z_range(2.0);
         let (lo, hi) = match group {
@@ -1541,15 +1543,21 @@ impl LiveScene {
         let runs = sim.road_runs();
         // streets the town is building: drawn as roadworks at the simulation's own progress, and
         // redrawn when the progress moves a step or the street opens
-        let same_len = self.build_step.len() == runs.len();
         let mut changed: Vec<Group> = Vec::new();
+        let mut junction_changes = Vec::new();
         let mut steps = Vec::with_capacity(runs.len());
         self.build_prog.resize(runs.len(), None);
         for (i, run) in runs.iter().enumerate() {
             let (progress, step) = Self::road_draw_state(sim, i);
             self.build_prog[i] = progress;
-            if !same_len || self.build_step[i] != step {
+            let old = self.build_step.get(i).copied().unwrap_or(0);
+            if old != step {
                 changed.push(run.addition);
+                if (old == 1 || step == 1)
+                    && let Some(bounds) = road_bounds(run.points.iter().copied())
+                {
+                    junction_changes.push(bounds);
+                }
             }
             steps.push(step);
         }
@@ -1573,6 +1581,22 @@ impl LiveScene {
                     p
                 })
                 .collect();
+            for (i, run) in runs.iter().enumerate() {
+                if prev.get(i).is_none_or(|old| {
+                    old.group != run.addition || old.class != run.class || old.points != run.points
+                }) {
+                    self.mark_roads(run.addition);
+                    junction_changes.extend(road_bounds(run.points.iter().copied()));
+                    if let Some(old) = prev.get(i) {
+                        self.mark_roads(old.group);
+                        junction_changes.extend(road_bounds(old.points.iter().copied()));
+                    }
+                }
+            }
+            for old in prev.iter().skip(runs.len()) {
+                self.mark_roads(old.group);
+                junction_changes.extend(road_bounds(old.points.iter().copied()));
+            }
             let old = OldRoads::new(&prev);
             let mut work = Vec::with_capacity(runs.len());
             for (ri, r) in runs.iter().enumerate() {
@@ -1605,6 +1629,7 @@ impl LiveScene {
             self.prev_runs = runs
                 .iter()
                 .map(|r| PrevRun {
+                    group: r.addition,
                     class: r.class,
                     points: r.points.clone(),
                     work: RunWork::default(),
@@ -1629,12 +1654,27 @@ impl LiveScene {
                 if step == 254 {
                     self.run_work[i].start = None;
                     self.geo_dirty = true;
+                    junction_changes.extend(road_bounds(r.points.iter().copied()));
                 }
                 touched.push(r.addition);
             }
         }
         for g in touched {
             self.mark_roads(g);
+        }
+        // Opening or moving one arm changes the markings of streets that meet it.
+        if !junction_changes.is_empty() {
+            for (i, run) in runs.iter().enumerate() {
+                if sim.road_visible(i)
+                    && road_bounds(run.points.iter().copied()).is_some_and(|own| {
+                        junction_changes
+                            .iter()
+                            .any(|&other| road_bounds_overlap(own, other))
+                    })
+                {
+                    self.mark_roads(run.addition);
+                }
+            }
         }
         let dirty = std::mem::take(&mut self.road_dirty);
         for g in dirty {

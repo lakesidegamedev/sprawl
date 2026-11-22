@@ -2485,17 +2485,19 @@ fn sun_shafts(colour: vec3<f32>, p: vec2<i32>, depth: f32) -> vec3<f32> {
 // The sky where no land is drawn: a gradient to a pale horizon, the sun and its glow.
 fn sky_dome(p: vec2<i32>) -> vec3<f32> {
     let ray = normalize(ray_for_pixel(vec2<f32>(p) + 0.5));
-    let up = vec3<f32>(ray.xy, max(ray.z, 0.0));
-    var sky = sky_radiance(normalize(up + vec3<f32>(0.0, 0.0, 0.02)));
+    let up = normalize(vec3<f32>(ray.xy, max(ray.z, 0.0) + 0.02));
+    var sky = sky_radiance(up);
     let day = smoothstep(-0.08, 0.3, g.sun.z) * (1.0 - smoothstep(0.05, 0.45, g.tone.w));
     let low = (1.0 - smoothstep(0.05, 0.5, g.sun.z)) * day;
-    let haze = mix(vec3<f32>(0.16, 0.20, 0.30), vec3<f32>(0.80, 0.85, 0.88), day)
-        + vec3<f32>(0.20, 0.06, -0.06) * low;
-    sky = mix(sky, haze, pow(1.0 - clamp(ray.z, 0.0, 1.0), 6.0) * 0.85);
-    let toward = max(0.0, dot(ray, g.sun.xyz));
+    let toward = max(0.0, dot(up, g.sun.xyz));
+    let horizon = 1.0 - smoothstep(0.0, 0.30, max(ray.z, 0.0));
+    let haze = mix(vec3<f32>(0.12, 0.16, 0.26), vec3<f32>(0.72, 0.79, 0.84), day)
+        + vec3<f32>(0.23, 0.09, -0.03) * low * (0.24 + 0.76 * toward * toward);
+    sky = mix(sky, haze, horizon * 0.73);
     let clear = 1.0 - 0.8 * g.shade.w;
+    let sun_disc = smoothstep(0.9993, 0.9997, max(0.0, dot(ray, g.sun.xyz)));
     sky += mix(vec3<f32>(1.0, 0.95, 0.85), vec3<f32>(1.0, 0.62, 0.30), low)
-        * (pow(toward, 14.0) * 0.14 + pow(toward, 180.0) * 0.35 + smoothstep(0.9993, 0.9997, toward) * 2.0)
+        * (pow(toward, 14.0) * 0.14 + pow(toward, 180.0) * 0.35 + sun_disc * 2.0)
         * day * clear;
     return sky * mix(g.tone.rgb, vec3<f32>(1.0), 0.4);
 }
@@ -2582,9 +2584,20 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
     if (g.look.z < 0.5 && (g.resolve.w > 0.5 || g.weather_flow.z > 0.02)) {
         col = aerial_perspective(col, p, centre.x);
     }
-    if (g.look.z < 0.5 && centre.x > 2400.0 && centre.x < 100000.0) {
-        // far land dissolves into the sky, so no edge of the world is ever drawn
-        col = mix(col, sky_dome(p), smoothstep(2400.0, 11000.0, centre.x));
+    if (g.look.z < 0.5 && centre.x > 1500.0 && centre.x < 100000.0) {
+        let xy = world_at(p, centre.x).xy;
+        let map_edge = vec2<f32>(1.0 / g.terrain.z);
+        let outside = length(max(max(-xy, xy - map_edge), vec2<f32>(0.0)));
+        // Only scenery past the playable area dissolves into the sky. The existing
+        // atmospheric perspective still shades the city at a distance.
+        let fringe = 0.34 * smoothstep(350.0, 2400.0, outside)
+            * smoothstep(1500.0, 5100.0, centre.x);
+        let horizon = smoothstep(1500.0, 6800.0, outside)
+            * smoothstep(5000.0, 16000.0, centre.x);
+        let haze = mix(fringe, 1.0, horizon);
+        if (haze > 0.0) {
+            col = mix(col, sky_dome(p), haze);
+        }
     }
     if (g.look.z < 0.5 && g.resolve.w > 0.5) {
         col = sun_shafts(col, p, centre.x);

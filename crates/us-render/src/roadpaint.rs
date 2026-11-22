@@ -745,7 +745,9 @@ pub(crate) fn traffic_junctions(
         })
         .unzip();
     let nodes = find_nodes(&draws, draws.len());
-    let clear = skew_junction_clearance(None, &nodes, &draws, |p| land.water_at(p).is_some());
+    let clear = junction_clearance(None, &nodes, &draws, draws.len(), |p| {
+        land.water_at(p).is_some()
+    });
     nodes
         .into_iter()
         .filter_map(|node| {
@@ -786,16 +788,52 @@ pub(crate) fn traffic_junctions(
 /// still overlap past the corner, especially if one ends in a short hook. Draw
 /// one paved apron through the shared width so lane paint, kerbs and snowbanks
 /// cannot cut across the merge. Follow the actual curves beyond the pad.
-fn skew_junction_clearance(
+fn junction_clearance(
     mut ground: Option<&mut Ground>,
     nodes: &[Node],
     all: &[&RoadDraw],
+    n_mine: usize,
     water: impl Fn(Pt) -> bool,
 ) -> Vec<Vec<(f64, f64)>> {
     let mut clear = vec![Vec::new(); all.len()];
+    let mut mouths = vec![Vec::new(); all.len()];
     for node in nodes {
-        if !near_water(&water, node.p, 35.0) {
-            draw_skew_aprons(&mut ground, node, nodes, all, &mut clear);
+        if near_water(&water, node.p, 35.0) {
+            continue;
+        }
+        draw_skew_aprons(&mut ground, node, nodes, all, &mut clear);
+        if let Some(pad) = junction_pad(node) {
+            for (arm, cut) in node.arms.iter().zip(pad.cut) {
+                if !arm.ring && arm.class != RoadClass::Highway {
+                    mouths[arm.road].push((arm.s0, arm.fwd, cut));
+                }
+            }
+        }
+    }
+    for (road, mouths) in mouths.iter_mut().enumerate() {
+        mouths.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        // At a node the backward arm precedes the forward arm. Consecutive
+        // forward/backward entries face each other along a block.
+        for pair in mouths.windows(2) {
+            let [(start, true, start_cut), (end, false, end_cut)] = pair else {
+                continue;
+            };
+            if end - start > start_cut + end_cut + 10.0 {
+                continue;
+            }
+            clear[road].push((*start, *end));
+            if road < n_mine
+                && let Some(g) = ground.as_deref_mut()
+            {
+                let line = sub_line(all[road].points, *start, *end);
+                g.ribbon(
+                    &line,
+                    all[road].class.half_width() as f32,
+                    0.0,
+                    z::PAD + 0.006,
+                    PAD,
+                );
+            }
         }
     }
     for spans in &mut clear {
@@ -929,7 +967,13 @@ fn control_pad(node: &Node, clear: &[Vec<(f64, f64)>]) -> Option<Pad> {
 }
 
 /// Junctions: kerb corners, the pad that hides lines across them, zebra crossings.
-fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw], clear: &[Vec<(f64, f64)>]) {
+fn draw_node(
+    g: &mut Ground,
+    n: &Node,
+    all: &[&RoadDraw],
+    n_mine: usize,
+    clear: &[Vec<(f64, f64)>],
+) {
     if n.arms.iter().any(|a| all[a.road].works.is_some())
         || near_water(|p| g.water_at(p), n.p, 35.0)
     {
@@ -962,7 +1006,7 @@ fn draw_node(g: &mut Ground, n: &Node, all: &[&RoadDraw], clear: &[Vec<(f64, f64
         return;
     }
     for (k, a) in n.arms.iter().enumerate() {
-        if !eligible(a) {
+        if a.road >= n_mine || !eligible(a) {
             continue;
         }
         let across = pt(-a.dir.y, a.dir.x);
@@ -1075,7 +1119,7 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], context: &[RoadDraw]) {
         });
     }
     let land = g.land().cloned();
-    let clear = skew_junction_clearance(Some(g), &nodes, &all, |p| {
+    let clear = junction_clearance(Some(g), &nodes, &all, n_mine, |p| {
         land.as_ref().is_some_and(|land| land.water_at(p).is_some())
     });
     for (i, r) in all.iter().take(n_mine).enumerate() {
@@ -1143,7 +1187,7 @@ pub fn paint(g: &mut Ground, roads: &[RoadDraw], context: &[RoadDraw]) {
         marks(g, i, r, ring.is_some(), ramp_at, &nodes, &clear[i]);
     }
     for n in &nodes {
-        draw_node(g, n, &all, &clear);
+        draw_node(g, n, &all, n_mine, &clear);
     }
 }
 
@@ -1403,6 +1447,73 @@ mod tests {
         let nodes = find_nodes(&roads, 1);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].arms.len(), 4);
+    }
+
+    #[test]
+    fn crossings_are_painted_once_when_streets_belong_to_different_groups() {
+        let avenue = [pt(-110.0, 0.0), pt(110.0, 0.0)];
+        let street = [pt(0.0, -115.0), pt(0.0, 115.0)];
+        let roads = [
+            RoadDraw {
+                class: RoadClass::Arterial,
+                points: &avenue,
+                works: None,
+            },
+            RoadDraw {
+                class: RoadClass::Collector,
+                points: &street,
+                works: None,
+            },
+        ];
+        let draw = |own: &[RoadDraw], others: &[RoadDraw]| {
+            let mut ground = Ground::default();
+            paint(&mut ground, own, others);
+            ground
+                .mesh
+                .vertices
+                .into_iter()
+                .filter(|v| (v.pos[2] - z::ZEBRA).abs() < 1e-5 && v.color[..3] == WHITE)
+                .count()
+        };
+        let together = draw(&roads, &[]);
+        assert!(together > 0);
+        assert_eq!(
+            together,
+            draw(&roads[..1], &roads[1..]) + draw(&roads[1..], &roads[..1])
+        );
+    }
+
+    #[test]
+    fn closely_staggered_mouths_reserve_one_unmarked_link() {
+        let avenue = [pt(-100.0, 0.0), pt(150.0, 0.0)];
+        let south = [pt(0.0, -90.0), pt(0.0, 0.0)];
+        let north = [pt(30.0, 0.0), pt(30.0, 90.0)];
+        let draws = [
+            RoadDraw {
+                class: RoadClass::Arterial,
+                points: &avenue,
+                works: None,
+            },
+            RoadDraw {
+                class: RoadClass::Collector,
+                points: &south,
+                works: None,
+            },
+            RoadDraw {
+                class: RoadClass::Collector,
+                points: &north,
+                works: None,
+            },
+        ];
+        let roads: Vec<_> = draws.iter().collect();
+        let nodes = find_nodes(&roads, roads.len());
+        assert_eq!(nodes.len(), 2);
+        let clear = junction_clearance(None, &nodes, &roads, roads.len(), |_| false);
+        assert_eq!(clear[0], vec![(100.0, 130.0)]);
+        for node in &nodes {
+            let pad = control_pad(node, &clear).unwrap();
+            assert!(!has_room_for_control(node, &pad));
+        }
     }
 
     #[test]

@@ -12,6 +12,18 @@ fn town() -> us_gen::Town {
 }
 
 #[test]
+fn the_open_ocean_has_no_foam_on_the_mesh_boundary() {
+    let town = generate(Preset::Coast, 3);
+    let land = us_render::Land::from_town(&town);
+    let mut ground = us_render::ground::Ground::on(&land);
+    us_render::live::add_water(&mut ground, &land, &town);
+    for vertex in &ground.mesh.vertices {
+        let past_sea_edge = vertex.pos[0] > town.size as f32 + 1000.0;
+        assert!(!past_sea_edge || vertex.color[..3] != us_render::live::FOAM);
+    }
+}
+
+#[test]
 fn overlay_has_one_block_per_lot() {
     let t = town();
     let lots: Vec<LotInfo> = t
