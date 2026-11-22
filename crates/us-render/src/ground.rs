@@ -322,11 +322,13 @@ impl Ground {
         height: Option<&dyn Fn(f32, f32) -> f32>,
         open_sea: bool,
     ) {
+        let first = self.mesh.vertices.len();
         let color = colour(0.0, 0.0);
         if self.land.is_none() {
             let s = land.size();
             let reach = apron.max(FAR_REACH);
             self.rect(-reach, -reach, s + reach, s + reach, layer::BASE, color);
+            self.mark_terrain(first);
             return;
         }
         let (n, step, size) = (land.n(), land.step(), land.size());
@@ -381,6 +383,13 @@ impl Ground {
                 // the split matches Land::height: along the (x, y) diagonal
                 self.mesh.plain.extend_from_slice(&[a, b, c, a, c, d]);
             }
+        }
+        self.mark_terrain(first);
+    }
+
+    fn mark_terrain(&mut self, first: usize) {
+        for vertex in &mut self.mesh.vertices[first..] {
+            vertex.color[3] = crate::mesh::TERRAIN_SURFACE;
         }
     }
 

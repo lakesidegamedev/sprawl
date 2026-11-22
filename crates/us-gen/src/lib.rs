@@ -142,7 +142,8 @@ impl Preset {
 /// dense each lot is, and keeps lots out of parks and street ends off the railway. Version 3
 /// adds roundabouts, highway ramps, through collectors, fewer dead ends and grid streets that
 /// bend with the ground. Version 4 grades the waterfront road into steep headlands.
-pub const GEN_VERSION: u32 = 4;
+/// Version 5 rounds short hooks where a collector joins a nearly parallel arterial.
+pub const GEN_VERSION: u32 = 5;
 
 /// Knobs of the generator. `generate` uses the tuned values of each preset; the realism tuner
 /// searches over these.

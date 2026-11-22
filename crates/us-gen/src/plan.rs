@@ -391,6 +391,9 @@ pub fn generate(preset: Preset, seed: u64, st: &Settings) -> Town {
     for d in &mut drafts {
         snap_to_bounds(&mut d.line);
     }
+    if st.version >= 5 {
+        ease_collector_hooks(&mut drafts);
+    }
     // cul-de-sac ends
     let mut culs: Vec<CulDeSac> = Vec::new();
     for d in &drafts {
@@ -1194,6 +1197,73 @@ fn connect_ends(drafts: &mut Vec<Draft>, v2: bool) {
             break;
         }
     }
+}
+
+/// A short snap-to-road extension can form a tight hook on a collector that
+/// runs nearly parallel to an arterial. Ease it over the first part of the
+/// collector while retaining both the connection and the original alignment.
+fn ease_collector_hooks(drafts: &mut [Draft]) {
+    let mut roads = SegIndex::new(S, 64.0);
+    let mut arterials = SegIndex::new(S, 64.0);
+    for (i, road) in drafts.iter().enumerate() {
+        roads.add_line(&road.line, i as u32);
+        if road.class == RoadClass::Arterial {
+            arterials.add_line(&road.line, i as u32);
+        }
+    }
+    for (i, road) in drafts.iter_mut().enumerate() {
+        if road.class != RoadClass::Collector
+            || road.line.len() < 3
+            || road.line[0].dist(*road.line.last().unwrap()) < 1e-6
+        {
+            continue;
+        }
+        for _ in 0..2 {
+            if let Some(curve) = smooth_collector_mouth(&road.line, i as u32, &roads, &arterials) {
+                road.line.splice(1..2, curve);
+            }
+            road.line.reverse();
+        }
+    }
+}
+
+fn smooth_collector_mouth(
+    line: &[Pt],
+    owner: u32,
+    roads: &SegIndex,
+    arterials: &SegIndex,
+) -> Option<Vec<Pt>> {
+    let (mouth, bend, outer) = (line[0], line[1], line[2]);
+    let hook = bend - mouth;
+    let block = outer - bend;
+    let direction = block.unit();
+    if !(0.6..=9.0).contains(&hook.len()) || block.len() < 28.0 || hook.unit().dot(direction) > 0.72
+    {
+        return None;
+    }
+    let arterial = arterials.nearest(mouth, 0.6, None)?.owner;
+    if !arterials.any_parallel(mouth, 0.6, direction, 0.5) {
+        return None;
+    }
+    let control = bend + direction * 12.0;
+    let end = bend + direction * 26.0;
+    let clear = |point: Pt| {
+        let mut occupied = false;
+        roads.for_each_within(point, 0.8, |_, id| {
+            occupied |= id != owner && id != arterial
+        });
+        !occupied
+    };
+    // Keep junctions on the replaced stretch intact, and introduce no road
+    // crossings on the new curve. Mouth and outer segment stay exactly put.
+    let curve = |t: f64| mouth.lerp(control, t).lerp(control.lerp(end, t), t);
+    if !(1..=6).all(|i| clear(mouth.lerp(bend, f64::from(i) / 6.0)))
+        || !(0..=24).all(|i| clear(bend.lerp(end, f64::from(i) / 24.0)))
+        || !(1..=24).all(|i| clear(curve(f64::from(i) / 24.0)))
+    {
+        return None;
+    }
+    Some((1..=12).map(|i| curve(f64::from(i) / 12.0)).collect())
 }
 
 /// The line with `by` metres cut off its last end.

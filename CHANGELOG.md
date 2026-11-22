@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Mesa sandstone has broader mineral layers, chipped cliff faces and close-up sand ripples. Hills have more exposed soil, and fine terrain and snow detail fades smoothly as you zoom out. Shadow-map edges blend into sunlight, and sandstone no longer picks up the roadworks stripe pattern.
+- Shallow road merges share one paved apron where the lanes overlap. Kerbs, snowbanks and competing lane lines stay outside the shared asphalt. New towns ease short collector hooks into arterials with a curve.
 - Desert towns get dry winters and occasional rain. Old desert saves reopen without winter snowpack or road snow.
 - Downtown roadside shops read as part of the street wall. Vacant central retail sites and parking plots between developed lots can fill with shops, while outer shopping areas keep their large-format stores.
 - Coverage and building-level maps show standing structures. Other overlays keep vacant sites flat. Analysis views use simpler lighting and reuse overlay meshes while map colours stay the same.

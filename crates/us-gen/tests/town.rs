@@ -1830,3 +1830,28 @@ fn coastal_arterial_approaches_do_not_climb_the_harbour_cliff() {
         }
     }
 }
+
+#[test]
+fn winding_collectors_curve_into_the_avenue_without_moving_their_connection() {
+    let terminal = us_gen::pt(2689.5274420664755, 1871.0566476185347);
+    let mouth = |town: &us_gen::Town| {
+        let road = town
+            .roads
+            .iter()
+            .find(|r| r.class == RoadClass::Collector && r.points.last() == Some(&terminal))
+            .expect("the collector still meets the same point on the arterial");
+        let n = road.points.len();
+        ((road.points[n - 2] - terminal).unit(), road.points[0])
+    };
+    let old = us_gen::generate_version(Preset::Winding, 3, 4);
+    let new = generate(Preset::Winding, 3);
+    let (old_heading, old_far) = mouth(&old);
+    let (new_heading, new_far) = mouth(&new);
+    let avenue = us_gen::pt(0.946, 0.324).unit();
+    assert!(old_heading.dot(avenue) < 0.40);
+    assert!(
+        new_heading.dot(avenue) > 0.80,
+        "hook remained at the junction"
+    );
+    assert_eq!(new_far, old_far);
+}
