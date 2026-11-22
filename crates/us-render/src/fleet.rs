@@ -381,14 +381,62 @@ const AD_COLOURS: [Rgb; 6] = [
     [236, 120, 60],
 ];
 
+/// Lots bucketed by position, so nearby lots are found without scanning the whole town.
+/// Queries return lot indices in ascending order, the order a full scan visits them.
+struct LotGrid {
+    cell: f32,
+    reach: f32,
+    cells: std::collections::HashMap<(i32, i32), Vec<usize>>,
+}
+
+impl LotGrid {
+    fn new(lots: &[LotInfo], cell: f32) -> LotGrid {
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> = Default::default();
+        let mut reach: f32 = 0.0;
+        for (i, l) in lots.iter().enumerate() {
+            cells
+                .entry(((l.x / cell).floor() as i32, (l.y / cell).floor() as i32))
+                .or_default()
+                .push(i);
+            reach = reach.max(lot_reach(l.kind));
+        }
+        LotGrid { cell, reach, cells }
+    }
+
+    /// Every lot whose centre may lie within `r` of (x, y), ascending.
+    fn near(&self, x: f32, y: f32, r: f32) -> Vec<usize> {
+        let (x0, x1) = (
+            ((x - r) / self.cell).floor() as i32,
+            ((x + r) / self.cell).floor() as i32,
+        );
+        let (y0, y1) = (
+            ((y - r) / self.cell).floor() as i32,
+            ((y + r) / self.cell).floor() as i32,
+        );
+        let mut out = Vec::new();
+        for cy in y0..=y1 {
+            for cx in x0..=x1 {
+                if let Some(v) = self.cells.get(&(cx, cy)) {
+                    out.extend_from_slice(v);
+                }
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+}
+
 /// All fixed props for a set of roads and lots, one list per prop kind (indexed by
 /// `Prop::index`). `centre` is the middle of downtown, where benches and bins stand.
 pub fn make_props(paths: &[Path], lots: &[LotInfo], centre: [f32; 2]) -> [Vec<Instance>; 5] {
     let mut out: [Vec<Instance>; 5] = Default::default();
     let mut rng = Rng::new(0x9709, 7);
+    let grid = LotGrid::new(lots, 40.0);
     let near_lot = |x: f32, y: f32, r: f32| -> bool {
-        lots.iter()
-            .any(|l| (l.x - x).hypot(l.y - y) < r + lot_reach(l.kind))
+        grid.near(x, y, r + grid.reach).into_iter().any(|i| {
+            let l = &lots[i];
+            (l.x - x).hypot(l.y - y) < r + lot_reach(l.kind)
+        })
     };
     let put = |out: &mut [Vec<Instance>; 5], prop: Prop, pos: [f32; 3], theta: f32, c: u32| {
         let n = out[prop.index()].len() as u32;
@@ -544,14 +592,15 @@ pub fn fleet_size(population: u32) -> [usize; 5] {
 
 /// Crude sum of shops and industry beside a road, used to send delivery trucks where the
 /// goods go.
-fn goods_score(p: &Path, lots: &[LotInfo]) -> f32 {
+fn goods_score(p: &Path, lots: &[LotInfo], grid: &LotGrid) -> f32 {
     let mut s = 0.0;
     let mut n = 0.0;
     let l = p.length();
     let mut at = 0.0;
     while at <= l {
         let (pt, _) = p.at(at);
-        for lot in lots {
+        for i in grid.near(pt[0], pt[1], 30.0) {
+            let lot = &lots[i];
             let d = (lot.x - pt[0]).hypot(lot.y - pt[1]);
             if d < 30.0 {
                 s += match lot.kind {
@@ -613,6 +662,7 @@ pub fn make_fleet(paths: &[Path], lots: &[LotInfo], population: u32) -> Vec<Veh>
         });
     }
     // delivery trucks: the roads with the most shops and industry beside them
+    let grid = LotGrid::new(lots, 30.0);
     let mut goods: Vec<(usize, f32)> = paths
         .iter()
         .enumerate()
@@ -622,7 +672,7 @@ pub fn make_fleet(paths: &[Path], lots: &[LotInfo], population: u32) -> Vec<Veh>
                 RoadClass::Arterial | RoadClass::Collector | RoadClass::Local
             ) && p.length() > 40.0
         })
-        .map(|(i, p)| (i, goods_score(p, lots)))
+        .map(|(i, p)| (i, goods_score(p, lots, &grid)))
         .filter(|(_, s)| *s > 0.0)
         .collect();
     goods.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
