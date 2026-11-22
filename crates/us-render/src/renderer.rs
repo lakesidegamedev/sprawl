@@ -1663,7 +1663,11 @@ impl Renderer {
         let wl = &scene.weather;
         let shadow_tone = cal.map_or(style.shadow_tone, |c| c.shadow_tone());
         // clouds put the hard shadows out
-        let shadow_tone = shadow_tone + (1.0 - shadow_tone) * wl.overcast.clamp(0.0, 1.0);
+        let shadow_tone = if map_view {
+            1.0
+        } else {
+            shadow_tone + (1.0 - shadow_tone) * wl.overcast.clamp(0.0, 1.0)
+        };
         let mut tone = cal.map_or([1.0; 3], |c| c.tone());
         // a darker, cooler light under cloud, and the flash of lightning
         let oc = wl.overcast.clamp(0.0, 1.0);

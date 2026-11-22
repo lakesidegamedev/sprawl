@@ -149,7 +149,22 @@ pub fn use_category(kind: LotKind) -> u8 {
 pub struct Overlay {
     pub kind: OverlayKind,
     pub lots: Vec<f32>,
+    /// Lots with standing structures. An empty mask represents a fully built scene.
+    pub structures: Vec<bool>,
     pub roads: Vec<f32>,
+}
+
+impl Overlay {
+    pub(crate) fn same_display(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.structures == other.structures
+            && self.roads == other.roads
+            && self.lots.len() == other.lots.len()
+            && self.lots.iter().zip(&other.lots).all(|(&a, &b)| {
+                a.is_finite() == b.is_finite()
+                    && (!a.is_finite() || self.kind.colour(a) == self.kind.colour(b))
+            })
+    }
 }
 
 /// A lot as the overlay and the smoke need to know it.
@@ -229,13 +244,23 @@ pub fn build_mesh(
             );
         }
     }
-    let ground_end = g.mesh.vertices.len();
     mesh.vertices.append(&mut g.mesh.vertices);
     mesh.plain.append(&mut g.mesh.plain);
     keep_colour(&mut mesh, 0);
-    let _ = ground_end;
     for (i, l) in lots.iter().enumerate() {
         let Some(v) = ov.lots.get(i) else { continue };
+        if !v.is_finite() {
+            continue;
+        }
+        let standing = ov.structures.get(i).copied().unwrap_or(true);
+        if !standing
+            && matches!(
+                ov.kind,
+                OverlayKind::ServiceCoverage | OverlayKind::BuildingLevel
+            )
+        {
+            continue;
+        }
         let col = ov.kind.colour(*v);
         let m = match mass.get(i) {
             Some(m) => *m,
@@ -257,7 +282,7 @@ pub fn build_mesh(
             0.40,
             shade(col, 0.82),
         );
-        if h >= 1.0 {
+        if standing && h >= 1.0 {
             o.bx_top(x0, y0, 0.40, x1, y1, h + 0.5, shade(col, 0.9), col);
         } else {
             o.slab(x0, y0, 0.40, x1, y1, 0.55, col);

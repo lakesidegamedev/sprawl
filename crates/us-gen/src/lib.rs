@@ -608,6 +608,12 @@ pub struct Town {
 }
 
 impl Town {
+    /// Blocks in the planned town centre, measured from the original crossroads.
+    pub fn central_blocks(&self, p: Pt) -> bool {
+        let offset = p - self.hall;
+        offset.dot(offset) <= 340.0 * 340.0
+    }
+
     /// Ground height in metres at a point.
     pub fn height_at(&self, p: Pt) -> f64 {
         self.terrain.height_at(p)

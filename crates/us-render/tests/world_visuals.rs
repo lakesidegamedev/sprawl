@@ -28,6 +28,7 @@ fn overlay_has_one_block_per_lot() {
     let ov = Overlay {
         kind: OverlayKind::Use,
         lots: t.lots.iter().map(|l| use_category(l.kind) as f32).collect(),
+        structures: vec![],
         roads: vec![],
     };
     let m = build_mesh(&lots, &[], None, &[], &ov, &us_render::Land::flat(4096.0));
@@ -351,4 +352,38 @@ fn building_sites_build_up_step_by_step() {
         let cut = top(&new) * 0.5;
         assert!(top(&clip_height(&new, cut)) <= cut + 0.01);
     }
+}
+
+#[test]
+fn coverage_skips_vacant_sites_and_land_value_keeps_them_flat() {
+    use us_gen::LotKind;
+    let house = LotInfo {
+        x: 20.0,
+        y: 20.0,
+        theta: 0.0,
+        kind: LotKind::House,
+        level: 1,
+    };
+    let lots = [house, LotInfo { x: 70.0, ..house }];
+    let heights = [[-5.0, -5.0, 5.0, 5.0, 12.0]; 2];
+    let land = us_render::Land::flat(200.0);
+    let mut ov = Overlay {
+        kind: OverlayKind::ServiceCoverage,
+        lots: vec![0.9, 0.9],
+        structures: vec![true, false],
+        roads: vec![],
+    };
+    let m = build_mesh(&lots, &heights, None, &[], &ov, &land);
+    assert!(m.vertices.iter().all(|v| v.id < OVERLAY_ID_BASE + 16));
+    assert!(m.vertices.iter().any(|v| v.pos[2] > 10.0));
+
+    ov.kind = OverlayKind::LandValue;
+    let m = build_mesh(&lots, &heights, None, &[], &ov, &land);
+    let vacant: Vec<_> = m
+        .vertices
+        .iter()
+        .filter(|v| v.id >= OVERLAY_ID_BASE + 16)
+        .collect();
+    assert!(!vacant.is_empty());
+    assert!(vacant.iter().all(|v| v.pos[2] < 1.0));
 }

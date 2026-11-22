@@ -336,6 +336,7 @@ pub fn build_lot_level_district(
                     LotKind::Shop
                 }
             }
+            LotKind::BigBox | LotKind::Strip => LotKind::Shop,
             k => k,
         }
     } else {

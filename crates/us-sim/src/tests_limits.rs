@@ -187,3 +187,46 @@ fn difficulty_is_saved() {
     assert_eq!(l.rules(), s.rules());
     assert_eq!(l.fingerprint(), s.fingerprint());
 }
+
+#[test]
+fn a_low_tax_job_site_can_still_be_blocked_by_committed_power() {
+    let mut s = new_sim(Difficulty::Normal);
+    s.tax.set(Class::Shops, 20);
+    s.queue.shops = 0.0;
+    let mut room = [100_000; 4];
+    assert!(matches!(
+        s.start_blocker(LotKind::Shop, &room),
+        Some(limits::StartBlocker::Arrivals)
+    ));
+    s.queue.shops = 100.0;
+    assert!(s.can_start(LotKind::Shop, &room));
+    room[Capacity::Power.index()] = 0;
+    assert!(matches!(
+        s.start_blocker(LotKind::Shop, &room),
+        Some(limits::StartBlocker::Capacity(Capacity::Power))
+    ));
+    assert!(!s.can_start(LotKind::Shop, &room));
+}
+
+#[test]
+fn vacant_central_retail_infills_while_outer_and_occupied_retail_keep_their_kind() {
+    let mut s = new_sim(Difficulty::Normal);
+    let lot = s.vacant[0];
+    s.lots[lot].kind = LotKind::BigBox;
+    s.lots[lot].pos = s.town.hall;
+    assert_eq!(s.infill_kind(lot), LotKind::Shop);
+
+    s.lots[lot].pos.x += 500.0;
+    assert_eq!(s.infill_kind(lot), LotKind::BigBox);
+
+    s.lots[lot].pos = s.town.hall;
+    s.lots[lot].phase = Phase::Built {
+        since: 0,
+        tax_x10: 20,
+    };
+    assert_eq!(s.infill_kind(lot), LotKind::BigBox);
+
+    s.lots[lot].phase = Phase::Vacant;
+    s.rules.city_planning = true;
+    assert_eq!(s.infill_kind(lot), LotKind::BigBox);
+}

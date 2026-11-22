@@ -125,8 +125,8 @@ pub struct LotState {
     /// Set for buildings the mayor placed; `kind` is then the look it borrows.
     pub civic: Option<CivicKind>,
     /// Building level 1 to 5 (always 1 for civic buildings and farms). A level 2 house is row
-    /// houses, level 3 and up apartments; shops grow into bigger shops and offices. The kind
-    /// never changes, so the renderer picks the model from kind and level together.
+    /// houses, level 3 and up apartments; shops grow into bigger shops and offices. The renderer
+    /// picks the model from kind and level together.
     pub level: u8,
     /// While the lot is being rebuilt bigger (`Phase::Building` on a lot that had a level), the
     /// level it will have when done; 0 otherwise.
@@ -872,32 +872,31 @@ impl Sim {
         if self.vacant.is_empty() {
             return false;
         }
-        let day = self.day as u64;
-        let mut best: Option<(f64, usize)> = None;
+        let mut best: Option<(f64, usize, LotKind)> = None;
         for (vi, &li) in self.vacant.iter().enumerate() {
             let l = &self.lots[li];
-            if !self.can_start(l.kind, room) {
+            let kind = self.infill_kind(li);
+            if !self.can_start(kind, room) {
                 continue;
             }
             let noise = roll(self.seed, li as u64, 77) * 140.0;
             // builders prefer valuable land near the hall, in the class the town wants most
             let lv = self.lot_value.get(li).copied().unwrap_or(0.5) as f64;
-            let want = class_of(l.kind).map_or(0.4, |c| self.class_demand.get(c) as f64);
+            let want = class_of(kind).map_or(0.4, |c| self.class_demand.get(c) as f64);
             let score = l.pos.dist(self.hall) + noise
                 - 260.0 * lv
                 - 180.0 * want
                 - self.frontage_bonus(li)
                 - self.infill_bonus(li);
-            let _ = day;
             if best.is_none_or(|b| score < b.0) {
-                best = Some((score, vi));
+                best = Some((score, vi, kind));
             }
         }
-        let Some((_, vi)) = best else {
+        let Some((_, vi, kind)) = best else {
             return false;
         };
         let li = self.vacant.swap_remove(vi);
-        let kind = self.lots[li].kind;
+        self.lots[li].kind = kind;
         let preferred = self.start_level(li);
         let level = if Sim::fits_room(room, kind, preferred) {
             preferred
@@ -1106,12 +1105,16 @@ impl Sim {
                 built: None,
                 reason: format!(
                     "{}{}",
-                    if tax > 14.0 {
-                        format!("Builders are scarce at {tax:.1}% tax; growth is slow.")
-                    } else if tax <= 5.0 {
-                        "Low taxes: builders will get to it soon.".into()
-                    } else {
-                        "Waiting its turn behind lots closer to the town hall.".to_string()
+                    match self.start_blocker(self.infill_kind(lot), &self.start_room()) {
+                        Some(limits::StartBlocker::Capacity(c)) => format!(
+                            "Needs more {} capacity after reserving space for buildings under construction.",
+                            c.label().to_lowercase()
+                        ),
+                        Some(limits::StartBlocker::Arrivals) => format!(
+                            "Waiting for enough arrivals to fill this lot. The tax rate is {tax:.1}%."
+                        ),
+                        None if self.shortage_today() => "Today's water or power shortage is slowing construction.".into(),
+                        None => "This site is ready. Builders choose among ready sites by location and demand.".into(),
                     },
                     self.rail_note(lot).unwrap_or_default()
                 ),

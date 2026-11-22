@@ -1359,6 +1359,25 @@ fn road_dress(kind: i32, kb: vec3<f32>, world: vec3<f32>, n: vec3<f32>, px: f32,
 @fragment
 fn fs_main(v: VOut) -> FOut {
     var n = normalize(v.normal);
+    if (g.look.z > 0.5) {
+        // Analysis views use their own flat, stable lighting and skip surface textures.
+        var col = v.color.rgb;
+        let code = u32(round(v.color.a * 255.0));
+        if (v.id == 0u && code == 255u
+            && near(col, 247.0, 248.0, col.b * 255.0) && col.b * 255.0 > 135.0) {
+            discard; // snow-only pavement
+        }
+        if (code != 1u && code != 254u) {
+            let lum = dot(col, vec3<f32>(0.3, 0.59, 0.11));
+            col = mix(vec3<f32>(lum), col, 0.12);
+        }
+        let light = dot(n, vec3<f32>(0.36, -0.48, 0.80));
+        col *= mix(0.74, 1.0, smoothstep(-0.22, 0.76, light));
+        var map: FOut;
+        map.colour = vec4<f32>(col, 1.0);
+        map.aux = vec4<u32>(bitcast<u32>(v.dist), (v.id & 0x00ffffffu) | packed_surface(n, 0u), 0u, 1u);
+        return map;
+    }
     var l = dot(n, g.sun.xyz);
     // the true normal of the triangle: steep rock is shaded in flat facets, not in the smooth
     // gradients that interpolated vertex normals give on a coarse grid
@@ -2534,6 +2553,12 @@ fn fs_edge(e: EOut) -> @location(0) vec4<f32> {
     let pixel = e.clip.xy;
     let p = min(vec2<i32>(pixel), vec2<i32>(g.screen.xy) - vec2<i32>(1));
     var acc = vec3<f32>(0.0);
+    if (g.look.z > 0.5) {
+        for (var s = 0; s < SAMPLE_COUNT; s = s + 1) {
+            acc += textureLoad(colour_tex, p, s).rgb;
+        }
+        return vec4<f32>(acc / f32(SAMPLE_COUNT), 1.0);
+    }
     // ink thins out as a pixel covers more of the world: a one pixel line from about half a
     // metre a pixel, none from a metre and a half (whole-town views keep their roof colours)
     let centre = aux_at(p, 0);

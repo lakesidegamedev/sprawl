@@ -109,12 +109,40 @@ impl Sim {
         })
     }
 
+    /// New shops in the town centre make better use of a big roadside plot.
+    /// Existing buildings and the mayor's own parcels keep their uses.
+    pub(crate) fn infill_kind(&self, i: usize) -> LotKind {
+        let lot = &self.lots[i];
+        if self.rules.city_planning
+            || lot.exempt
+            || lot.civic.is_some()
+            || !matches!(lot.phase, Phase::Vacant)
+            || !matches!(
+                lot.kind,
+                LotKind::BigBox | LotKind::Strip | LotKind::Parking
+            )
+            || !self.town.central_blocks(lot.pos)
+            || self.heritage_at(i)
+        {
+            return lot.kind;
+        }
+        match lot.kind {
+            LotKind::Parking if self.built_neighbours(i) < 2 => LotKind::Parking,
+            _ => LotKind::Shop,
+        }
+    }
+
     /// How much a builder likes a vacant lot beyond its value: beside buildings already
     /// standing (a street fills from its built end) and in the middle of things. In metres of
     /// distance from the hall it is worth.
     pub(crate) fn infill_bonus(&self, i: usize) -> f64 {
         let nb = self.built_neighbours(i).min(3) as f64;
-        80.0 * nb + 90.0 * self.lot_density(i)
+        let gap = if nb >= 2.0 && self.town.central_blocks(self.lots[i].pos) {
+            105.0
+        } else {
+            0.0
+        };
+        80.0 * nb + 90.0 * self.lot_density(i) + gap
     }
 
     /// The level a new building starts at: the middle of a big enough town builds bigger from

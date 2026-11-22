@@ -14,7 +14,7 @@ use us_render::{Overlay, OverlayKind, View, project};
 use us_sim::{
     ABANDON_ABOVE_X10, BOND_MONTHS, BOND_RATE_X10, BOND_SIZE, BUDGET_MAX_PCT, BUDGET_MIN_PCT,
     CivicKind, Class, Date, Dept, Event, EventKind, LedgerNow, LoanError, MapKind, Phase,
-    PlanningUse, Service, TAX_MAX_X10, TAX_MIN_X10, class_of,
+    PlanningUse, Service, Sim, TAX_MAX_X10, TAX_MIN_X10, class_of,
 };
 
 // Series colours: one fixed hue per meaning, readable on the dark navy panels.
@@ -509,6 +509,8 @@ pub struct UiState {
     pub events: Vec<Event>,
     pub(super) news_seen: usize,
     ledger: LedgerNow,
+    ledger_age: f32,
+    job_growth: Option<[String; 2]>,
     /// Seconds since the view was last pushed to the renderer, and which view it showed.
     ov_age: f32,
     ov_view: MapView,
@@ -558,6 +560,8 @@ impl Default for UiState {
             events: Vec::new(),
             news_seen: 0,
             ledger: LedgerNow::default(),
+            ledger_age: 1.0,
+            job_growth: None,
             ov_age: 9.0,
             ov_view: MapView::Normal,
             rail_age: 1.0,
@@ -608,7 +612,18 @@ impl Game {
         if self.ui.news_open {
             self.ui.news_seen = self.ui.events.len();
         }
-        self.ui.ledger = self.sim.ledger_now();
+        self.ui.ledger_age += dt;
+        if self.ui.ledger_age >= 0.2 {
+            self.ui.ledger_age = 0.0;
+            self.ui.ledger = self.sim.ledger_now();
+        }
+        if self.ui.stats_open && self.ui.tab == 0 {
+            if self.ui.ledger_age == 0.0 || self.ui.job_growth.is_none() {
+                self.ui.job_growth = Some(self.sim.job_growth());
+            }
+        } else {
+            self.ui.job_growth = None;
+        }
         self.refresh_district_stats(dt);
         self.ui.rail_age += dt;
         if self.ui.rail_age > 1.0 {
@@ -2413,7 +2428,7 @@ impl Game {
         let mv = self.ui.view;
         let kind = mv.overlay_kind()?;
         let sim = &self.sim;
-        let (lots, roads) = match mv {
+        let (mut lots, roads) = match mv {
             MapView::Normal => return None,
             MapView::Traffic => (Vec::new(), sim.road_values(MapKind::Traffic)),
             MapView::District => (
@@ -2453,7 +2468,23 @@ impl Game {
             }
             other => (sim.lot_values(other.kind()?), Vec::new()),
         };
-        Some(Overlay { kind, lots, roads })
+        let structures = sim
+            .lots()
+            .iter()
+            .zip(&mut lots)
+            .map(|(l, v)| {
+                if matches!(l.phase, Phase::Hidden | Phase::Cleared { .. }) {
+                    *v = f32::NAN;
+                }
+                matches!(l.phase, Phase::Built { .. } | Phase::Empty { .. })
+            })
+            .collect();
+        Some(Overlay {
+            kind,
+            lots,
+            structures,
+            roads,
+        })
     }
 
     pub(super) fn legend_ui(&self, ctx: &Context) {
@@ -2518,6 +2549,11 @@ impl Game {
                         name: "Population".into(),
                         color: BLUE,
                         vals: col(&|s| s.population as f64),
+                    },
+                    Series {
+                        name: "Estimated workers".into(),
+                        color: Color32::from_rgb(125, 196, 155),
+                        vals: col(&|s| Sim::estimated_workers(s.population) as f64),
                     },
                     Series {
                         name: "Jobs".into(),
@@ -2717,6 +2753,13 @@ impl Game {
                     }
                 }
             });
+            if tab == 0
+                && let Some(room) = &self.ui.job_growth
+            {
+                for (name, hiring) in ["Shops & offices", "Industry"].into_iter().zip(room) {
+                    lab(ui, format!("{name} · {hiring}"), 11.0);
+                }
+            }
             if tab == 8 && series[0].vals.iter().all(|&v| v == 0.0) {
                 lab_c(
                     ui,

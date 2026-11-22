@@ -438,7 +438,15 @@ fn lot_model(
 fn is_downtown(t: &Town, l: &LotState) -> bool {
     let zone = t.additions.get(l.addition).map_or(Zone::Inner, |a| a.zone);
     let density = t.lots.get(l.src).map_or(0.0, |x| x.density as f32);
+    let generated_use = t.lots.get(l.src).map_or(l.kind, |original| original.kind);
     us_render::towers::is_downtown(zone, density)
+        || (l.civic.is_none()
+            && t.central_blocks(l.pos)
+            && matches!(
+                generated_use,
+                LotKind::BigBox | LotKind::Strip | LotKind::Parking
+            )
+            && matches!(l.kind, LotKind::BigBox | LotKind::Strip | LotKind::Shop))
 }
 
 /// The model to draw for a lot in its current look.
@@ -1057,9 +1065,11 @@ impl LiveScene {
         self.refresh_traffic(sim);
         for (i, k) in self.look.iter().enumerate() {
             if matches!(k.state, 1 | 3 | 4) {
-                self.scene.set_lot_info(i, k.level, false);
+                self.scene
+                    .set_lot_info(i, sim.lots()[i].kind, k.level, false);
             }
         }
+        self.scene.refresh_chimneys();
     }
 
     fn refresh_traffic(&mut self, sim: &Sim) {
@@ -1714,6 +1724,7 @@ impl LiveScene {
         }
         self.sync_woods();
         if lots_changed {
+            let mut lot_details_changed = false;
             let cap = us_render::towers::size_key(sim.population().max(0) as u32);
             for (i, l) in sim.lots().iter().enumerate() {
                 let mut k = look_of(l, day, l.fire.is_some() && sim.is_burning(i));
@@ -1739,9 +1750,13 @@ impl LiveScene {
                         && (was.level != k.level || was.state != k.state)
                     {
                         self.scene
-                            .set_lot_info(i, k.level, matches!(k.state, 0 | 2));
+                            .set_lot_info(i, l.kind, k.level, matches!(k.state, 0 | 2));
+                        lot_details_changed = true;
                     }
                 }
+            }
+            if lot_details_changed {
+                self.scene.refresh_chimneys();
             }
         }
         while let Some(c) = self.queue.pop_front() {
