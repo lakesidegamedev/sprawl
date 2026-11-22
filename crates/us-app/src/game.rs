@@ -180,12 +180,12 @@ struct Smoke {
     sync_total_ms: f32,
 }
 
-/// A two-step world scale with hysteresis. The UI is always drawn at native resolution.
+/// Adjust the world detail under sustained pressure while the UI stays native.
 #[derive(Default)]
 struct WorldQuality {
     slow_for: f32,
     fast_for: f32,
-    reduced: bool,
+    tier: usize,
 }
 
 impl WorldQuality {
@@ -194,26 +194,32 @@ impl WorldQuality {
             *self = Self::default();
             return 1.0;
         }
-        if self.reduced {
-            self.fast_for = if elapsed < 0.023 {
+        let downgrade = [0.036, 0.070, f32::INFINITY][self.tier];
+        self.slow_for = if elapsed > downgrade {
+            self.slow_for + elapsed.min(0.15)
+        } else {
+            0.0
+        };
+        if self.slow_for > 0.65 {
+            *self = Self {
+                tier: self.tier + 1,
+                ..Self::default()
+            };
+        } else if self.tier > 0 {
+            let recovery = if self.tier == 2 { 0.043 } else { 0.023 };
+            self.fast_for = if elapsed < recovery {
                 self.fast_for + elapsed
             } else {
                 0.0
             };
             if self.fast_for > 2.0 {
-                *self = Self::default();
-            }
-        } else {
-            self.slow_for = if elapsed > 0.036 {
-                self.slow_for + elapsed.min(0.10)
-            } else {
-                0.0
-            };
-            if self.slow_for > 0.65 {
-                self.reduced = true;
+                *self = Self {
+                    tier: self.tier - 1,
+                    ..Self::default()
+                };
             }
         }
-        if self.reduced { 0.66 } else { 0.8 }
+        [0.80, 0.66, 0.53][self.tier]
     }
 }
 
@@ -525,17 +531,20 @@ impl State {
     }
 
     pub fn update(&mut self, dt: f32, visual_dt: f32, w: u32, h: u32) {
-        self.style.shadow_size = if self.settings.high_shadows {
+        let scale = self
+            .world_quality
+            .scale(visual_dt, self.settings.balanced_world_resolution);
+        let under_pressure = self.world_quality.tier == 2;
+        self.style.shadow_size = if self.settings.high_shadows && !under_pressure {
             4096
         } else {
             2048
         };
         self.style.high_detail = self.settings.detailed_graphics;
-        self.style.contact_shade = self.settings.high_shadows || self.settings.detailed_graphics;
+        self.style.contact_shade =
+            (self.settings.high_shadows && !under_pressure) || self.settings.detailed_graphics;
         self.style.tilt_shift = self.settings.tilt_shift;
-        self.style.window_world_scale = self
-            .world_quality
-            .scale(visual_dt, self.settings.balanced_world_resolution);
+        self.style.window_world_scale = scale;
         self.autopilot();
         if self.screen == Screen::Load && self.saves.is_empty() && self.smoke.is_some() {
             self.refresh_saves();
@@ -2444,6 +2453,19 @@ fn split_row(
 mod world_quality_tests {
     use super::WorldQuality;
 
+    #[test]
+    fn sustained_severe_pressure_reduces_world_detail_and_recovers_in_steps() {
+        let mut quality = WorldQuality::default();
+        for _ in 0..28 {
+            quality.scale(0.1, true);
+        }
+        assert_eq!(quality.scale(0.05, true), 0.53);
+        for _ in 0..130 {
+            quality.scale(0.016, true);
+        }
+        assert_eq!(quality.scale(0.016, true), 0.66);
+        assert_eq!(quality.scale(0.01, false), 1.0);
+    }
     #[test]
     fn balanced_world_scale_changes_only_after_sustained_pressure() {
         let mut quality = WorldQuality::default();

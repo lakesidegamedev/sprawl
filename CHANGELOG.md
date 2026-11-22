@@ -5,7 +5,7 @@
 - Roads has a Round bend tool for existing streets. Preview the new curve and its fixed endpoints before applying it. The edit preserves junctions and checks for steep ground, water and building conflicts.
 - Painted stop lines and animated cars use the same clearance from the shared junction pavement. Short blocks have a common minimum length for traffic signals and signal-delay estimates.
 - Civic placement shows road access, the model envelope and the frontage facing. Use Rotate or press R before placing. Conflicting open roads and reserved alignments are highlighted.
-- Combine utility-capacity scans and throttle HUD totals during play. A per-frame simulation budget limits long batches at fast-forward. A desktop benchmark reports FPS, 95th-percentile frame time and cursor-event-to-frame submission latency.
+- Combine utility-capacity scans and throttle HUD totals during play. A per-frame simulation budget limits long batches at fast-forward. Balanced mode lowers world resolution and shadow detail during sustained severe slowdown. A desktop benchmark reports FPS, 95th-percentile frame time and cursor-event-to-frame submission latency.
 - Keep draped rocks and vegetation off sheer cliff faces.
 
 - Mesa sandstone has broader mineral layers, chipped cliff faces and close-up sand ripples. Hills have more exposed soil, and fine terrain and snow detail fades smoothly as you zoom out. Shadow-map edges blend into sunlight, and sandstone no longer picks up the roadworks stripe pattern.
