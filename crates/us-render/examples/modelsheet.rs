@@ -121,6 +121,20 @@ fn main() {
     sheet(
         &mut r,
         &dir,
+        "large-retail",
+        &[
+            m!("shopping mall", move |g: &mut Rng| k::shopping_mall(rg, g)),
+            m!(
+                "warehouse retailer",
+                move |g: &mut Rng| k::warehouse_market(rg, g)
+            ),
+        ],
+        94.0,
+        2,
+    );
+    sheet(
+        &mut r,
+        &dir,
         "commercial-b",
         &[
             m!("car dealership", move |g: &mut Rng| k::car_dealership(

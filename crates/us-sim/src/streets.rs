@@ -171,7 +171,7 @@ impl Sim {
             .is_none_or(|st| st.state == StreetState::Open)
     }
 
-    fn street_visible(&self, s: u32) -> bool {
+    pub(crate) fn street_visible(&self, s: u32) -> bool {
         self.streets
             .get(s as usize)
             .is_none_or(|st| st.state != StreetState::Planned)

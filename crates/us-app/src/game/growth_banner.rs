@@ -287,11 +287,8 @@ impl Game {
 
     /// Pick a civic building and make the placement controls available.
     pub(super) fn open_build_for(&mut self, kind: us_sim::CivicKind) {
-        if self.compact {
-            self.close_sheets();
-        } else {
-            self.ui.build_open = true;
-        }
+        self.close_sheets();
+        self.sel = None;
         self.ui.tool = Some(kind);
         self.ui.civic_site = None;
         self.ui.road = None;

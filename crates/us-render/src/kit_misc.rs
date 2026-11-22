@@ -1160,7 +1160,7 @@ pub fn big_box(region: Region, rng: &mut Rng) -> Obj {
     } else {
         col
     };
-    o.bx_top(-32.0, 2.0, 0.0, 32.0, 42.0, 9.0, col, [150, 150, 150]);
+    o.bx_top(-32.0, 2.0, 0.0, 32.0, 46.0, 9.0, col, [150, 150, 150]);
     let door_x = rng.pick(&[0.0f32, -14.0, 14.0]);
     o.win_s(door_x - 8.0, door_x + 8.0, 0.0, 4.0, 2.0, GLASS_D);
     let sign = rng.pick(&SIGNS);
@@ -1200,8 +1200,8 @@ pub fn big_box(region: Region, rng: &mut Rng) -> Obj {
         o.bx(pxx - 2.5, -2.4, 12.0, pxx + 2.5, -1.0, 15.0, sign);
     }
     roof_gear(&mut o, (-28.0, 8.0, 28.0, 38.0), 9.0, 2 + rng.below(4), rng);
-    let pk = parking(64.0, 36.0, rng);
-    o.add_placed(&pk, 0.0, -18.0, 0.0);
+    let pk = parking(64.0, 22.0, rng);
+    o.add_placed(&pk, 0.0, -12.0, 0.0);
     o
 }
 

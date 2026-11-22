@@ -2454,7 +2454,9 @@ fn light_matrix(scene: &Scene, view: &View, sun: Vec3, size: u32) -> (Mat4, f32,
         lo = lo.min(p);
         hi = hi.max(p);
     }
-    let half = ((hi.x - lo.x).max(hi.y - lo.y) / 2.0) * 1.03 + 6.0;
+    let extent = ((hi.x - lo.x).max(hi.y - lo.y) / 2.0) * 1.03 + 6.0;
+    // Hold texel size through small camera changes so the world-space snap is stable.
+    let half = 2.0_f32.powf((extent.log2() * 12.0).ceil() / 12.0);
     let texel = 2.0 * half / size as f32;
     let anchor = lv.transform_point3(Vec3::ZERO);
     let snap = |middle: f32, origin: f32| ((middle - origin) / texel).round() * texel + origin;

@@ -420,6 +420,9 @@ impl Scene {
 
     /// Set peak-hour rates and measured approach capacities for the living town.
     pub fn set_road_traffic(&mut self, roads: &[[Approach; 2]]) {
+        if self.x.traffic_enabled && self.x.traffic.demand == roads {
+            return;
+        }
         self.x.traffic = Traffic::new(&self.x.paths, roads);
         self.x
             .traffic

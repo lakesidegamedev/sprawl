@@ -691,9 +691,8 @@ impl Game {
             K::KeyO => u.loans_open = !u.loans_open,
             K::KeyB => {
                 u.build_open = !u.build_open;
-                if !u.build_open {
-                    u.tool = None;
-                }
+                u.tool = None;
+                u.civic_site = None;
             }
             K::KeyG => u.stats_open = !u.stats_open,
             K::KeyJ => u.news_open = !u.news_open,
@@ -1516,16 +1515,22 @@ impl Game {
         let mut picked = None;
         let mut zone = None;
         let compact = theme::is_compact(ctx);
-        if compact && let Some(mode) = self.ui.road {
+        if let Some(mode) = self.ui.road {
             let screen = ctx.content_rect();
-            let y = dock_top(ctx) - screen.bottom() - 6.0;
+            let y = if compact {
+                dock_top(ctx) - screen.bottom() - 6.0
+            } else {
+                -56.0
+            };
             egui::Area::new(egui::Id::new("road-controls"))
                 .anchor(Align2::CENTER_BOTTOM, vec2(0.0, y))
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     theme::panel().show(ui, |ui| {
                         ui.set_max_width(screen.width() - 30.0);
-                        ui.spacing_mut().interact_size.y = theme::TOUCH;
+                        if compact {
+                            ui.spacing_mut().interact_size.y = theme::TOUCH;
+                        }
                         lab(
                             ui,
                             if mode == RoadMode::Upgrade {
@@ -1535,7 +1540,7 @@ impl Game {
                             },
                             12.0,
                         );
-                        self.road_panel(ui, true);
+                        self.road_panel(ui, compact);
                     });
                 });
             return;
@@ -1573,7 +1578,6 @@ impl Game {
                     }
                 }
             });
-            self.road_panel(ui, false);
             if self.rules.city_planning {
                 ui.add_space(6.0);
                 lab(ui, "Zoning", 12.0);
@@ -1591,7 +1595,6 @@ impl Game {
             self.capacity_rows(ui);
             ui.add_space(4.0);
             for k in CivicKind::ALL {
-                let on = self.ui.tool == Some(k);
                 if !self.sim.is_unlocked(k) {
                     // locked: shown greyed, with what it takes
                     ui.horizontal(|ui| {
@@ -1620,57 +1623,20 @@ impl Game {
                         egui::Button::new(
                             RichText::new(k.label().to_string())
                                 .font(ui_font(12.0))
-                                .color(if on {
-                                    LINE
-                                } else if can {
+                                .color(if can {
                                     INK
                                 } else {
                                     Color32::from_rgb(130, 140, 155)
                                 }),
                         )
-                        .fill(if on { ACCENT } else { RAISED })
+                        .fill(RAISED)
                         .min_size(vec2(150.0, 26.0)),
                     );
-                    if b.clicked() {
-                        if on {
-                            self.ui.tool = None;
-                        } else {
-                            picked = Some(k);
-                        }
+                    if b.on_hover_text(k.effect_text()).clicked() {
+                        picked = Some(k);
                     }
                     lab_c(ui, money(k.cost()), 12.0, if can { GOLD } else { BAD });
                 });
-            }
-            if let Some(k) = self.ui.tool {
-                ui.separator();
-                lab(ui, k.label(), 14.0);
-                let f = dept_fraction(&self.sim, k.service());
-                lab(
-                    ui,
-                    format!(
-                        "Costs {} now, then about {} a month",
-                        money(k.cost()),
-                        money(k.upkeep() * (f * 100.0) as i64 / 100)
-                    ),
-                    10.0,
-                );
-                if k.covers().is_some() {
-                    lab(
-                        ui,
-                        format!(
-                            "Covers about {} m by road at this funding",
-                            k.reach_at(f).round() as i64
-                        ),
-                        10.0,
-                    );
-                }
-                if !k.effect_text().is_empty() {
-                    wrapped(ui, k.effect_text(), 10.0, TEXT);
-                }
-                lab(ui, "Takes 40 to 70 days to build", 10.0);
-                if btn(ui, "Stop placing", false, 11.0).clicked() {
-                    self.ui.tool = None;
-                }
             }
         });
         if closed {
@@ -1768,14 +1734,19 @@ impl Game {
         }
     }
 
-    /// The compact placement controls leave the map free while the player picks a site.
+    /// Keep placement controls out of the map while the selected footprint follows the cursor.
     pub(super) fn civic_placement_ui(&mut self, ctx: &Context) {
         let Some(kind) = self.ui.tool else { return };
         if self.any_sheet() || self.menu_open || self.election.is_some() {
             return;
         }
         let screen = ctx.content_rect();
-        let up = screen.bottom() - dock_top(ctx) + 8.0;
+        let compact = self.compact;
+        let up = if compact {
+            screen.bottom() - dock_top(ctx) + 8.0
+        } else {
+            56.0
+        };
         let site = self.ui.civic_site;
         let verdict = site.map(|site| self.sim.check_civic(kind, site));
         let mut confirm = false;
@@ -1788,34 +1759,39 @@ impl Game {
                     ui.set_max_width(screen.width() - 36.0);
                     lab(
                         ui,
-                        format!("{}  {}", kind.label(), money(kind.cost())),
-                        14.0,
+                        format!("{} · {}", kind.label(), money(kind.cost())),
+                        13.0,
                     );
-                    let (message, colour) = match verdict.as_ref() {
-                        Some(Ok(())) => ("Site ready".into(), GOOD),
-                        Some(Err(error)) => (error.text(), BAD),
-                        None => ("Tap near an open street".into(), TEXT),
-                    };
-                    wrapped(ui, message, 12.0, colour);
-                    ui.horizontal_wrapped(|ui| {
-                        confirm = ui
-                            .add_enabled(
-                                matches!(verdict, Some(Ok(()))),
-                                egui::Button::new("Start construction")
-                                    .min_size(vec2(0.0, theme::TOUCH)),
-                            )
-                            .clicked();
-                        cancel = ui
-                            .add(egui::Button::new("Cancel").min_size(vec2(0.0, theme::TOUCH)))
-                            .clicked();
-                    });
+                    if compact {
+                        let (message, colour) = match verdict.as_ref() {
+                            Some(Ok(())) => ("Site ready".into(), GOOD),
+                            Some(Err(error)) => (error.text(), BAD),
+                            None => ("Tap near an open street".into(), TEXT),
+                        };
+                        wrapped(ui, message, 12.0, colour);
+                        ui.horizontal_wrapped(|ui| {
+                            confirm = ui
+                                .add_enabled(
+                                    matches!(verdict, Some(Ok(()))),
+                                    egui::Button::new("Build").min_size(vec2(48.0, theme::TOUCH)),
+                                )
+                                .clicked();
+                            cancel = ui
+                                .add(egui::Button::new("Cancel").min_size(vec2(50.0, theme::TOUCH)))
+                                .clicked();
+                        });
+                    } else {
+                        ui.horizontal(|ui| {
+                            lab(ui, "Click a site to build", 12.0);
+                            cancel = btn(ui, "Cancel", false, 12.0).clicked();
+                        });
+                    }
                 });
             });
         if confirm && let Some(site) = site {
             self.place_tool(site);
-            self.ui.civic_site = None;
-            self.ui.tool = None;
-        } else if cancel {
+        }
+        if confirm || cancel {
             self.ui.civic_site = None;
             self.ui.tool = None;
         }
@@ -2199,8 +2175,8 @@ impl Game {
         let ppp = ctx.pixels_per_point();
         let hover = ctx.pointer_hover_pos();
         let pinned = self.ui.fixed_ghost.or(self.ui.civic_site);
-        let p = if let Some(p) = pinned {
-            p
+        let (p, verdict) = if let Some(p) = pinned {
+            (p, self.sim.check_civic(kind, p))
         } else {
             if self.compact {
                 return;
@@ -2216,7 +2192,8 @@ impl Game {
             let Some(g) = self.live.scene.pick(view, ndc) else {
                 return;
             };
-            self.sim.snap_civic_site(kind, pt(g.x as f64, g.y as f64))
+            self.sim
+                .preview_civic_site(kind, pt(g.x as f64, g.y as f64))
         };
         let pos = match (
             pinned,
@@ -2232,7 +2209,11 @@ impl Game {
             (Some(_), Some(s)) => super::to_screen(s, w, h, ppp),
             _ => hover.unwrap_or(Pos2::ZERO),
         };
-        let verdict = self.sim.check_civic(kind, p);
+        if verdict == Err(us_sim::PlaceError::ReservedStreet)
+            && let Some((a, b)) = self.sim.reserved_civic_street(kind, p)
+        {
+            self.draw_path(painter, view, &[a, b], GOLD, 4.0, w, h, ppp);
+        }
         let ok = verdict.is_ok();
         let col = if ok { GOOD } else { BAD };
         let foot = ring_points(&self.live, view, p, kind.radius() as f32, w, h, ppp);

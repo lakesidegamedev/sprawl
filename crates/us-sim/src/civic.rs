@@ -106,21 +106,39 @@ impl Sim {
         );
         Ok(idx)
     }
-    /// Snap a placement to the near side of the closest open street within reach.
-    /// The caller previews and validates this exact point before spending anything.
+    /// Preview the selected site. Preserve a legal point and only move an invalid
+    /// point when a roadside snap actually makes it buildable.
+    pub fn preview_civic_site(&self, kind: CivicKind, p: Pt) -> (Pt, Result<(), PlaceError>) {
+        let raw = self.check_civic(kind, p);
+        if raw.is_ok()
+            || matches!(
+                raw,
+                Err(PlaceError::Locked { .. }
+                    | PlaceError::TooPoor { .. }
+                    | PlaceError::OutOfBounds)
+            )
+        {
+            return (p, raw);
+        }
+        let site = self.roadside_site(kind, p);
+        if site != p && self.check_civic(kind, site).is_ok() {
+            return (site, Ok(()));
+        }
+        (p, raw)
+    }
+
+    /// Snap a placement to the closest open street when that produces a valid site.
     pub fn snap_civic_site(&self, kind: CivicKind, p: Pt) -> Pt {
+        self.preview_civic_site(kind, p).0
+    }
+
+    fn roadside_site(&self, kind: CivicKind, p: Pt) -> Pt {
         let mut nearest = ROAD_REACH * ROAD_REACH;
         let mut site = p;
         for run in self.runs.iter().filter(|run| self.civic_frontage(run)) {
             for edge in run.points.windows(2) {
                 let (a, b) = (edge[0], edge[1]);
-                // Adjacent segments that cannot beat the current pick need no projection.
-                let reach = ROAD_REACH;
-                if p.x < a.x.min(b.x) - reach
-                    || p.x > a.x.max(b.x) + reach
-                    || p.y < a.y.min(b.y) - reach
-                    || p.y > a.y.max(b.y) + reach
-                {
+                if !segment_near(p, edge, ROAD_REACH) {
                     continue;
                 }
                 let (dx, dy) = (b.x - a.x, b.y - a.y);
@@ -146,6 +164,34 @@ impl Sim {
 
     fn civic_frontage(&self, run: &RoadRun) -> bool {
         !matches!(run.class, RoadClass::Rail | RoadClass::Highway) && self.street_open(run.street)
+    }
+
+    /// The part of a planned street under the rejected footprint.
+    pub fn reserved_civic_street(&self, kind: CivicKind, p: Pt) -> Option<(Pt, Pt)> {
+        for run in self
+            .runs
+            .iter()
+            .filter(|run| !self.street_visible(run.street))
+        {
+            let clearance = run.class.half_width() + civic_road_clearance(kind);
+            for w in run
+                .points
+                .windows(2)
+                .filter(|w| segment_near(p, w, clearance))
+            {
+                let at = nearest_on_seg(p, w[0], w[1]);
+                let len = w[0].dist(w[1]);
+                if p.dist(at) < clearance && len > 0.0 {
+                    let reach = kind.radius() + 15.0;
+                    let centre = at.dist(w[0]) / len;
+                    return Some((
+                        w[0].lerp(w[1], (centre - reach / len).max(0.0)),
+                        w[0].lerp(w[1], (centre + reach / len).min(1.0)),
+                    ));
+                }
+            }
+        }
+        None
     }
 
     /// Whether a civic building could be placed at `p` right now, without placing it. The same
@@ -183,19 +229,32 @@ impl Sim {
             }
         }
         let mut near_road: Option<(f64, Pt)> = None;
+        let mut reserved = false;
         for run in &self.runs {
             let frontage = self.civic_frontage(run);
-            let hw = run.class.half_width();
-            for w in run.points.windows(2) {
-                let d = dist_pt_seg(p, w[0], w[1]);
-                if d - hw < r * 0.7 + 1.0 {
-                    return Err(PlaceError::OnRoad);
+            let clearance = run.class.half_width() + civic_road_clearance(kind);
+            let reach = if frontage {
+                clearance.max(ROAD_REACH)
+            } else {
+                clearance
+            };
+            let visible = self.street_visible(run.street);
+            for w in run.points.windows(2).filter(|w| segment_near(p, w, reach)) {
+                let at = nearest_on_seg(p, w[0], w[1]);
+                let d = p.dist(at);
+                if d < clearance {
+                    if visible {
+                        return Err(PlaceError::OnRoad);
+                    }
+                    reserved = true;
                 }
                 if frontage && near_road.is_none_or(|b| d < b.0) {
-                    let t = nearest_on_seg(p, w[0], w[1]);
-                    near_road = Some((d, t));
+                    near_road = Some((d, at));
                 }
             }
+        }
+        if reserved {
+            return Err(PlaceError::ReservedStreet);
         }
         let Some((d, at)) = near_road else {
             return Err(PlaceError::NoRoad);
@@ -218,6 +277,18 @@ impl Sim {
         }
         Ok((at, give_up))
     }
+}
+
+fn civic_road_clearance(kind: CivicKind) -> f64 {
+    kind.radius() * 0.7 + 1.0
+}
+
+fn segment_near(p: Pt, segment: &[Pt], reach: f64) -> bool {
+    let (a, b) = (segment[0], segment[1]);
+    p.x >= a.x.min(b.x) - reach
+        && p.x <= a.x.max(b.x) + reach
+        && p.y >= a.y.min(b.y) - reach
+        && p.y <= a.y.max(b.y) + reach
 }
 
 fn nearest_on_seg(p: Pt, a: Pt, b: Pt) -> Pt {
@@ -306,6 +377,49 @@ mod tests {
     }
 
     #[test]
+    fn roadside_preview_preserves_legal_land_near_a_planned_street() {
+        let town = generate(Preset::Grid, 3);
+        let mut sim = Sim::new_with_rules(
+            &town,
+            hall_sites(&town)[0],
+            3,
+            2,
+            Rules::sandbox_unlimited(),
+        );
+        sim.lots.clear();
+        sim.town.stations.clear();
+        sim.town.water.clear();
+        sim.hall = pt(900.0, 900.0);
+        sim.runs.clear();
+        sim.streets.clear();
+        for (i, y) in [200.0, 213.0].into_iter().enumerate() {
+            let (a, b) = (pt(100.0, y), pt(360.0, y));
+            let mut street = crate::streets::Street::open_connector(RoadClass::Local, a, b);
+            if i == 1 {
+                street.state = crate::streets::StreetState::Planned;
+            }
+            sim.streets.push(street);
+            sim.runs.push(RoadRun {
+                class: RoadClass::Local,
+                points: vec![a, b],
+                addition: None,
+                street: i as u32,
+            });
+        }
+        let kind = CivicKind::Water;
+        let legal = pt(230.0, 235.0);
+        assert_eq!(sim.check_civic(kind, legal), Ok(()));
+        assert_eq!(sim.snap_civic_site(kind, legal), legal);
+        let reserved = pt(230.0, 213.0);
+        assert_eq!(
+            sim.preview_civic_site(kind, reserved),
+            (reserved, Err(PlaceError::ReservedStreet))
+        );
+        let (a, b) = sim.reserved_civic_street(kind, reserved).unwrap();
+        assert_eq!(a.lerp(b, 0.5), reserved);
+    }
+
+    #[test]
     fn roadside_snap_keeps_the_tapped_side_and_ignores_inaccessible_roads() {
         let town = generate(Preset::Grid, 3);
         let mut sim = Sim::new(&town, hall_sites(&town)[0], 3);
@@ -323,22 +437,16 @@ mod tests {
         };
         sim.runs = vec![road];
         let kind = CivicKind::School;
-        let site_north = sim.snap_civic_site(kind, pt(200.0, 205.0));
-        let site_south = sim.snap_civic_site(kind, pt(200.0, 195.0));
+        let site_north = sim.roadside_site(kind, pt(200.0, 205.0));
+        let site_south = sim.roadside_site(kind, pt(200.0, 195.0));
         assert_eq!(site_north.x, 200.0);
         assert_eq!(site_south.x, 200.0);
         assert!(site_north.y > 205.0 && site_south.y < 195.0);
-        assert_eq!(
-            sim.snap_civic_site(kind, pt(200.0, 300.0)),
-            pt(200.0, 300.0)
-        );
+        assert_eq!(sim.roadside_site(kind, pt(200.0, 300.0)), pt(200.0, 300.0));
 
         for class in [RoadClass::Highway, RoadClass::Rail] {
             sim.runs[0].class = class;
-            assert_eq!(
-                sim.snap_civic_site(kind, pt(200.0, 205.0)),
-                pt(200.0, 205.0)
-            );
+            assert_eq!(sim.roadside_site(kind, pt(200.0, 205.0)), pt(200.0, 205.0));
         }
     }
 }

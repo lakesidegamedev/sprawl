@@ -442,6 +442,8 @@ pub enum PlaceError {
     NoRoad,
     /// On the pavement of a road.
     OnRoad,
+    /// Overlaps the alignment reserved for a planned street.
+    ReservedStreet,
     InWater,
     /// Overlaps a building, a construction site or the town hall.
     Occupied,
@@ -457,7 +459,8 @@ impl PlaceError {
             PlaceError::TooPoor { cost } => format!("Not enough money: it costs ${cost}."),
             PlaceError::OutOfBounds => "That is off the map.".into(),
             PlaceError::NoRoad => "Too far from a road the town has built.".into(),
-            PlaceError::OnRoad => "That spot is on a road.".into(),
+            PlaceError::OnRoad => "The building footprint overlaps a road.".into(),
+            PlaceError::ReservedStreet => "The footprint overlaps a planned street.".into(),
             PlaceError::InWater => "That spot is in the water.".into(),
             PlaceError::Occupied => "Something already stands there.".into(),
             PlaceError::Locked { people } => {
